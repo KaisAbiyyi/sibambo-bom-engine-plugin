@@ -1,0 +1,8 @@
+.DS_Store
+*.skb
+*.rbz
+*.log
+
+# Keep source SketchUp models and JSON fixtures tracked.
+!skps/
+!skps/**
