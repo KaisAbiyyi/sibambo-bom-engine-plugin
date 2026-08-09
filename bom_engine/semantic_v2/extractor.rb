@@ -65,6 +65,7 @@ module BOMEngine
           )
           index_direct_attached_labels(root_items)
           root_items.each do |entity|
+            checkpoint('Extracting model entities')
             if face?(entity)
               extract_face(
                 entity,
@@ -104,6 +105,7 @@ module BOMEngine
           items = Array(definition.entities)
           index_direct_attached_labels(items, definition_uuid: definition_uuid)
           items.each do |entity|
+            checkpoint('Extracting definition entities')
             if face?(entity)
               extract_face(
                 entity,
@@ -120,6 +122,7 @@ module BOMEngine
         end
 
         def emit_occurrence(entity, parent_path:, parent_transform:)
+          checkpoint('Extracting component occurrences')
           occurrence_uuid = uuid(@identity_plan.occurrence_uuid_for(entity), 'occurrence source_uuid')
           path = (parent_path + [occurrence_uuid]).freeze
           definition_uuid = ensure_definition(entity.definition)
@@ -148,6 +151,7 @@ module BOMEngine
         end
 
         def extract_face(face, definition_uuid:, owner_chain:, label_occurrence_path: nil)
+          checkpoint('Extracting polygon fragments')
           face_uuid = source_uuid(face)
           key = (owner_chain + [face_uuid]).freeze
           @scope_face_keys[face_uuid] = key
@@ -179,7 +183,6 @@ module BOMEngine
           }.freeze
           @definition_data.fetch(definition_uuid).fetch(:primitive_keys) << key
           @evidence.concat(hints)
-          checkpoint('Extracting polygon fragment')
         end
 
         def construction_hints(owner, target_key)
@@ -622,8 +625,12 @@ module BOMEngine
         end
 
         def build_document(model_id, scope, context_transform)
-          @primitives = @pending_primitives.map { |pending| materialize_primitive(pending) }
+          @primitives = @pending_primitives.map do |pending|
+            checkpoint('Finalizing polygon fragments')
+            materialize_primitive(pending)
+          end
           definitions = @definition_data.map do |definition_uuid, entry|
+            checkpoint('Finalizing extracted definitions')
             Snapshot::Definition.new(
               source_uuid: definition_uuid,
               kind: entry.fetch(:kind),

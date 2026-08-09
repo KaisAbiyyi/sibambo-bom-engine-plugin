@@ -73,4 +73,37 @@ class CleanAnalysisExporterTest < Minitest::Test
       assert_equal [], fixture.model.writes
     end
   end
+
+  def test_export_reports_bounded_progress_across_extraction_and_compilation
+    fixture = BOMEngine::Tests::SemanticV2Fixtures.complex_fixture
+    events = []
+    result = nil
+    error = nil
+
+    Dir.mktmpdir('clean-analysis-progress') do |directory|
+      begin
+        result = BOMEngine::CleanAnalysis::Exporter.export(
+          model: fixture.model,
+          roots: fixture.roots,
+          parent_transform: BOMEngine::Tests::SemanticV2Fixtures::FakeTransformation.identity,
+          output_path: File.join(directory, 'fixture_clean.json'),
+          identity_plan: fixture.identity_plan,
+          settings: { include_hidden: false, scope_mode: 'model' },
+          progress: ->(event) { events << event },
+          batch_size: 2
+        )
+      rescue ArgumentError => caught
+        error = caught
+      end
+    end
+
+    assert_nil error
+    refute_nil result
+    assert_operator events.length, :>, 2
+    assert_equal 'Preparing clean export', events.first.fetch(:stage)
+    assert events.any? { |event| event.fetch(:stage).include?('Extracting') }
+    assert events.any? { |event| event.fetch(:stage).include?('Compiling') }
+    assert_equal events.map { |event| event.fetch(:processed) }.sort,
+                 events.map { |event| event.fetch(:processed) }
+  end
 end

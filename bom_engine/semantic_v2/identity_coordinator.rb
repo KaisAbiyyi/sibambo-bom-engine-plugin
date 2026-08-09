@@ -75,9 +75,10 @@ module BOMEngine
       end
 
       class << self
-        def plan(model:, roots:, uuid_generator: -> { SecureRandom.uuid }, runtime_version: nil)
+        def plan(model:, roots:, uuid_generator: -> { SecureRandom.uuid }, runtime_version: nil,
+                 progress: nil)
           validate_runtime_version!(detected_runtime_version || runtime_version)
-          entities = recursively_collect(identity_roots(model, roots))
+          entities = recursively_collect(identity_roots(model, roots), progress)
           validate_persistent_owners!(entities)
           pending = pending_state_for(model)
           registry = load_registry(model, uuid_generator, pending)
@@ -88,12 +89,27 @@ module BOMEngine
           retired_foreign_claims = registry.discard_foreign_source_claims
           active_foreign_keys = {}
 
-          valid, invalid = entities.partition { |entity| valid_entity_identity?(entity) }
-          destination_model_id = registry.to_h.fetch('model_id')
-          domestic, foreign = valid.partition do |entity|
-            entity_origin_model_id(entity).to_s.downcase == destination_model_id
+          valid = []
+          invalid = []
+          entities.each do |entity|
+            report_progress(progress)
+            (valid_entity_identity?(entity) ? valid : invalid) << entity
           end
-          domestic.group_by { |entity| normalized_source_uuid(entity) }.each_value do |claims|
+          destination_model_id = registry.to_h.fetch('model_id')
+          domestic = []
+          foreign = []
+          valid.each do |entity|
+            report_progress(progress)
+            destination = entity_origin_model_id(entity).to_s.downcase == destination_model_id
+            (destination ? domestic : foreign) << entity
+          end
+          domestic_claims = Hash.new { |hash, key| hash[key] = [] }
+          domestic.each do |entity|
+            report_progress(progress)
+            domestic_claims[normalized_source_uuid(entity)] << entity
+          end
+          domestic_claims.each_value do |claims|
+            report_progress(progress)
             assign_valid_claims(
               claims,
               registry,
@@ -105,6 +121,7 @@ module BOMEngine
             )
           end
           foreign.each do |entity|
+            report_progress(progress)
             diagnostics << foreign_source_diagnostic(entity)
             prior_source_uuid = normalized_source_uuid(entity)
             prior_origin_model_id = entity_origin_model_id(entity).to_s.downcase
@@ -137,6 +154,7 @@ module BOMEngine
             ).freeze
           end
           invalid.each do |entity|
+            report_progress(progress)
             assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
           end
 
@@ -281,7 +299,7 @@ module BOMEngine
           false
         end
 
-        def recursively_collect(roots)
+        def recursively_collect(roots, progress = nil)
           entities = []
           registered = {}
           expanded = {}
@@ -291,6 +309,7 @@ module BOMEngine
             unless registered[identity]
               registered[identity] = true
               entities << entity
+              report_progress(progress)
             end
             identity
           end
@@ -329,6 +348,10 @@ module BOMEngine
           end
           visit_collection.call(roots)
           entities
+        end
+
+        def report_progress(progress)
+          progress.call('Planning source identities') if progress
         end
 
         def identity_roots(model, roots)

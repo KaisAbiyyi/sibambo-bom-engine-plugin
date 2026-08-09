@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Clean Export Batch</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: #171c23; color: #dce5ee; }
+  body { padding: 24px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  h1 { margin: 0 0 8px; color: #4fffb0; font-size: 19px; }
+  .intro, .notice { color: #8ca0b2; font-size: 12px; line-height: 1.5; }
+  .modes { display: grid; gap: 12px; margin: 20px 0; }
+  .mode { padding: 14px; border: 1px solid #344250; border-radius: 8px; background: #202832; }
+  .mode.active { border-color: #4fffb0; }
+  .manual { display: flex; justify-content: space-between; margin-top: 12px; }
+  .manual.disabled { opacity: 0.45; pointer-events: none; }
+  select { min-width: 100px; padding: 6px; background: #11171d; color: #dce5ee; border: 1px solid #40505f; }
+  .actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; }
+  button { padding: 8px 15px; border: 0; border-radius: 6px; cursor: pointer; font-weight: 600; }
+  #cancel { background: #2b3541; color: #a9b6c3; }
+  #start { background: #4fffb0; color: #102019; }
+</style>
+</head>
+<body>
+  <h1>Clean Analysis Export</h1>
+  <div class="intro">Pilih ukuran batch sebelum proses dimulai.</div>
+  <div class="modes">
+    <label class="mode active" id="auto-card">
+      <div><input type="radio" name="mode" value="auto" checked> <strong>Auto - direkomendasikan</strong></div>
+      <div id="device" class="intro">Menganalisis kemampuan perangkat...</div>
+    </label>
+    <label class="mode" id="manual-card">
+      <div><input type="radio" name="mode" value="manual"> <strong>Atur manual</strong></div>
+      <div class="manual disabled" id="manual-controls">
+        <span>Batch geometri</span>
+        <select id="batch">
+          <option>8</option><option>16</option><option>24</option><option>32</option>
+          <option>48</option><option>64</option><option>96</option><option>128</option>
+          <option>192</option><option>256</option><option>384</option><option>512</option>
+          <option>1024</option><option>2048</option><option>4096</option><option>8192</option>
+        </select>
+      </div>
+    </label>
+  </div>
+  <div class="notice">Batch kecil memberi SketchUp lebih sering kesempatan merespons. Batch besar lebih cepat pada model kecil, tetapi menahan UI lebih lama.</div>
+  <div class="actions">
+    <button id="cancel" onclick="sketchup.cancel()">Batal</button>
+    <button id="start" onclick="startExport()">Mulai Export</button>
+  </div>
+<script>
+  function selectedMode() { return document.querySelector('input[name="mode"]:checked').value; }
+  function refreshMode() {
+    var manual = selectedMode() === 'manual';
+    document.getElementById('auto-card').classList.toggle('active', !manual);
+    document.getElementById('manual-card').classList.toggle('active', manual);
+    document.getElementById('manual-controls').classList.toggle('disabled', !manual);
+  }
+  function initializeBatchOptions(data) {
+    document.getElementById('device').textContent = data.cores + ' logical cores - batch ' + data.recommended_batch + ' direkomendasikan';
+    document.getElementById('batch').value = String(data.recommended_batch);
+    document.querySelectorAll('input[name="mode"]').forEach(function(input) { input.addEventListener('change', refreshMode); });
+    refreshMode();
+  }
+  function startExport() {
+    sketchup.start(JSON.stringify({ mode: selectedMode(), batch_size: Number(document.getElementById('batch').value) }));
+  }
+  window.onload = function() { sketchup.ready(); };
+</script>
+</body>
+</html>

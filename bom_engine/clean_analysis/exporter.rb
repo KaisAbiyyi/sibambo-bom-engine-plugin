@@ -10,11 +10,15 @@ module BOMEngine
 
       module_function
 
-      def export(model:, roots:, parent_transform:, output_path:, identity_plan: nil, settings: {})
+      def export(model:, roots:, parent_transform:, output_path:, identity_plan: nil, settings: {},
+                 progress: nil, batch_size: 24)
         root_items = Array(roots)
+        batcher = ProgressBatcher.new(progress, batch_size)
+        batcher.force('Preparing clean export')
         plan = identity_plan || SemanticV2::IdentityCoordinator.plan(
           model: model,
-          roots: root_items
+          roots: root_items,
+          progress: batcher.method(:step)
         )
         extraction_settings = {
           include_hidden: false,
@@ -25,10 +29,15 @@ module BOMEngine
           roots: root_items,
           parent_transform: parent_transform,
           identity_plan: plan,
-          settings: extraction_settings
+          settings: extraction_settings,
+          progress: batcher.method(:step)
         )
-        document = Compiler.compile(snapshot)
-        Writer.write(output_path, document).merge(document: document)
+        batcher.force('Compiling architectural surfaces')
+        document = Compiler.compile(snapshot, progress: batcher.method(:step))
+        batcher.force('Writing clean JSON')
+        result = Writer.write(output_path, document).merge(document: document)
+        batcher.force('Clean export complete')
+        result
       end
     end
   end

@@ -35,26 +35,33 @@ module BOMEngine
       DECORATION_PATTERN = /\b(?:plant|tree|vegetation|decoration|decorative|ornament|presentation)\b/i.freeze
 
       class << self
-        def compile(snapshot_document)
-          new(snapshot_document).compile
+        def compile(snapshot_document, progress: nil)
+          new(snapshot_document, progress: progress).compile
         end
       end
 
-      def initialize(snapshot_document)
+      def initialize(snapshot_document, progress: nil)
         unless snapshot_document.is_a?(BOMEngine::SemanticV2::Snapshot::Document)
           raise ArgumentError, 'clean analysis compiler requires a neutral extraction snapshot'
         end
 
         @snapshot = snapshot_document
+        @progress = progress
         @definitions = snapshot_document.definitions.each_with_object({}) do |definition, index|
+          checkpoint('Compiling definition index')
           index[definition.source_uuid] = definition
         end
         @primitives = snapshot_document.primitives.each_with_object({}) do |primitive, index|
+          checkpoint('Compiling primitive index')
           index[primitive.key] = primitive
         end
-        @labels = snapshot_document.evidence.grep(
-          BOMEngine::SemanticV2::Snapshot::LabelEvidence
-        ).group_by { |item| [item.target_kind, item.target_key] }
+        @labels = Hash.new { |hash, key| hash[key] = [] }
+        snapshot_document.evidence.each do |item|
+          checkpoint('Compiling semantic evidence')
+          next unless item.is_a?(BOMEngine::SemanticV2::Snapshot::LabelEvidence)
+
+          @labels[[item.target_kind, item.target_key]] << item
+        end
         @excluded_primitive_count = 0
       end
 
@@ -65,6 +72,7 @@ module BOMEngine
         excluded_paths = []
 
         @snapshot.occurrences.sort_by { |occurrence| [occurrence.uuid_path.length, occurrence.uuid_path] }.each do |occurrence|
+          checkpoint('Compiling model occurrences')
           next if path_below_any?(occurrence.uuid_path, excluded_paths)
 
           definition = @definitions.fetch(occurrence.definition_uuid)
@@ -76,6 +84,7 @@ module BOMEngine
             excluded_objects << excluded_object(occurrence, label, category)
           elsif surface_category?(category) || category == 'container'
             definition.primitive_keys.each do |primitive_key|
+              checkpoint('Compiling polygon candidates')
               candidates << surface_candidate(
                 occurrence,
                 @primitives.fetch(primitive_key),
@@ -91,10 +100,12 @@ module BOMEngine
         contextualize_geometry_hints!(candidates)
         compiled_surfaces = merge_candidates(candidates)
         surfaces, invalid_surfaces = compiled_surfaces.partition do |surface|
+          checkpoint('Validating compiled surfaces')
           SurfaceValidator.validate(surface).empty?
         end
         surfaces.sort_by! { |surface| surface.fetch('id') }
         fallback_geometry = invalid_surfaces.map do |surface|
+          checkpoint('Recording unresolved surfaces')
           {
             'id' => stable_id('unresolved', surface.fetch('id')),
             'status' => 'unresolved',
@@ -363,7 +374,9 @@ module BOMEngine
 
       def merge_candidates(candidates)
         candidates.group_by { |candidate| merge_group_key(candidate) }.values.flat_map do |group|
+          checkpoint('Merging coplanar surfaces')
           connected_components(group).flat_map do |component|
+            checkpoint('Merging connected surface regions')
             merged = merge_component(component)
             merged.nil? ? component.map { |candidate| surface_hash(candidate) } : [surface_hash(merged)]
           end
@@ -663,6 +676,10 @@ module BOMEngine
       def clean_number(value)
         rounded = value.to_f.round(9)
         rounded.zero? ? 0.0 : rounded
+      end
+
+      def checkpoint(stage)
+        @progress.call(stage) if @progress
       end
     end
   end

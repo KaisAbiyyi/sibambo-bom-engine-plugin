@@ -21,14 +21,16 @@ module BOMEngine
         File.join(directory, "#{base_name}_clean.json")
       end
 
-      def export_model(model, output_path: nil)
+      def export_model(model, output_path: nil, progress: nil, batch_size: 24)
         path = output_path || default_output_path(model.path)
         Exporter.export(
           model: model,
           roots: model.entities,
           parent_transform: Geom::Transformation.new,
           output_path: path,
-          settings: { scope_mode: 'model' }
+          settings: { scope_mode: 'model' },
+          progress: progress,
+          batch_size: batch_size
         )
       end
 
@@ -44,19 +46,27 @@ module BOMEngine
         )
         return nil if selected.nil?
 
-        result = export_model(model, output_path: selected)
-        counts = result.fetch(:counts)
-        UI.messagebox(
-          "Clean analysis export complete.\n\n" \
-          "File: #{result.fetch(:path)}\n" \
-          "Surfaces: #{counts.fetch('architectural_surface_count')}\n" \
-          "Components: #{counts.fetch('component_count')}\n" \
-          "Excluded objects: #{counts.fetch('excluded_object_count')}"
-        )
-        result
+        BatchOptions.show(profile: BatchOptions.device_profile) do |batch_size, mode|
+          start_export(model, selected, batch_size, mode)
+        end
       rescue StandardError => error
         UI.messagebox("Clean analysis export failed:\n#{error.message}")
         nil
+      end
+
+      def start_export(model, output_path, batch_size, mode = 'auto')
+        ConversionJob.start(
+          title: "BOM Engine Clean - #{mode} batch #{batch_size}",
+          output_path: output_path,
+          batch_size: batch_size
+        ) do |progress|
+          export_model(
+            model,
+            output_path: output_path,
+            progress: progress,
+            batch_size: batch_size
+          )
+        end
       end
 
       def register!

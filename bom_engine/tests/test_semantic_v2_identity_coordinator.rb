@@ -115,6 +115,37 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     [valid, missing, malformed].each { |item| assert_empty item.writes }
   end
 
+  def test_plan_reports_progress_while_collecting_source_owners
+    first = entity(11, ORIGINAL_ID)
+    second = entity(12, COPY_ID)
+    third = entity(13, MISSING_ID)
+    model = model_with_registry(
+      claims: {
+        ORIGINAL_ID => claim(ORIGINAL_ID, 11),
+        COPY_ID => claim(COPY_ID, 12),
+        MISSING_ID => claim(MISSING_ID, 13)
+      }
+    )
+    progress = []
+    plan = nil
+    error = nil
+
+    begin
+      plan = coordinator.plan(
+        model: model,
+        roots: [first, second, third],
+        progress: ->(stage) { progress << stage }
+      )
+    rescue ArgumentError => caught
+      error = caught
+    end
+
+    assert_nil error
+    refute_nil plan
+    assert_operator progress.length, :>=, 3
+    assert progress.all? { |stage| stage == 'Planning source identities' }
+  end
+
   def test_registry_owned_original_wins_a_copied_attribute_collision
     original = entity(44, ORIGINAL_ID)
     copied = entity(12, ORIGINAL_ID)
