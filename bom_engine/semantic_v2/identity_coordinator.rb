@@ -57,10 +57,7 @@ module BOMEngine
         def plan(model:, roots:, uuid_generator: -> { SecureRandom.uuid })
           pending = pending_state_for(model)
           registry = load_registry(model, uuid_generator, pending)
-          # Persistent IDs locate owners for planning only. Sorting them makes
-          # random allocation independent of traversal without encoding a PID
-          # into any source or occurrence UUID.
-          entities = recursively_collect(roots).sort_by(&:persistent_id)
+          entities = recursively_collect(roots)
           source_uuids = {}
           entity_writes = []
           diagnostics = []
@@ -142,7 +139,7 @@ module BOMEngine
           @pending_by_model ||= ObjectSpace::WeakMap.new
           @pending_by_model[model] ||= PendingState.new(
             model_uuid: nil,
-            entity_uuids: {}
+            entity_uuids: ObjectSpace::WeakMap.new
           )
         end
 
@@ -237,7 +234,7 @@ module BOMEngine
 
         def assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
           owner_pid = entity.persistent_id
-          source_uuid = pending.entity_uuids[owner_pid] ||= allocate_uuid(uuid_generator)
+          source_uuid = pending.entity_uuids[entity] ||= allocate_uuid(uuid_generator)
           origin_model_id = registry.to_h.fetch('model_id')
           registry.plan_source_claim(
             source_uuid: source_uuid,

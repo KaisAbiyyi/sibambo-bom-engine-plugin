@@ -43,8 +43,7 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
   end
 
   class FakeEntity < FakeAttributeOwner
-    attr_reader :persistent_id
-    attr_accessor :entities, :definition, :name, :transformation
+    attr_accessor :persistent_id, :entities, :definition, :name, :transformation
 
     def initialize(persistent_id, attributes = {}, entities: nil, definition: nil)
       super(attributes)
@@ -170,26 +169,25 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
   end
 
   def test_dirty_plan_keeps_each_entity_uuid_when_root_traversal_is_reversed
-    forward_first = FakeEntity.new(11)
-    forward_second = FakeEntity.new(12)
-    reversed_first = FakeEntity.new(11)
-    reversed_second = FakeEntity.new(12)
+    first = FakeEntity.new(11)
+    second = FakeEntity.new(12)
+    model = model_with_registry
 
     forward = coordinator.plan(
-      model: model_with_registry,
-      roots: [forward_first, forward_second],
+      model: model,
+      roots: [first, second],
       uuid_generator: uuid_generator(MISSING_ID, MALFORMED_ID)
     )
     reversed = coordinator.plan(
-      model: model_with_registry,
-      roots: [reversed_second, reversed_first],
-      uuid_generator: uuid_generator(MISSING_ID, MALFORMED_ID)
+      model: model,
+      roots: [second, first],
+      uuid_generator: uuid_generator(DEFINITION_ID, COPY_ID)
     )
 
-    assert_equal MISSING_ID, forward.source_uuid_for(forward_first)
-    assert_equal MALFORMED_ID, forward.source_uuid_for(forward_second)
-    assert_equal forward.source_uuid_for(forward_first), reversed.source_uuid_for(reversed_first)
-    assert_equal forward.source_uuid_for(forward_second), reversed.source_uuid_for(reversed_second)
+    assert_equal MISSING_ID, forward.source_uuid_for(first)
+    assert_equal MALFORMED_ID, forward.source_uuid_for(second)
+    assert_equal forward.source_uuid_for(first), reversed.source_uuid_for(first)
+    assert_equal forward.source_uuid_for(second), reversed.source_uuid_for(second)
   end
 
   def test_repeated_plan_of_unchanged_dirty_model_keeps_model_and_entity_uuid_mapping
@@ -215,24 +213,24 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     assert_equal plan_bytes(initial, [first, second]), plan_bytes(repeated, [first, second])
   end
 
-  def test_pending_uuid_uses_persistent_id_only_as_an_internal_owner_locator
-    first_wrapper = FakeEntity.new(11)
-    second_wrapper = FakeEntity.new(11)
+  def test_pending_uuid_is_associated_with_the_live_entity_not_its_pid
+    entity = FakeEntity.new(11)
     model = model_with_registry
 
     initial = coordinator.plan(
       model: model,
-      roots: [first_wrapper],
+      roots: [entity],
       uuid_generator: uuid_generator(MISSING_ID)
     )
+    entity.persistent_id = 99
     repeated = coordinator.plan(
       model: model,
-      roots: [second_wrapper],
+      roots: [entity],
       uuid_generator: uuid_generator(COPY_ID)
     )
 
-    assert_equal MISSING_ID, initial.source_uuid_for(first_wrapper)
-    assert_equal MISSING_ID, repeated.source_uuid_for(second_wrapper)
+    assert_equal MISSING_ID, initial.source_uuid_for(entity)
+    assert_equal MISSING_ID, repeated.source_uuid_for(entity)
   end
 
   def test_runtime_harness_refuses_any_model_that_is_not_provably_disposable
@@ -299,6 +297,29 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     assert_equal 'injected write failure', error.message
     assert_equal [[:start, 'BOM Engine Semantic v2 Identity', true], [:abort]], model.operation_calls
     assert_empty model.writes
+  end
+
+  def test_aborted_commit_retains_pending_identity_for_retry
+    missing = FakeEntity.new(12)
+    missing.fail_on_key = 'source_uuid'
+    model = model_with_registry
+    initial = coordinator.plan(
+      model: model,
+      roots: [missing],
+      uuid_generator: uuid_generator(MISSING_ID)
+    )
+    assert_raises(RuntimeError) do
+      coordinator.send(:commit!, model: model, plan: initial)
+    end
+    missing.fail_on_key = nil
+
+    retry_plan = coordinator.plan(
+      model: model,
+      roots: [missing],
+      uuid_generator: uuid_generator(COPY_ID)
+    )
+
+    assert_equal MISSING_ID, retry_plan.source_uuid_for(missing)
   end
 
   def test_successful_commit_invalidates_pending_entity_allocations
