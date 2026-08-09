@@ -13,6 +13,13 @@
 - The frozen contract is [the Semantic v2 vertical-slice design](../specs/2026-08-09-semantic-v2-vertical-slice-design.md). Implementation must not expand the Semantic v2.0 entity scope beyond Level, Wall, Floor, Opening, Room, GenericMesh, relationships, appearance/construction references, diagnostics, and disposable computed data.
 - Opening placement has exactly one authoritative horizontal coordinate: normalized `u_center` on the directed host-wall baseline. Vertical placement and dimensions are metric. Do not serialize a second authoritative metric host offset.
 - Wall alignment follows the frozen baseline equations. `room_adjacency` means a shared nonzero spatial boundary, never traversable connectivity.
+- Relationship types use only the frozen names `element_on_level`, `room_boundary`, `room_floor`, `wall_opening`, and `room_adjacency`; implementation aliases are prohibited.
+- The reconstruction-policy identifier is exactly `bom-semantic-reconstruction/1.0.0`.
+- A region becomes an authoritative Room in v2.0 only when `vertical_extent.kind` is `constant_height` and a finite positive `height_m` is resolved. Unresolved room height leaves the region classified but not promoted to Room.
+- `sha256-jcs-v1` means SHA-256 over RFC 8785 canonical JSON bytes, including ECMAScript number serialization, UTF-16 property ordering, required string escaping, and negative-zero normalization.
+- GenericMesh fallback preserves effective appearance segmentation by stable occurrence identity plus appearance identity. Semantic v2.0 does not carry GenericMesh UV buffer views; textured fallback must report `texture_coordinates_unavailable` rather than inventing coordinates.
+- Canonical semantic content is deterministic. `generation_uuid` and generation-specific resource names are publication state; byte-equality tests inject the same generation UUID, while re-export tests compare semantic/content hashes, stable IDs, and registry revision.
+- Compilation and reconstruction consume only the virtual identity plan. `IdentityCoordinator.commit!` is an internal write primitive used in isolation tests and, in production, only by the recoverable publication layer after validation/staging.
 - Unknown tagged-union variants are accepted only through supported format-version or required-extension negotiation. An unknown variant is not automatically a safe minor-version addition.
 - Preserve both dirty worktrees. Before every milestone, capture `git status --short`, `git diff --stat`, and diffs of every file that the milestone will touch. Never use `git reset --hard`, `git checkout --`, or broad staging. Stage new clean files by exact path; stage overlapping dirty files with `git add -p -- <path>` and verify `git diff --cached` before every commit.
 - In `bom_engine_plugin`, treat current edits to `bom_engine/canonical_graph_builder.rb`, `bom_engine/core.rb`, `bom_engine_loader.rb`, packaging scripts, schemas, and label-aware files as user-owned. Reuse `bom_engine/semantic_labeler.rb`; do not replace its precedence rules.
@@ -86,12 +93,13 @@
 - Create: `bom_engine/semantic_v2/canonical_json.rb`
 - Create: `bom_engine/semantic_v2/identity_registry.rb`
 - Create: `bom_engine/tests/test_semantic_v2_identity_registry.rb`
+- Create: `bom_engine/tests/fixtures/sha256-jcs-v1.json`
 - Modify: `bom_engine/core.rb` only to require `semantic_v2`
 
 **Interfaces:**
 
 ```ruby
-BOMEngine::SemanticV2::CanonicalJSON.generate(value) # deterministic UTF-8 JSON
+BOMEngine::SemanticV2::CanonicalJSON.generate(value) # RFC 8785 canonical UTF-8 JSON
 BOMEngine::SemanticV2::CanonicalJSON.sha256(value)   # lowercase hex digest
 BOMEngine::SemanticV2::IdentityRegistry.load(raw_json)
 registry.plan_source_claim(source_uuid:, owner_pid:, origin_model_id:)
@@ -101,7 +109,8 @@ registry.next_revision
 registry.to_h
 ```
 
-- [ ] Write tests for key ordering, normalized finite floats, UUID syntax, monotonic registry revision, registry-owned collision winners, deterministic lowest-persistent-ID fallback when no owner exists, and separate source versus semantic UUID namespaces.
+- [ ] Add shared conformance vectors in `bom_engine/tests/fixtures/sha256-jcs-v1.json` with literal input and canonical UTF-8 output for RFC 8785 number serialization (including exponent thresholds and shortest round-trip form), Unicode/control-character escaping, negative zero becoming `0`, and UTF-16 property-name ordering. These exact vectors are later vendored into `model-eval` so Ruby and TypeScript must emit identical bytes.
+- [ ] Write tests that load every JCS vector plus tests for UUID syntax, monotonic registry revision, registry-owned collision winners, deterministic lowest-persistent-ID fallback when no owner exists, and separate source versus semantic UUID namespaces.
 
   ```ruby
   assert_equal(
@@ -117,7 +126,7 @@ registry.to_h
   ```
 
 - [ ] Run `ruby bom_engine/tests/test_semantic_v2_identity_registry.rb`; confirm failure because the namespace and registry do not exist.
-- [ ] Implement a recursive canonical encoder that sorts object keys, preserves array order, rejects NaN/Infinity, emits normalized JSON primitives, and hashes the resulting UTF-8 bytes.
+- [ ] Implement RFC 8785 canonicalization, not a key-sorted approximation: sort property names by UTF-16 code units, preserve array order, serialize strings with the RFC-required JSON escapes, serialize IEEE-754 numbers with ECMAScript-compatible shortest form, canonicalize `-0.0` to `0`, reject NaN/Infinity, and hash the exact UTF-8 bytes.
 - [ ] Implement registry value objects with no SketchUp dependency. Store source claims separately from semantic lineage entries, include `model_id`, `revision`, and the optional prepared generation, and allocate UUIDs through an injected generator in tests.
 - [ ] Run `ruby bom_engine/tests/test_semantic_v2_identity_registry.rb` and `ruby -c bom_engine/semantic_v2/identity_registry.rb`.
 - [ ] Commit only these paths with `git commit -m "feat: add semantic v2 identity registry core"`.
@@ -140,7 +149,8 @@ plan.occurrence_uuid_for(instance)
 plan.model_id
 plan.registry
 plan.write_required?
-BOMEngine::SemanticV2::IdentityCoordinator.commit!(model: model, plan: plan)
+# Isolated tests may invoke this private primitive with `send`.
+BOMEngine::SemanticV2::IdentityCoordinator.send(:commit!, model: model, plan: plan)
 ```
 
 The hidden dictionary is exactly `BOMEngine.SemanticV2`. Entity keys are `source_uuid` and `origin_model_id`; model keys include `model_id`, `registry_json`, and `registry_revision`.
@@ -148,7 +158,8 @@ The hidden dictionary is exactly `BOMEngine.SemanticV2`. Entity keys are `source
 - [ ] Add pure fake-entity tests proving `plan` performs no writes, valid IDs are preserved, missing IDs get virtual UUIDs, malformed IDs are replaced, the registry-owned original wins a copied-attribute collision, and a second plan is byte-for-byte stable.
 - [ ] Run `ruby bom_engine/tests/test_semantic_v2_identity_coordinator.rb`; confirm failure before implementation.
 - [ ] Implement a read-only recursive scan. Use SketchUp persistent IDs only to recognize registry ownership and choose an unowned collision winner; never expose them as public identity or occurrence-path elements.
-- [ ] Implement `commit!` so it returns immediately when `write_required?` is false. Otherwise call exactly one `model.start_operation('BOM Engine Semantic v2 Identity', true)`, write every planned entity/model change, and commit; abort the operation on any exception.
+- [ ] Implement `commit!` as a private class method so it returns immediately when `write_required?` is false. Otherwise call exactly one `model.start_operation('BOM Engine Semantic v2 Identity', true)`, write every planned entity/model change, and commit; abort the operation on any exception. Direct invocation is permitted only in isolated identity tests until `Publication` becomes its sole production caller in Task 11.
+- [ ] Add a boundary test that fails if any production file other than `semantic_v2/publication.rb` references `IdentityCoordinator.commit!`, `send(:commit!)`, or `__send__(:commit!)`. Milestone 1 therefore has no production caller of the write primitive.
 - [ ] Add SketchUp runtime cases for re-export, move, vertex edit, copy, duplicate, delete/recreate, nested group edits, shared component-definition edits, and explode. Assert the expected identity/diagnostic outcome, not traversal order.
 - [ ] Add a save/reopen and Save As test harness that saves a temporary `.skp`, reopens it, reloads the registry, and compares `model_id`, source UUIDs, semantic UUIDs, and revision. The test must restore/close its fixture without touching user models.
 - [ ] In SketchUp, run:
@@ -186,7 +197,7 @@ A primitive key is the containing-instance `source_uuid` chain plus definition-o
 - [ ] Write runtime extraction tests for a loose face, nested group, repeated component instance, hidden/policy-excluded face, face with a hole, and attached-text label. Assert definitions are shared while occurrences carry transforms and UUID paths.
 - [ ] Run the focused tests and confirm they fail because snapshot/extractor are missing.
 - [ ] Implement immutable record classes for definitions, occurrences, polygon fragments, loops, materials, construction hints, label evidence, and exclusion evidence. Keep triangles out of the snapshot authority; polygon loops and fragment ownership are sufficient.
-- [ ] Implement one traversal that resolves transformations, calls the existing `BOMEngine::SemanticLabeler.build`, records explicit and inferred evidence separately, and never writes the model.
+- [ ] Implement one traversal that resolves transformations, calls the existing `BOMEngine::SemanticLabeler.build`, records explicit and inferred evidence separately, consumes virtual UUIDs from `identity_plan`, and never writes or commits the model.
 - [ ] Add a guard test that serializing a snapshot as Semantic v2 is impossible: no public writer accepts `Snapshot::Document` directly.
 - [ ] Run focused tests plus existing `test_semantic_labeler.rb` and `test_canonical_graph.rb` in the appropriate Ruby/SketchUp runtimes.
 - [ ] Commit with `git commit -m "feat: extract neutral sketchup snapshot"`.
@@ -226,7 +237,7 @@ A primitive key is the containing-instance `source_uuid` chain plus definition-o
 **Interfaces:**
 
 ```ruby
-Policy::V1.id                    # => "semantic-v2-reconstruction/1"
+Policy::V1.id                    # => "bom-semantic-reconstruction/1.0.0"
 Policy::V1.tolerance(:coplanar_m)
 Model::Wall.new(semantic_uuid:, level_uuid:, baseline:, alignment:, thickness_m:, height:)
 Geometry.wall_face_offsets(alignment:, thickness_m:)
@@ -234,7 +245,7 @@ Geometry.project_to_baseline(point:, p0:, p1:) # => normalized u
 ```
 
 - [ ] Add exact math tests for baseline `d = (p1-p0)/L` and left normal `n = (-d.y,d.x)`: center gives `[-t/2,+t/2]`, left gives `[-t,0]`, and right gives `[0,+t]`. Test reversed baseline direction changes left/right consistently.
-- [ ] Test nullable `thickness_m` and future-compatible wall/room vertical-extent tagged unions. Unknown union variants must require a supported required extension or version.
+- [ ] Test nullable Wall/Floor `thickness_m` and future-compatible Room vertical-extent tagged unions. `constant_height.height_m` is finite, positive, and non-null; unknown union variants require a supported required extension or version.
 - [ ] Test that all detector tolerances come from `Policy::V1` and diagnostics record the effective policy ID and canonical policy hash.
 - [ ] Run focused tests; confirm failures.
 - [ ] Implement frozen semantic records for site/orientation, Level, Wall, Floor, Opening, Room, GenericMesh, Construction, Appearance, Relationship, ProvenanceSummary, Computed, and Diagnostic. Metadata accepts descriptive scalars/arrays only and is never consulted by reconstruction.
@@ -261,7 +272,7 @@ result = EnvelopeReconstructor.call(snapshot:, regions:, policy:, registry:)
 
 - [ ] Add fixtures and failing tests for explicit labeled wall/floor precedence, unlabeled geometric inference, coplanar face merging, a T-junction, a split wall face, a floor with a hole, incomplete wall thickness, unknown floor thickness, and a non-reconstructable fragment.
 - [ ] Assert a reliably identified wall with `thickness_m: nil` remains a Wall and claims its fragments; it does not become GenericMesh merely due to property incompleteness.
-- [ ] Assert relationships are emitted only in the normalized table (`wall_level`, `floor_level`), not duplicated as authoritative arrays on entities.
+- [ ] Assert Wall and Floor level membership is emitted only as `element_on_level` relationships in the normalized table, not duplicated as authoritative arrays on entities.
 - [ ] Implement planar region grouping with policy-controlled coplanarity/adjacency and an explicit mapping from every region back to geometry-primitive fragments.
 - [ ] Implement Level inference from explicit source semantics first, then clustered elevations. Implement Wall baselines/alignment and Floor horizontal regions without render triangulation.
 - [ ] Run focused tests and commit with `git commit -m "feat: reconstruct semantic envelope"`.
@@ -327,13 +338,13 @@ LineageReconciler.resolve(
 ```ruby
 OpeningReconstructor.call(snapshot:, walls:, policy:, registry:)
 # Opening placement: u_center, base_offset_m, width_m, height_m
-# Relationships: opening_host_wall
+# Relationships: wall_opening
 ```
 
 - [ ] Add failing tests for authoritative labeled door/window, authoritative void, uncertain inferred opening with `classification_hint`, wall-direction reversal, wall-range containment, split host faces, and a cut that must not change host Wall identity.
 - [ ] Assert serialized/model Opening has no `offset_m`, `host_offset_m`, or other horizontal alternative to `u_center`.
 - [ ] Implement projection to the directed wall baseline, clamp only within policy tolerance, and express the occupied host range as normalized `[u0,u1]`. Preserve authoritative `kind`; keep uncertain inference in `classification_hint`.
-- [ ] Emit only `opening_host_wall` in the relationship table. Do not add wall-owned opening arrays as authoritative state.
+- [ ] Emit only `wall_opening` in the relationship table. Do not add wall-owned opening arrays as authoritative state.
 - [ ] Run focused tests and commit with `git commit -m "feat: reconstruct hosted openings"`.
 
 ### Task 8: Classify planar regions and reconstruct Rooms
@@ -352,9 +363,10 @@ classified = PlanarRegions.classify(level:, wall_ranges:, floor_regions:, policy
 rooms = RoomReconstructor.call(classified:, levels:, walls:, floors:, registry:, policy:)
 ```
 
-- [ ] Build failing fixtures for a simple bounded room, building exterior, courtyard/hole, wall-thickness loop, accidental micro-cycle, T-junction with partial wall range, two rooms sharing part of one wall, and a prismatic room with unknown height.
+- [ ] Build failing fixtures for a simple bounded room with resolved constant height, building exterior, courtyard/hole, wall-thickness loop, accidental micro-cycle, T-junction with partial wall range, two rooms sharing part of one wall, and a bounded region whose height cannot be resolved.
 - [ ] Assert cycles are candidates only. Only bounded occupiable planar regions become Rooms; exterior, holes/courtyards, wall-solid regions, and micro-cycles receive explicit classifications and diagnostics.
-- [ ] Assert `room_boundary_wall` relationships include normalized directed wall ranges and orientation. Assert `room_floor` is normalized. Assert `room_adjacency` exists only when rooms share a nonzero spatial boundary; an opening alone does not create adjacency or connectivity.
+- [ ] Assert `room_boundary` relationships include normalized directed wall ranges and orientation. Assert `room_floor` is normalized. Assert `room_adjacency` exists only when rooms share a nonzero spatial boundary; an opening alone does not create adjacency or connectivity.
+- [ ] Assert a bounded region with unresolved height remains a classified candidate with a diagnostic and is not emitted as Room. Never serialize `constant_height.height_m: null`.
 - [ ] Add derived-lineage tests showing a Room UUID survives raw face changes when its reconciled level, floor, ordered boundary wall UUID/ranges, and topology survive.
 - [ ] Implement a half-edge planar subdivision, containment/nesting classification, minimum-area and wall-band filters from the versioned policy, and deterministic boundary ordering.
 - [ ] Extend lineage reconciliation with semantic dependency fingerprints for Room and implicit Level candidates.
@@ -391,7 +403,8 @@ GenericMeshBuilder.call(snapshot:, fallback_fragment_keys:, policy:)
   ```
 
 - [ ] Implement one finalization pass that blocks publication on any uncovered or multiply disposed fragment and reports the precise primitive key.
-- [ ] Triangulate only fallback polygon fragments for GenericMesh cache output. Keep fragment lineage in the internal ledger/diagnostics; public provenance remains compact.
+- [ ] Triangulate only fallback polygon fragments for GenericMesh cache output. Partition output by the stable key `(occurrence_source_uuid_path, effective_appearance_uuid)` so differently appearing source surfaces never collapse into one appearance. Keep fragment lineage in the internal ledger/diagnostics; public provenance remains compact.
+- [ ] Add a fixture with adjacent fallback fragments carrying different appearances and assert they produce distinct stable groups/resources (or equivalent explicit material ranges) across traversal-order changes.
 - [ ] Test that removing GenericMesh bytes does not invalidate parametric entities, while a GenericMesh-dependent capability returns `geometry_unavailable`.
 - [ ] Run all Milestone 3 tests and commit with `git commit -m "feat: enforce semantic source coverage"`.
 
@@ -431,7 +444,8 @@ Validator.validate!(document:, resources:)
 
 - [ ] Write failing validation tests for duplicate semantic UUIDs, broken relationship endpoints, invalid wall ranges, alternate opening horizontal offsets, authoritative triangle arrays on parametric entities, coverage failures, unknown required extensions, unknown unnegotiated tagged-union variants, invalid metadata semantics, and construction/appearance conflation.
 - [ ] Write computed-cache tests where a referenced construction or material changes authoritative content without changing UUID. Assert the transitive hash changes and stale computed values are rejected. Include relevant relationship-state hashes.
-- [ ] Implement the schema with explicit `additionalProperties` rules, nullable incomplete properties, reserved `extensions`, descriptive/non-authoritative `metadata`, and required-extension negotiation.
+- [ ] Implement the schema with explicit `additionalProperties` rules, nullable incomplete Wall/Floor properties, non-null finite positive `constant_height.height_m`, reserved `extensions`, descriptive/non-authoritative `metadata`, and required-extension negotiation.
+- [ ] Document that GenericMesh v2.0 preserves appearance segmentation and color/opacity but has no UV buffer view. When a textured fallback surface requires UV fidelity, emit `texture_coordinates_unavailable`; do not silently synthesize mapping.
 - [ ] Implement validation in layers: structural, identity/reference, semantic, coverage, resource, and computed dependency validation. Return stable error codes.
 - [ ] Implement deterministic content-hash traversal with cycle detection and sorted relationship projections.
 - [ ] Validate `examples/semantic-v2-small.json` against the schema using an available JSON Schema 2020-12 validator and run the Ruby tests.
@@ -451,17 +465,17 @@ Validator.validate!(document:, resources:)
 **Interfaces:**
 
 ```ruby
-GeometryCacheWriter.write(path:, meshes:) # little-endian float32/uint32, checksum/views
+GeometryCacheWriter.write(path:, meshes:) # little-endian float32 + smallest valid uint16/uint32 index views
 Serializer.build_document(model:, diagnostics:, registry_revision:, generation_uuid:, resource: nil)
 Publication.publish(model:, output_path:, identity_plan:, compilation:, fault_injector: nil)
 ```
 
-- [ ] Add golden-byte tests for little-endian positions/indices, buffer-view offsets/lengths, checksum mismatch, and missing companion behavior.
-- [ ] Add deterministic serialization tests proving stable entity/relationship ordering and byte-identical JSON for identical authoritative input.
+- [ ] Add golden-byte tests for little-endian positions/indices, buffer-view offsets/lengths, checksum mismatch, and missing companion behavior. Assert each index buffer view declares its component type and uses `uint16` when its maximum vertex index fits, otherwise `uint32`.
+- [ ] Add deterministic serialization tests proving stable entity/relationship ordering. Byte-identical manifest assertions must inject the same `generation_uuid`; a second test with a different generation must show that only publication-state fields and generation-specific resource names change while canonical semantic/content hashes remain equal.
 - [ ] Add a publication state-machine test with injected crashes at recover, after staging, after the single model-domain commit, and before manifest replacement.
 - [ ] Assert: orphan stages are quarantined/removed; committed registry revision plus valid stage completes publication; missing post-commit stage recompiles with preserved IDs; model/manifest mismatch is reported; unchanged registry causes no model operation.
 - [ ] Implement immutable generation-specific companions, write/flush/checksum before manifest validation, and publish the small JSON manifest last by same-directory atomic replace.
-- [ ] When identity or lineage state changed, commit all source ID and registry writes in one SketchUp operation. When unchanged, publish against the existing revision without writing the model.
+- [ ] Make `Publication` the sole production caller of the private `IdentityCoordinator.commit!` primitive. Compilation finishes against virtual identities before this call. When identity or lineage state changed, publication commits all source ID and registry writes in one SketchUp operation; when unchanged, it publishes against the existing revision without writing the model.
 - [ ] Run focused tests and commit with `git commit -m "feat: publish semantic v2 generations safely"`.
 
 ### Task 12: Wire the independent Semantic v2 compiler and opt-in export
@@ -501,7 +515,7 @@ Core.export_semantic_v2(model, settings, output_path)
 
 ### Milestone 4 Verification
 
-- [ ] Export the same unchanged SketchUp model twice. Verify identical semantic content hashes, stable IDs/revision, no second undo entry, and only generation/resource fields that are intentionally generation-specific.
+- [ ] Export the same unchanged SketchUp model twice. Compare canonical semantic/content hashes, stable IDs, and registry revision; verify no second undo entry. Do not require `generation_uuid` or generation-specific resource names to be equal.
 - [ ] Remove an optional `.geometry.bin` companion and verify parametric entities remain loadable while GenericMesh-dependent validation reports `geometry_unavailable`.
 - [ ] Re-run all current plugin exporter tests and compare their produced format identifiers/default selection to the preflight baseline.
 
@@ -522,6 +536,11 @@ Core.export_semantic_v2(model, settings, output_path)
 - Create: `src/lib/formats/semantic-v2.ts`
 - Create: `src/lib/formats/semantic-v2.test.ts`
 - Create: `src/lib/formats/semantic-v2-schema.test.ts`
+- Create: `src/lib/formats/jcs.ts`
+- Create: `src/lib/formats/jcs.test.ts`
+- Create: `src/lib/formats/fixtures/sha256-jcs-v1.json`
+- Create: `src/lib/formats/fixtures/semantic-v2-small.json`
+- Create: `schema/bom-engine-semantic-2.0.schema.json`
 - Create: `src/lib/model-resources.ts`
 - Create: `src/lib/model-resources.test.ts`
 - Create: `src/lib/semantics/semantic-v2-index.ts`
@@ -544,10 +563,11 @@ export function parseSemanticV2(
 export function buildSemanticV2Index(document: SemanticV2Document): SemanticV2Index;
 ```
 
-- [ ] Copy no schema types by hand where drift would be hidden: define focused discriminated TypeScript types beside runtime validation, and add a schema/example test reading `D:/projects/sibambo/bom_engine_plugin/schema/bom-engine-semantic-2.0.schema.json` and `examples/semantic-v2-small.json`.
+- [ ] Vendor the normative schema, small example, and JCS conformance vectors into the listed `model-eval` paths. Normal tests read only repository-local fixtures; no test contains an absolute or sibling-repository path. A combined release check in Task 17 verifies the vendored schema/vectors remain byte-identical to the plugin's normative copies.
+- [ ] Implement TypeScript RFC 8785 canonicalization and run the same number, Unicode/string escaping, negative-zero, and UTF-16 ordering vectors used by Ruby. Assert every canonical byte string and `sha256-jcs-v1` digest matches the literal fixture.
 - [ ] Add failing parser tests for major-version rejection, unknown required extension, unnegotiated union variant, checksum/byte-range errors, missing optional companion, and a manifest whose `model_id`/revision references are internally inconsistent.
 - [ ] Add resource matching tests: companion filename comes only from the manifest resource entry; same-named unrelated uploads are ignored; missing companion creates explicit availability state.
-- [ ] Add index tests for wall-to-level, wall-to-room-range, room-to-boundary-range, room-to-floor, opening-to-host, and shared-boundary adjacency. Directional indices are derived at load and never serialized back as authority.
+- [ ] Add directional-index tests built from only `element_on_level`, `room_boundary`, `room_floor`, `wall_opening`, and `room_adjacency`. Consumers may expose directional lookup helpers, but no alternate relationship type name may appear in parsed or serialized state.
 - [ ] Run focused tests and confirm failures.
 - [ ] Implement parser/validator/resource matching and add a direct `semantic_v2` branch before compact/canonical/legacy conversion in `readBomModelData`/`parseBomModelJson`. Store the native object as `ParsedBuildingModel.semanticV2`; do not fabricate faces.
 - [ ] Run focused tests and commit in the `model-eval` repository with `git commit -m "feat: parse semantic v2 models natively"`.
@@ -576,7 +596,7 @@ export function buildSemanticV2Inventory(model: LoadedSemanticV2): SemanticV2Inv
 ```
 
 - [ ] Add renderer tests for left/right/center wall alignment, reversed baseline, nullable thickness, parametric floor triangulation as derived data, opening subtraction at normalized `u_center`, wall-range subdivision, and GenericMesh decode.
-- [ ] Assert unknown thickness renders a deterministic analysis/display plane with an explicit degraded capability; unknown height follows the documented display policy and never invents an authoritative property.
+- [ ] Assert unknown Wall thickness renders a deterministic analysis/display plane with an explicit degraded capability; unknown Wall height follows the documented display policy and never invents an authoritative property. A Semantic v2 Room always has resolved constant height.
 - [ ] Add adapter/inventory tests that count/query Rooms, Walls, Floors, and Openings directly from native entities and relationships. Install a spy/failing stub on old face-based room/wall reconstruction and assert it is never called.
 - [ ] Implement direct mesh generation into the existing `PreparedRuntimeGeometryScene` shape consumed by `ModelCanvas.svelte`. Do not modify `ModelCanvas.svelte` unless its contract is proven insufficient by a failing test.
 - [ ] Keep the existing `sibambo-semantic-model-v1` facade for older formats. When `ParsedBuildingModel.semanticV2` exists, construct facade summaries from Semantic v2 entities/relationships, not `buildRoomInventory` face analysis.
@@ -633,7 +653,7 @@ loadModelInWorker(resources: ModelResourceSet, options, onProgress)
 
 **Testable exit:** Canonical v3/BOME2 can consume the same neutral snapshot through a dedicated adapter with parity tests, while Semantic v2 remains independent of legacy formats. The migration is feature-flagged and reversible until final verification.
 
-**Rollback boundary:** Flip `use_snapshot_extraction_for_legacy` to false or revert the adapter/default-switch commit. The original model-and-entities `CanonicalGraphBuilder.build` path remains available during this milestone; Semantic v2 and `model-eval` do not depend on the adapter.
+**Rollback boundary:** During Milestone 6, flip the migration-only `use_snapshot_extraction_for_legacy` flag to false or revert the adapter/default-switch commit. The original model-and-entities `CanonicalGraphBuilder.build` path remains temporarily available; Semantic v2 and `model-eval` do not depend on the adapter. Milestone 7 must remove this temporary rollback path before final acceptance.
 
 ### Task 16: Introduce and migrate the Canonical snapshot adapter
 
@@ -660,7 +680,7 @@ CanonicalSnapshotAdapter.build(
 - [ ] Add parity fixtures covering labels, materials, nested/repeated components, transforms, holes, attached text, hidden/excluded geometry, scenes, and optional edges. Normalize volatile diagnostics/order before comparison.
 - [ ] Run parity tests against the current builder and confirm the adapter is missing.
 - [ ] Implement the adapter directly from the neutral snapshot. It may derive the exact geometry payload expected by Canonical v3/BOME2, but it must not read Semantic v2 public JSON or depend on Semantic v2 reconstruction/serialization.
-- [ ] Add a temporary `use_snapshot_extraction_for_legacy` setting defaulting to false. Run all legacy tests through both paths and record any intentional, reviewed difference.
+- [ ] Add a migration-only `use_snapshot_extraction_for_legacy` setting defaulting to false. Run all legacy tests through both paths and record any intentional, reviewed difference.
 - [ ] After parity is green, switch the internal default to true while retaining the old traversal behind the explicit rollback flag for this milestone. Keep the export-format UI default unchanged.
 - [ ] Add a dependency test that scans Ruby requires/constants and fails if Semantic v2 compiler/serializer references `CanonicalSnapshotAdapter`, `CanonicalGraphBuilder`, or BOME2 writers.
 - [ ] Run Canonical v3, BOME2, Model-Eval JSON, legacy, label-aware, quick-export, and conversion-job tests through the snapshot path.
@@ -677,7 +697,7 @@ CanonicalSnapshotAdapter.build(
 
 ## Milestone 7 — Regression and Final Verification
 
-**Testable exit:** Both repositories pass their complete relevant suites, packaged plugin smoke tests pass in SketchUp, recovery/identity scenarios are recorded, current consumers remain operational, and no unrelated dirty work was lost.
+**Testable exit:** Both repositories pass their complete relevant suites, packaged plugin smoke tests pass in SketchUp, recovery/identity scenarios are recorded, current consumers remain operational, no unrelated dirty work was lost, and production uses one shared extraction traversal for sibling Semantic and legacy compilers.
 
 **Rollback boundary:** Documentation/fixture/test-only finalization commits can be reverted independently. Any failing legacy migration can still roll back via the Milestone 6 flag without removing the completed Semantic v2 path.
 
@@ -689,6 +709,7 @@ CanonicalSnapshotAdapter.build(
 - Modify: `SEMANTIC_V2_FORMAT.md`
 - Modify: `MODEL_EVAL_JSON_GUIDE.md`
 - Modify: `package.ps1` and `package.sh` only if archive inspection proves required runtime/schema assets are absent
+- Create: `scripts/verify-semantic-v2-contract-sync.ps1`
 - Add only minimal, reviewed fixtures under `examples/` and `bom_engine/tests/fixtures/`
 - Modify `D:/projects/sibambo/model-eval/src/lib/formats/export-defaults.test.ts` only to assert the intentionally unchanged Canonical default plus presence of the opt-in Semantic v2 option
 
@@ -717,6 +738,14 @@ CanonicalSnapshotAdapter.build(
   bunx playwright test
   ```
 
+- [ ] Run the repository-independent contract synchronization check, passing the sibling root explicitly rather than embedding it in normal tests:
+
+  ```powershell
+  .\scripts\verify-semantic-v2-contract-sync.ps1 -ModelEvalRoot ..\model-eval
+  ```
+
+  The script compares the plugin's normative Semantic v2 schema and JCS vectors with the vendored `model-eval` copies and exits nonzero on any byte difference.
+
 - [ ] Validate every checked-in Semantic v2 example and generated manifest against `schema/bom-engine-semantic-2.0.schema.json`; verify all referenced companions and checksums.
 - [ ] Search for forbidden architecture leakage:
 
@@ -728,6 +757,7 @@ CanonicalSnapshotAdapter.build(
   ```
 
 - [ ] Inspect both final diffs against the preflight ledgers. Confirm every unrelated dirty path still has its original changes and no generated model/export file was accidentally staged.
+- [ ] After parity and the first full regression pass, remove the old production legacy traversal branch and the `use_snapshot_extraction_for_legacy` flag, then rerun the complete plugin and `model-eval` regression suites. If removal cannot pass, do not mark the architecture accepted; explicitly report the vertical slice as architecture-incomplete with the retained rollback path and failing evidence.
 - [ ] Update documentation with the opt-in workflow, companion-file selection, capability degradation, registry recovery behavior, and the explicit future extension boundaries for Windows, Doors as richer entities, Ceilings, Roofs, Columns, and connectivity—without adding those types to v2.0.
 - [ ] Commit plugin finalization with `git commit -m "test: verify semantic v2 vertical slice"` and `model-eval` finalization with the same message, staging each repository independently.
 
@@ -735,14 +765,19 @@ CanonicalSnapshotAdapter.build(
 
 - [ ] Semantic v2 is standalone and future-canonical; no Semantic v2 module imports or reconstructs from Canonical v3/BOME2.
 - [ ] The neutral extraction snapshot is internal only and feeds sibling Semantic/legacy consumers.
+- [ ] Production contains one shared extraction traversal; the duplicate legacy traversal and `use_snapshot_extraction_for_legacy` migration flag have been removed.
 - [ ] Parametric Level/Wall/Floor/Opening/Room state contains no authoritative render triangles.
 - [ ] Missing thickness/height/construction data degrades named capabilities without destroying reliable semantic identity.
 - [ ] Opening horizontal placement is only normalized `u_center`; wall alignment math matches the frozen baseline for both baseline directions.
 - [ ] Room boundaries use normalized wall ranges; `room_adjacency` means shared spatial boundary only.
+- [ ] Every authoritative Room has a resolved finite positive `constant_height.height_m`; unresolved regions remain candidates, not Rooms.
+- [ ] All relationships use exactly `element_on_level`, `room_boundary`, `room_floor`, `wall_opening`, or `room_adjacency`.
 - [ ] Every eligible fragment is in exactly one of semantic claim, GenericMesh fallback, or policy exclusion.
 - [ ] Source and semantic IDs survive every continuity case that can be uniquely established; ambiguity yields a new UUID plus diagnostics.
 - [ ] Save/reopen and Save As preserve `model_id`; foreign imports/copies are rebased into the destination namespace without coalescing registry-owned identities.
 - [ ] Computed hashes include transitive authoritative entity/library content and relationship state.
+- [ ] `sha256-jcs-v1` passes the shared Ruby/TypeScript RFC 8785 conformance vectors byte-for-byte.
+- [ ] GenericMesh preserves appearance segmentation, declares `uint16` or `uint32` per index view, and reports the documented v2.0 UV limitation explicitly.
 - [ ] Required extension/version negotiation governs unknown tagged-union variants.
 - [ ] Interrupted model/filesystem publication is detected and recovered deterministically.
 - [ ] `model-eval` consumes Semantic v2 Rooms/Walls natively and uses derived render geometry only for display.
