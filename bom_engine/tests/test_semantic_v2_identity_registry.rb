@@ -209,6 +209,20 @@ class SemanticV2IdentityRegistryTest < Minitest::Test
     assert_equal 3, registry.next_revision
   end
 
+  def test_new_semantic_identity_cannot_reuse_the_model_identity
+    registry = registry_from(nil, [MODEL_ID, MODEL_ID])
+
+    error = assert_raises(ArgumentError) do
+      registry.resolve_semantic(
+        type: 'Wall',
+        exact_key: 'must-not-equal-model-id',
+        candidates: []
+      )
+    end
+
+    assert_match(/duplicate semantic UUID/, error.message)
+  end
+
   def test_returned_source_claim_cannot_mutate_registry_state
     raw = JSON.generate(
       'model_id' => MODEL_ID,
@@ -295,6 +309,40 @@ class SemanticV2IdentityRegistryTest < Minitest::Test
         owner_pid: 1,
         origin_model_id: MODEL_ID
       )
+    end
+  end
+
+  def test_rejects_missing_zero_and_negative_persistent_owners_everywhere
+    [nil, 0, -1].each do |owner_pid|
+      registry = registry_from(nil, [MODEL_ID])
+      assert_raises(ArgumentError) do
+        registry.plan_source_claim(
+          source_uuid: SOURCE_ID,
+          owner_pid: owner_pid,
+          origin_model_id: MODEL_ID
+        )
+      end
+
+      assert_raises(ArgumentError) do
+        registry.resolve_source_collision(
+          source_uuid: SOURCE_ID,
+          claims: [{ owner_pid: owner_pid }]
+        )
+      end
+
+      state = {
+        'model_id' => MODEL_ID,
+        'revision' => 1,
+        'source_claims' => {
+          SOURCE_ID => {
+            'source_uuid' => SOURCE_ID,
+            'owner_pid' => owner_pid,
+            'origin_model_id' => MODEL_ID
+          }
+        },
+        'semantic_lineage' => {}
+      }
+      assert_raises(ArgumentError) { registry_from(state, []) }
     end
   end
 

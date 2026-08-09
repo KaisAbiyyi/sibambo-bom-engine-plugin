@@ -16,6 +16,7 @@ module BOMEngine
 
       COORDINATOR = BOMEngine::SemanticV2::IdentityCoordinator
       DICTIONARY = 'BOMEngine.SemanticV2'
+      TEST_DICTIONARY = 'BOMEngine.Tests.SemanticV2Persistence'
 
       def run
         raise 'SketchUp API is unavailable' unless defined?(Sketchup)
@@ -68,7 +69,9 @@ module BOMEngine
       def create_fixture(model)
         model.start_operation('BOM Engine identity persistence fixture', true)
         face = model.entities.add_face([0, 0, 0], [24, 0, 0], [24, 24, 0], [0, 24, 0])
-        face.set_attribute(DICTIONARY, 'persistence_fixture', true)
+        face.set_attribute(TEST_DICTIONARY, 'persistence_fixture', true)
+        raise 'test fixture marker leaked into production identity dictionary' unless
+          face.get_attribute(DICTIONARY, 'persistence_fixture', nil).nil?
         model.commit_operation
         face
       rescue Exception
@@ -78,7 +81,7 @@ module BOMEngine
 
       def fixture_face(model)
         face = model.entities.grep(Sketchup::Face).find do |item|
-          item.get_attribute(DICTIONARY, 'persistence_fixture', false)
+          item.get_attribute(TEST_DICTIONARY, 'persistence_fixture', false)
         end
         raise 'saved persistence fixture face is missing' unless face
 

@@ -100,6 +100,17 @@ module BOMEngine
         end
       end
 
+      def discard_foreign_source_claims
+        foreign = @source_claims.values.select do |claim|
+          claim.fetch('origin_model_id') != @model_id
+        end
+        return [].freeze if foreign.empty?
+
+        foreign.each { |claim| @source_claims.delete(claim.fetch('source_uuid')) }
+        @changed = true
+        foreign.map { |claim| source_claim_value(claim) }.freeze
+      end
+
       def resolve_semantic(type:, exact_key:, candidates:)
         type = normalize_nonempty_string(type, 'semantic type')
         exact_key = normalize_nonempty_string(exact_key, 'semantic exact_key')
@@ -224,7 +235,7 @@ module BOMEngine
       end
 
       def ensure_unused_semantic_uuid!(semantic_uuid)
-        used = @semantic_lineage.any? do |_type, entries|
+        used = semantic_uuid == @model_id || @semantic_lineage.any? do |_type, entries|
           entries.any? { |_key, entry| entry.fetch('semantic_uuid') == semantic_uuid }
         end
         raise ArgumentError, "generated duplicate semantic UUID: #{semantic_uuid}" if used
@@ -238,7 +249,7 @@ module BOMEngine
       end
 
       def normalize_pid(value)
-        raise ArgumentError, 'owner_pid must be a non-negative Integer' unless value.is_a?(Integer) && value >= 0
+        raise ArgumentError, 'owner_pid must be a positive Integer' unless value.is_a?(Integer) && value.positive?
 
         value
       end

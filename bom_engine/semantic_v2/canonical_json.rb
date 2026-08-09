@@ -111,7 +111,7 @@ module BOMEngine
         decimal_position = decimal_index + exponent
 
         leading_zeroes = digits[/\A0*/].length
-        digits = digits[leading_zeroes..]
+        digits = digits[leading_zeroes..-1]
         decimal_position -= leading_zeroes
         digits = digits.sub(/0+\z/, '')
 
@@ -120,12 +120,12 @@ module BOMEngine
                      if digits.length <= decimal_position
                        digits + ('0' * (decimal_position - digits.length))
                      else
-                       "#{digits[0, decimal_position]}.#{digits[decimal_position..]}"
+                       "#{digits[0, decimal_position]}.#{digits[decimal_position..-1]}"
                      end
                    elsif decimal_position <= 0 && decimal_position > -6
                      "0.#{'0' * -decimal_position}#{digits}"
                    else
-                     mantissa = digits.length == 1 ? digits : "#{digits[0]}.#{digits[1..]}"
+                     mantissa = digits.length == 1 ? digits : "#{digits[0]}.#{digits[1..-1]}"
                      exponent_sign = scientific_exponent >= 0 ? '+' : ''
                      "#{mantissa}e#{exponent_sign}#{scientific_exponent}"
                    end

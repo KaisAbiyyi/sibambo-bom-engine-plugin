@@ -17,6 +17,9 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
   DEFINITION_ID = '60000000-0000-4000-8000-000000000006'
   SEMANTIC_ID = '70000000-0000-4000-8000-000000000007'
   SECOND_MATERIAL_ID = '80000000-0000-4000-8000-000000000008'
+  SECOND_SEMANTIC_ID = '90000000-0000-4000-8000-000000000009'
+  FOREIGN_MODEL_ID = 'a0000000-0000-4000-8000-00000000000a'
+  SECOND_FOREIGN_SOURCE_ID = 'b0000000-0000-4000-8000-00000000000b'
 
   class FakeAttributeOwner
     attr_reader :writes
@@ -45,7 +48,7 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
 
   class FakeEntity < FakeAttributeOwner
     attr_accessor :persistent_id, :entities, :definition, :name, :transformation,
-                  :material, :back_material
+                  :material, :back_material, :loops, :faces
 
     def initialize(persistent_id, attributes = {}, entities: nil, definition: nil)
       super(attributes)
@@ -54,6 +57,18 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
       @definition = definition
       @name = 'mutable name'
       @transformation = 'mutable transform'
+    end
+  end
+
+
+  class FakeAnnotation < FakeEntity
+    def initialize(persistent_id, attached_path)
+      super(persistent_id)
+      @attached_path = attached_path
+    end
+
+    def attached_to
+      [@attached_path, nil]
     end
   end
 
@@ -116,6 +131,144 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     assert_empty plan.diagnostics
   end
 
+  def test_foreign_source_identity_is_rebased_and_retained_only_as_diagnostic_provenance
+    foreign = entity(21, ORIGINAL_ID, origin_model_id: FOREIGN_MODEL_ID)
+    model = model_with_registry(
+      claims: {
+        ORIGINAL_ID => claim(ORIGINAL_ID, 21, origin_model_id: FOREIGN_MODEL_ID)
+      }
+    )
+
+    plan = coordinator.plan(
+      model: model,
+      roots: [foreign],
+      uuid_generator: uuid_generator(COPY_ID)
+    )
+
+    assert_equal COPY_ID, plan.source_uuid_for(foreign)
+    assert_includes plan.diagnostics,
+                    "identity.foreign_source_rebased origin_model_id=#{FOREIGN_MODEL_ID} source_uuid=#{ORIGINAL_ID}"
+    provenance = plan.foreign_source_provenance.fetch(0)
+    assert_equal ORIGINAL_ID, provenance.source_uuid
+    assert_equal FOREIGN_MODEL_ID, provenance.origin_model_id
+    assert_equal COPY_ID, provenance.destination_source_uuid
+    state = plan.registry.to_h
+    refute state.fetch('source_claims').key?(ORIGINAL_ID)
+    assert_equal MODEL_ID,
+                 state.dig('source_claims', COPY_ID, 'origin_model_id')
+
+    coordinator.send(:commit!, model: model, plan: plan)
+    assert_equal [
+      [DICTIONARY, 'source_uuid', COPY_ID],
+      [DICTIONARY, 'origin_model_id', MODEL_ID]
+    ], foreign.writes
+  end
+
+  def test_foreign_copy_never_displaces_the_registry_owned_destination_entity
+    domestic = entity(44, ORIGINAL_ID)
+    foreign = entity(12, ORIGINAL_ID, origin_model_id: FOREIGN_MODEL_ID)
+    model = model_with_registry(claims: { ORIGINAL_ID => claim(ORIGINAL_ID, 44) })
+
+    plan = coordinator.plan(
+      model: model,
+      roots: [foreign, domestic],
+      uuid_generator: uuid_generator(COPY_ID)
+    )
+
+    assert_equal ORIGINAL_ID, plan.source_uuid_for(domestic)
+    assert_equal COPY_ID, plan.source_uuid_for(foreign)
+    assert_equal 44, plan.registry.to_h.dig('source_claims', ORIGINAL_ID, 'owner_pid')
+  end
+
+  def test_stale_foreign_registry_claim_is_retired_before_domestic_collision_resolution
+    domestic = entity(44, ORIGINAL_ID)
+    foreign = entity(12, ORIGINAL_ID, origin_model_id: FOREIGN_MODEL_ID)
+    model = model_with_registry(
+      claims: {
+        ORIGINAL_ID => claim(ORIGINAL_ID, 12, origin_model_id: FOREIGN_MODEL_ID)
+      }
+    )
+
+    plan = coordinator.plan(
+      model: model,
+      roots: [domestic, foreign],
+      uuid_generator: uuid_generator(COPY_ID)
+    )
+
+    assert_equal ORIGINAL_ID, plan.source_uuid_for(domestic)
+    assert_equal COPY_ID, plan.source_uuid_for(foreign)
+    assert_equal MODEL_ID,
+                 plan.registry.to_h.dig('source_claims', ORIGINAL_ID, 'origin_model_id')
+  end
+
+  def test_unreferenced_stale_foreign_registry_claim_survives_only_as_diagnostic_provenance
+    model = model_with_registry(
+      claims: {
+        ORIGINAL_ID => claim(ORIGINAL_ID, 12, origin_model_id: FOREIGN_MODEL_ID)
+      }
+    )
+
+    plan = coordinator.plan(model: model, roots: [])
+
+    refute plan.registry.to_h.fetch('source_claims').key?(ORIGINAL_ID)
+    retired = plan.foreign_source_provenance.fetch(0)
+    assert_equal ORIGINAL_ID, retired.source_uuid
+    assert_equal FOREIGN_MODEL_ID, retired.origin_model_id
+    assert_nil retired.destination_source_uuid
+    assert_includes plan.diagnostics,
+                    "identity.foreign_registry_claim_retired origin_model_id=#{FOREIGN_MODEL_ID} source_uuid=#{ORIGINAL_ID}"
+  end
+
+  def test_repeated_foreign_rebase_plan_keeps_the_pending_destination_identity
+    foreign = entity(21, ORIGINAL_ID, origin_model_id: FOREIGN_MODEL_ID)
+    model = model_with_registry
+
+    first = coordinator.plan(
+      model: model,
+      roots: [foreign],
+      uuid_generator: uuid_generator(COPY_ID)
+    )
+    repeated = coordinator.plan(
+      model: model,
+      roots: [foreign],
+      uuid_generator: uuid_generator(MISSING_ID)
+    )
+
+    assert_equal COPY_ID, first.source_uuid_for(foreign)
+    assert_equal COPY_ID, repeated.source_uuid_for(foreign)
+    assert_equal first.registry.to_h, repeated.registry.to_h
+  end
+
+  def test_foreign_rebase_diagnostics_and_provenance_are_root_order_stable
+    first_foreign = entity(21, ORIGINAL_ID, origin_model_id: FOREIGN_MODEL_ID)
+    second_foreign = entity(
+      22,
+      SECOND_FOREIGN_SOURCE_ID,
+      origin_model_id: FOREIGN_MODEL_ID
+    )
+    model = model_with_registry
+
+    forward = coordinator.plan(
+      model: model,
+      roots: [first_foreign, second_foreign],
+      uuid_generator: uuid_generator(COPY_ID, MISSING_ID)
+    )
+    reversed = coordinator.plan(
+      model: model,
+      roots: [second_foreign, first_foreign],
+      uuid_generator: uuid_generator(MALFORMED_ID, DEFINITION_ID)
+    )
+
+    assert_equal forward.diagnostics, reversed.diagnostics
+    forward_provenance = forward.foreign_source_provenance.map do |item|
+      [item.origin_model_id, item.source_uuid, item.destination_source_uuid]
+    end
+    reversed_provenance = reversed.foreign_source_provenance.map do |item|
+      [item.origin_model_id, item.source_uuid, item.destination_source_uuid]
+    end
+    assert_equal forward_provenance, reversed_provenance
+  end
+
   def test_lowest_persistent_id_wins_an_unowned_collision_and_reports_it
     higher = entity(44, ORIGINAL_ID)
     lower = entity(12, ORIGINAL_ID)
@@ -169,6 +322,100 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     assert_empty front_material.writes
     assert_empty back_material.writes
     assert_empty model.operation_calls
+  end
+
+  def test_selected_face_planning_includes_every_loop_edge_and_incident_face_owner
+    selected = FakeEntity.new(30)
+    adjacent = FakeEntity.new(31)
+    edges = (40..43).map { |pid| FakeEntity.new(pid) }
+    edges.each { |edge| edge.faces = [selected, adjacent] }
+    selected.loops = [Struct.new(:edges).new(edges)]
+    model = model_with_registry
+    generated = [MISSING_ID, MALFORMED_ID, DEFINITION_ID, COPY_ID,
+                 SEMANTIC_ID, SECOND_MATERIAL_ID]
+
+    plan = coordinator.plan(
+      model: model,
+      roots: [selected],
+      uuid_generator: uuid_generator(*generated)
+    )
+
+    assert_equal MISSING_ID, plan.source_uuid_for(selected)
+    topology_ids = edges.map { |edge| plan.source_uuid_for(edge) }
+    topology_ids << plan.source_uuid_for(adjacent)
+    assert_equal [MALFORMED_ID, DEFINITION_ID, COPY_ID, SEMANTIC_ID,
+                  SECOND_MATERIAL_ID].sort, topology_ids.sort
+    assert_equal 5, topology_ids.uniq.length
+  end
+
+  def test_annotation_planning_includes_complete_attached_instance_path_and_leaf_owner
+    definition = FakeEntity.new(51, {}, entities: [])
+    instance = FakeEntity.new(52, {}, definition: definition)
+    edge = FakeEntity.new(53)
+    annotation = FakeAnnotation.new(54, [instance, edge])
+    model = model_with_registry
+
+    plan = coordinator.plan(
+      model: model,
+      roots: [annotation],
+      uuid_generator: uuid_generator(MISSING_ID, MALFORMED_ID, DEFINITION_ID, COPY_ID)
+    )
+
+    ids = [annotation, instance, definition, edge].map do |owner|
+      plan.source_uuid_for(owner)
+    end
+    assert_equal [MISSING_ID, MALFORMED_ID, DEFINITION_ID, COPY_ID].sort, ids.sort
+  end
+
+  def test_planning_rejects_pre_2020_1_runtime_with_a_typed_diagnostic_error
+    ['19.3.253', '20.0.373'].each do |version|
+      error = assert_raises(coordinator::UnsupportedRuntimeError) do
+        coordinator.plan(
+          model: model_with_registry,
+          roots: [],
+          runtime_version: version
+        )
+      end
+
+      assert_equal 'identity.unsupported_runtime.sketchup_before_2020_1', error.code
+      assert_match(/SketchUp 2020\.1 or newer/, error.message)
+    end
+
+    ['20.1.229', '21.0.339'].each do |version|
+      plan = coordinator.plan(
+        model: model_with_registry,
+        roots: [],
+        runtime_version: version
+      )
+      assert_equal MODEL_ID, plan.model_id
+    end
+  end
+
+  def test_planning_rejects_required_source_owners_with_missing_or_zero_pid
+    [FakeEntity.new(nil), FakeEntity.new(0)].each do |owner|
+      error = assert_raises(coordinator::UnsupportedRuntimeError) do
+        coordinator.plan(model: model_with_registry, roots: [owner])
+      end
+
+      assert_equal 'identity.unsupported_runtime.persistent_id_unavailable', error.code
+      assert_match(/positive persistent ID/, error.message)
+    end
+  end
+
+  def test_invalid_persistent_owner_fails_before_any_uuid_is_allocated_or_cached
+    owner = FakeEntity.new(0)
+    allocations = 0
+    generator = lambda do
+      allocations += 1
+      MODEL_ID
+    end
+
+    assert_raises(coordinator::UnsupportedRuntimeError) do
+      coordinator.plan(model: FakeModel.new, roots: [owner], uuid_generator: generator)
+    end
+
+    assert_equal 0, allocations
+    assert_empty owner.writes
   end
 
   def test_second_clean_plan_is_byte_stable_across_order_names_and_transforms
@@ -235,6 +482,32 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     assert_equal initial.source_uuid_for(first), repeated.source_uuid_for(first)
     assert_equal initial.source_uuid_for(second), repeated.source_uuid_for(second)
     assert_equal plan_bytes(initial, [first, second]), plan_bytes(repeated, [first, second])
+  end
+
+  def test_fresh_model_uses_real_generator_for_multiple_semantic_allocations
+    model = FakeModel.new
+    plan = coordinator.plan(
+      model: model,
+      roots: [],
+      uuid_generator: uuid_generator(MODEL_ID, SEMANTIC_ID, SECOND_SEMANTIC_ID)
+    )
+
+    first = plan.registry.resolve_semantic(
+      type: 'Wall',
+      exact_key: 'fresh-wall-one',
+      candidates: []
+    )
+    second = plan.registry.resolve_semantic(
+      type: 'Wall',
+      exact_key: 'fresh-wall-two',
+      candidates: []
+    )
+
+    assert_equal SEMANTIC_ID, first.semantic_uuid
+    assert_equal SECOND_SEMANTIC_ID, second.semantic_uuid
+    refute_equal plan.model_id, first.semantic_uuid
+    refute_equal plan.model_id, second.semantic_uuid
+    refute_equal first.semantic_uuid, second.semantic_uuid
   end
 
   def test_pending_identity_survives_gc_after_first_plan_is_released
@@ -459,11 +732,11 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     )
   end
 
-  def claim(source_uuid, owner_pid)
+  def claim(source_uuid, owner_pid, origin_model_id: MODEL_ID)
     {
       'source_uuid' => source_uuid,
       'owner_pid' => owner_pid,
-      'origin_model_id' => MODEL_ID
+      'origin_model_id' => origin_model_id
     }
   end
 

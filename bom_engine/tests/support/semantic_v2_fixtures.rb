@@ -23,16 +23,19 @@ module BOMEngine
       Fixture = Struct.new(
         :model, :roots, :identity_plan, :shared_definition, :first_instance,
         :second_instance, :group_instance, :nested_instance, :root_face, :hidden_face,
-        :policy_face, :material, :second_material, keyword_init: true
+        :policy_face, :shared_face, :adjacent_face, :material, :second_material,
+        keyword_init: true
       )
 
       class FakeIdentityPlan
         attr_reader :model_id, :lookups
+        attr_accessor :foreign_source_provenance
 
         def initialize(model_id, source_uuids)
           @model_id = model_id
           @source_uuids = source_uuids
           @lookups = []
+          @foreign_source_provenance = [].freeze
         end
 
         def source_uuid_for(entity)
@@ -48,16 +51,23 @@ module BOMEngine
         def forget(entity)
           @source_uuids.delete(entity)
         end
+
+        def remember(entity, source_uuid)
+          @source_uuids[entity] = source_uuid
+        end
       end
 
       class FakeModel
-        attr_reader :entities, :materials, :operation_calls, :writes
+        attr_reader :entities, :materials, :operation_calls, :writes, :shadow_info
+        attr_accessor :active_path
 
         def initialize(entities:, materials:)
           @entities = entities
           @materials = materials
           @operation_calls = []
           @writes = []
+          @active_path = []
+          @shadow_info = { 'NorthAngle' => 0.0 }
         end
 
         def start_operation(*args)
@@ -137,7 +147,8 @@ module BOMEngine
       FakeColor = Struct.new(:red, :green, :blue, :alpha)
 
       class FakeMaterial
-        attr_reader :name, :color, :alpha, :texture
+        attr_reader :name, :color, :alpha
+        attr_accessor :texture
 
         def initialize(name, rgba)
           @name = name
@@ -162,6 +173,7 @@ module BOMEngine
           @back_material = nil
           @layer = layer || FakeTag.new('Untagged')
           @name = ''
+          @attributes = {}
           @loops.each { |loop| loop.edges.each { |edge| edge.faces << self } }
         end
 
@@ -171,6 +183,14 @@ module BOMEngine
 
         def visible?
           !@hidden
+        end
+
+        def set_attribute(dictionary, key, value)
+          @attributes[[dictionary, key]] = value
+        end
+
+        def get_attribute(dictionary, key, default = nil)
+          @attributes.fetch([dictionary, key], default)
         end
       end
 
@@ -309,6 +329,15 @@ module BOMEngine
           second_material => SECOND_MATERIAL_ID,
           attached_text => TEXT_ID
         }
+        fixture_faces = [root_face, hidden_face, policy_face, adjacent_face,
+                         shared_face, group_face]
+        fixture_faces.flat_map { |face| face.loops.flat_map(&:edges) }.uniq.each_with_index do |edge, index|
+          source_uuids[edge] = format(
+            '%08x-0000-4000-8000-%012x',
+            0x71000000 + index,
+            0x100 + index
+          )
+        end
         Fixture.new(
           model: model,
           roots: roots,
@@ -321,6 +350,8 @@ module BOMEngine
           root_face: root_face,
           hidden_face: hidden_face,
           policy_face: policy_face,
+          shared_face: shared_face,
+          adjacent_face: adjacent_face,
           material: material,
           second_material: second_material
         )

@@ -18,22 +18,42 @@ module BOMEngine
       REGISTRY_JSON_KEY = 'registry_json'
       REGISTRY_REVISION_KEY = 'registry_revision'
       OPERATION_NAME = 'BOM Engine Semantic v2 Identity'
+      MINIMUM_SKETCHUP_VERSION = [20, 1].freeze
+
+      class UnsupportedRuntimeError < StandardError
+        attr_reader :code
+
+        def initialize(code, message)
+          @code = code.to_s.dup.freeze
+          super(message)
+        end
+      end
 
       EntityWrite = Struct.new(:entity, :source_uuid, :origin_model_id, keyword_init: true)
       PendingState = Struct.new(:model_uuid, :entity_uuids, keyword_init: true)
       PendingOwner = Struct.new(:owner_ref, :value, keyword_init: true)
+      ForeignSourceProvenance = Struct.new(
+        :source_uuid,
+        :origin_model_id,
+        :destination_source_uuid,
+        keyword_init: true
+      )
 
       # Immutable lookup result consumed by compilation before any model write.
       class Plan
-        attr_reader :model_id, :registry, :diagnostics
+        attr_reader :model_id, :registry, :diagnostics, :foreign_source_provenance
 
-        def initialize(model_id:, registry:, source_uuids:, entity_writes:, model_writes:, diagnostics:)
+        def initialize(model_id:, registry:, source_uuids:, entity_writes:, model_writes:, diagnostics:,
+                       foreign_source_provenance:)
           @model_id = model_id.dup.freeze
           @registry = registry
           @source_uuids = source_uuids.freeze
           @entity_writes = entity_writes.freeze
           @model_writes = model_writes.freeze
-          @diagnostics = diagnostics.map { |item| item.dup.freeze }.freeze
+          @diagnostics = diagnostics.map { |item| item.dup.freeze }.uniq.sort.freeze
+          @foreign_source_provenance = foreign_source_provenance.sort_by do |item|
+            [item.origin_model_id, item.source_uuid, item.destination_source_uuid.to_s]
+          end.freeze
           freeze
         end
 
@@ -55,16 +75,25 @@ module BOMEngine
       end
 
       class << self
-        def plan(model:, roots:, uuid_generator: -> { SecureRandom.uuid })
+        def plan(model:, roots:, uuid_generator: -> { SecureRandom.uuid }, runtime_version: nil)
+          validate_runtime_version!(detected_runtime_version || runtime_version)
+          entities = recursively_collect(identity_roots(model, roots))
+          validate_persistent_owners!(entities)
           pending = pending_state_for(model)
           registry = load_registry(model, uuid_generator, pending)
-          entities = recursively_collect(roots)
           source_uuids = {}
           entity_writes = []
           diagnostics = []
+          foreign_source_provenance = []
+          retired_foreign_claims = registry.discard_foreign_source_claims
+          active_foreign_keys = {}
 
           valid, invalid = entities.partition { |entity| valid_entity_identity?(entity) }
-          valid.group_by { |entity| normalized_source_uuid(entity) }.each_value do |claims|
+          destination_model_id = registry.to_h.fetch('model_id')
+          domestic, foreign = valid.partition do |entity|
+            entity_origin_model_id(entity).to_s.downcase == destination_model_id
+          end
+          domestic.group_by { |entity| normalized_source_uuid(entity) }.each_value do |claims|
             assign_valid_claims(
               claims,
               registry,
@@ -74,6 +103,38 @@ module BOMEngine
               uuid_generator,
               pending
             )
+          end
+          foreign.each do |entity|
+            diagnostics << foreign_source_diagnostic(entity)
+            prior_source_uuid = normalized_source_uuid(entity)
+            prior_origin_model_id = entity_origin_model_id(entity).to_s.downcase
+            active_foreign_keys[[prior_origin_model_id, prior_source_uuid]] = true
+            destination_source_uuid = assign_new_identity(
+              entity,
+              registry,
+              source_uuids,
+              entity_writes,
+              uuid_generator,
+              pending
+            )
+            foreign_source_provenance << ForeignSourceProvenance.new(
+              source_uuid: prior_source_uuid.dup.freeze,
+              origin_model_id: prior_origin_model_id.dup.freeze,
+              destination_source_uuid: destination_source_uuid.dup.freeze
+            ).freeze
+          end
+          retired_foreign_claims.each do |claim|
+            key = [claim.origin_model_id, claim.source_uuid]
+            next if active_foreign_keys[key]
+
+            diagnostics << "identity.foreign_registry_claim_retired " \
+                           "origin_model_id=#{claim.origin_model_id} " \
+                           "source_uuid=#{claim.source_uuid}"
+            foreign_source_provenance << ForeignSourceProvenance.new(
+              source_uuid: claim.source_uuid,
+              origin_model_id: claim.origin_model_id,
+              destination_source_uuid: nil
+            ).freeze
           end
           invalid.each do |entity|
             assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
@@ -86,11 +147,41 @@ module BOMEngine
             source_uuids: source_uuids,
             entity_writes: entity_writes,
             model_writes: model_writes,
-            diagnostics: diagnostics.uniq
+            diagnostics: diagnostics.uniq,
+            foreign_source_provenance: foreign_source_provenance
           )
         end
 
         private
+
+        def detected_runtime_version
+          return nil unless defined?(::Sketchup) && ::Sketchup.respond_to?(:version)
+
+          ::Sketchup.version.to_s
+        end
+
+        def validate_runtime_version!(version)
+          return if version.nil? || version.to_s.empty?
+
+          parts = version.to_s.split('.').first(2).map(&:to_i)
+          parts << 0 while parts.length < 2
+          return if (parts <=> MINIMUM_SKETCHUP_VERSION) >= 0
+
+          raise UnsupportedRuntimeError.new(
+            'identity.unsupported_runtime.sketchup_before_2020_1',
+            "Semantic v2 identity planning requires SketchUp 2020.1 or newer; found #{version}"
+          )
+        end
+
+        def validate_persistent_owners!(entities)
+          unsupported = entities.find { |entity| !valid_persistent_id?(entity) }
+          return if unsupported.nil?
+
+          raise UnsupportedRuntimeError.new(
+            'identity.unsupported_runtime.persistent_id_unavailable',
+            "Semantic v2 identity planning requires every source owner to expose a positive persistent ID (#{unsupported.class})"
+          )
+        end
 
         def commit!(model:, plan:)
           return plan unless plan.write_required?
@@ -132,7 +223,16 @@ module BOMEngine
             )
           else
             pending.model_uuid ||= allocate_uuid(uuid_generator)
-            IdentityRegistry.load(nil, uuid_generator: -> { pending.model_uuid })
+            first_allocation = true
+            registry_generator = lambda do
+              if first_allocation
+                first_allocation = false
+                pending.model_uuid
+              else
+                uuid_generator.call
+              end
+            end
+            IdentityRegistry.load(nil, uuid_generator: registry_generator)
           end
         end
 
@@ -183,14 +283,22 @@ module BOMEngine
 
         def recursively_collect(roots)
           entities = []
-          visited = {}
+          registered = {}
+          expanded = {}
           visit_collection = nil
-          visit_entity = lambda do |entity|
+          register_entity = lambda do |entity|
             identity = entity.__id__
-            return if visited[identity]
+            unless registered[identity]
+              registered[identity] = true
+              entities << entity
+            end
+            identity
+          end
+          visit_entity = lambda do |entity|
+            identity = register_entity.call(entity)
+            return if expanded[identity]
 
-            visited[identity] = true
-            entities << entity
+            expanded[identity] = true
             children = entity.entities if entity.respond_to?(:entities)
             visit_collection.call(children) if children
             definition = entity.definition if entity.respond_to?(:definition)
@@ -199,12 +307,37 @@ module BOMEngine
             visit_entity.call(material) if material
             back_material = entity.back_material if entity.respond_to?(:back_material)
             visit_entity.call(back_material) if back_material
+            loops = entity.loops if entity.respond_to?(:loops)
+            Array(loops).each do |loop|
+              edges = loop.respond_to?(:edges) ? Array(loop.edges) : []
+              edges.each do |edge|
+                visit_entity.call(edge)
+                next unless edge.respond_to?(:faces)
+
+                Array(edge.faces).each { |incident_face| register_entity.call(incident_face) }
+              end
+            end
+            if entity.respond_to?(:attached_to)
+              attachment = entity.attached_to
+              path = attachment.is_a?(Array) ? attachment.first : nil
+              path = path.to_a if path.respond_to?(:to_a)
+              Array(path).each { |path_entity| visit_entity.call(path_entity) }
+            end
           end
           visit_collection = lambda do |collection|
             collection.each { |entity| visit_entity.call(entity) }
           end
           visit_collection.call(roots)
           entities
+        end
+
+        def identity_roots(model, roots)
+          items = Array(roots).dup
+          if model.respond_to?(:active_path) && model.active_path
+            active_path = model.active_path
+            items.concat(active_path.respond_to?(:to_a) ? active_path.to_a : Array(active_path))
+          end
+          items
         end
 
         def valid_entity_identity?(entity)
@@ -214,7 +347,7 @@ module BOMEngine
         end
 
         def valid_persistent_id?(entity)
-          entity.respond_to?(:persistent_id) && entity.persistent_id.is_a?(Integer) && entity.persistent_id >= 0
+          entity.respond_to?(:persistent_id) && entity.persistent_id.is_a?(Integer) && entity.persistent_id.positive?
         end
 
         def entity_source_uuid(entity)
@@ -227,6 +360,12 @@ module BOMEngine
 
         def normalized_source_uuid(entity)
           entity_source_uuid(entity).downcase
+        end
+
+        def foreign_source_diagnostic(entity)
+          "identity.foreign_source_rebased " \
+            "origin_model_id=#{entity_origin_model_id(entity).to_s.downcase} " \
+            "source_uuid=#{normalized_source_uuid(entity)}"
         end
 
         def assign_valid_claims(
@@ -285,6 +424,7 @@ module BOMEngine
             source_uuid: source_uuid.freeze,
             origin_model_id: origin_model_id.dup.freeze
           ).freeze
+          source_uuid
         end
 
         def pending_uuid_for(pending, entity, uuid_generator)
