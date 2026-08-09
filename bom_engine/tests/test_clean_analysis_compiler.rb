@@ -41,6 +41,7 @@ class CleanAnalysisCompilerTest < Minitest::Test
     assert_equal 'wall', surface.fetch('type')
     assert_equal 4, surface.fetch('outer').length
     assert_in_delta 2.0, surface.fetch('area_m2'), 1.0e-9
+    assert_equal 2, surface.fetch('source_count')
     assert_equal 0, result.dig('diagnostics', 'counts', 'raw_triangle_indices_serialized')
     refute deep_key?(result, 'triangles')
     refute deep_key?(result, 'faces')
@@ -147,9 +148,131 @@ class CleanAnalysisCompilerTest < Minitest::Test
 
     refute_nil result
     assert_equal %w[door unknown], result.fetch('components').map { |component| component.fetch('category') }.sort
-    assert_equal %w[omitted_from_analysis omitted_from_analysis], result.fetch('components').map { |component| component.fetch('geometry_status') }.sort
+    assert_equal %w[omitted omitted], result.fetch('components').map { |component| component.dig('geometry', 'status') }.sort
+    assert_equal %w[clean_analysis_profile clean_analysis_profile], result.fetch('components').map { |component| component.dig('geometry', 'reason') }.sort
+    assert_equal [1, 1], result.fetch('components').map { |component| component.dig('geometry', 'source_count') }.sort
     assert_equal [], result.fetch('surfaces')
     assert_equal [], result.fetch('fallback_geometry')
+  end
+
+  def test_contextual_geometry_hints_do_not_promote_slab_edges_and_secondary_horizontal_faces
+    full_wall = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(20),
+      points: [[0, 0, 0], [4, 0, 0], [4, 0, 3], [0, 0, 3]], normal: [0, -1, 0]
+    )
+    thin_slab_edge = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(21),
+      points: [[0, 1, 2.8], [4, 1, 2.8], [4, 1, 3.0], [0, 1, 3.0]], normal: [0, -1, 0]
+    )
+    sparse_end_cap = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(22),
+      points: [[0, 0, 0], [0, 4, 0], [0, 4, 0.2], [0, 0.2, 0.2], [0, 0.2, 3], [0, 0, 3]], normal: [1, 0, 0]
+    )
+    primary_floor = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(23),
+      points: [[0, 0, 0.2], [4, 0, 0.2], [4, 4, 0.2], [0, 4, 0.2]], normal: [0, 0, 1]
+    )
+    upper_slab_top = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(24),
+      points: [[0, 0, 3], [4, 0, 3], [4, 1, 3], [0, 1, 3]], normal: [0, 0, 1]
+    )
+    floor_underside = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(25),
+      points: [[0, 0, 0], [0, 4, 0], [4, 4, 0], [4, 0, 0]], normal: [0, 0, -1]
+    )
+    primary_ceiling = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(26),
+      points: [[0, 0, 2.8], [0, 1, 2.8], [4, 1, 2.8], [4, 0, 2.8]], normal: [0, 0, -1]
+    )
+
+    untyped_label = label(
+      target_key: [uuid(1), uuid(21)].freeze,
+      target_kind: 'primitive',
+      label: 'Partition A',
+      role: nil
+    )
+    result = compile(document(
+      root_primitives: [
+        full_wall, thin_slab_edge, sparse_end_cap, primary_floor,
+        upper_slab_top, floor_underside, primary_ceiling
+      ],
+      evidence: [untyped_label]
+    ))
+
+    counts = result.fetch('surfaces').group_by { |surface| surface.fetch('type') }
+                   .transform_values(&:length)
+    assert_equal({
+      'wall' => 1,
+      'floor' => 1,
+      'ceiling' => 1,
+      'other_architectural_surface' => 4
+    }, counts)
+    reasons = result.fetch('surfaces').map { |surface| surface.dig('classification', 'reason') }
+    assert_includes reasons, 'thin_or_fragmentary_vertical_region'
+    assert_includes reasons, 'secondary_upward_region'
+    assert_includes reasons, 'secondary_downward_region'
+  end
+
+  def test_merges_coplanar_fragments_when_shared_edge_segmentation_differs
+    first_key = [uuid(1), uuid(27)].freeze
+    second_key = [uuid(1), uuid(28)].freeze
+    first = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(27),
+      points: [[0, 0, 0], [1, 0, 0], [1, 0, 2], [0, 0, 2]],
+      normal: [0, -1, 0], adjacent_keys: [second_key]
+    )
+    second = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(28),
+      points: [[1, 0, 0], [2, 0, 0], [2, 0, 2], [1, 0, 2], [1, 0, 1]],
+      normal: [0, -1, 0], adjacent_keys: [first_key]
+    )
+    wall_label = label(target_key: [].freeze, target_kind: 'occurrence', label: 'Dinding', role: 'wall')
+
+    result = compile(document(root_primitives: [first, second], evidence: [wall_label]))
+
+    assert_equal 1, result.fetch('surfaces').length
+    assert_equal 4, result.dig('surfaces', 0, 'outer').length
+    assert_in_delta 4.0, result.dig('surfaces', 0, 'area_m2'), 1.0e-9
+    assert_equal 2, result.dig('surfaces', 0, 'source_count')
+  end
+
+  def test_merges_unambiguous_coplanar_t_edge_contact
+    first_key = [uuid(1), uuid(29)].freeze
+    second_key = [uuid(1), uuid(30)].freeze
+    first = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(29),
+      points: [[0, 0, 0], [1, 0, 0], [1, 0, 2], [0, 0, 2]],
+      normal: [0, -1, 0], adjacent_keys: [second_key]
+    )
+    second = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(30),
+      points: [[1, 0, 0.5], [2, 0, 0.5], [2, 0, 1.5], [1, 0, 1.5]],
+      normal: [0, -1, 0], adjacent_keys: [first_key]
+    )
+    wall_label = label(target_key: [].freeze, target_kind: 'occurrence', label: 'Dinding', role: 'wall')
+
+    result = compile(document(root_primitives: [first, second], evidence: [wall_label]))
+
+    assert_equal 1, result.fetch('surfaces').length
+    assert_equal 8, result.dig('surfaces', 0, 'outer').length
+    assert_in_delta 3.0, result.dig('surfaces', 0, 'area_m2'), 1.0e-9
+  end
+
+  def test_invalid_architectural_fragment_becomes_explicit_unresolved_fallback
+    collinear = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(35),
+      points: [[0, 0, 0], [1, 0, 0], [2, 0, 0]],
+      normal: [0, 1, 0], area_m2: 0.0
+    )
+
+    result = compile(document(root_primitives: [collinear]))
+
+    assert_equal [], result.fetch('surfaces')
+    assert_equal 1, result.fetch('fallback_geometry').length
+    assert_equal 'unresolved', result.dig('fallback_geometry', 0, 'status')
+    assert_equal 'invalid_surface', result.dig('fallback_geometry', 0, 'reason')
+    assert_equal 1, result.dig('fallback_geometry', 0, 'source_count')
+    assert_equal 1, result.dig('diagnostics', 'counts', 'unresolved_fragment_count')
   end
 
   def test_definition_face_labels_are_scoped_to_each_repeated_occurrence

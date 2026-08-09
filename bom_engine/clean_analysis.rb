@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative 'semantic_v2/snapshot'
+require_relative 'clean_analysis/surface_validator'
 require_relative 'clean_analysis/compiler'
 require_relative 'clean_analysis/writer'
 require_relative 'clean_analysis/exporter'

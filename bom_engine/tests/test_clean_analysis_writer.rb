@@ -42,6 +42,45 @@ class CleanAnalysisWriterTest < Minitest::Test
     assert_match(/redundant geometry key: triangles/, error.message)
   end
 
+  def test_blocks_every_invalid_surface_polygon_invariant
+    invalid_surfaces = {
+      'outer requires three vertices' => valid_surface.merge(
+        'outer' => [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+      ),
+      'duplicate consecutive point' => valid_surface.merge(
+        'outer' => [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+      ),
+      'non-finite coordinate' => valid_surface.merge(
+        'outer' => [[0.0, 0.0, 0.0], [Float::INFINITY, 0.0, 0.0], [0.0, 0.0, 1.0]]
+      ),
+      'zero polygon area' => valid_surface.merge(
+        'outer' => [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        'area_m2' => 0.0
+      ),
+      'vertex off declared plane' => valid_surface.merge(
+        'outer' => [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.1, 1.0], [0.0, 0.0, 1.0]]
+      ),
+      'normal must be normalized' => valid_surface.merge('normal' => [0.0, -2.0, 0.0]),
+      'stored area mismatch' => valid_surface.merge('area_m2' => 9.0),
+      'hole requires three vertices' => valid_surface.merge(
+        'holes' => [[[0.5, 0.0, 0.2], [1.5, 0.0, 0.2]]]
+      ),
+      'hole must lie inside outer' => valid_surface.merge(
+        'holes' => [[[3.0, 0.0, 0.2], [3.5, 0.0, 0.2], [3.5, 0.0, 0.8], [3.0, 0.0, 0.8]]],
+        'area_m2' => 1.7
+      )
+    }
+
+    invalid_surfaces.each do |name, surface|
+      error = assert_raises(ArgumentError, name) do
+        BOMEngine::CleanAnalysis::Writer.generate(
+          clean_document.merge('surfaces' => [surface])
+        )
+      end
+      assert_match(/invalid surface/, error.message, name)
+    end
+  end
+
   private
 
   def clean_document
@@ -51,14 +90,7 @@ class CleanAnalysisWriterTest < Minitest::Test
       'coordinate_system' => { 'handedness' => 'right', 'up_axis' => '+Z' },
       'model' => { 'bounds' => { 'min' => [0.0, 0.0, 0.0], 'max' => [2.0, 0.0, 1.0] } },
       'surfaces' => [
-        {
-          'id' => 'surface-example',
-          'type' => 'wall',
-          'outer' => [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
-          'holes' => [],
-          'normal' => [0.0, -1.0, 0.0],
-          'area_m2' => 2.0
-        }
+        valid_surface
       ],
       'components' => [],
       'excluded_objects' => [],
@@ -70,6 +102,18 @@ class CleanAnalysisWriterTest < Minitest::Test
           'raw_triangle_indices_serialized' => 0
         }
       }
+    }
+  end
+
+  def valid_surface
+    {
+      'id' => 'surface-example',
+      'type' => 'wall',
+      'outer' => [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+      'holes' => [],
+      'normal' => [0.0, -1.0, 0.0],
+      'area_m2' => 2.0,
+      'source_count' => 1
     }
   end
 end

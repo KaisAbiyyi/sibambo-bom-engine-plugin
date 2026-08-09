@@ -84,11 +84,26 @@ module BOMEngine
               )
             end
           else
-            components << compact_component(occurrence, label, category)
+            components << compact_component(occurrence, definition, label, category)
           end
         end
 
-        surfaces = merge_candidates(candidates).sort_by { |surface| surface.fetch('id') }
+        contextualize_geometry_hints!(candidates)
+        compiled_surfaces = merge_candidates(candidates)
+        surfaces, invalid_surfaces = compiled_surfaces.partition do |surface|
+          SurfaceValidator.validate(surface).empty?
+        end
+        surfaces.sort_by! { |surface| surface.fetch('id') }
+        fallback_geometry = invalid_surfaces.map do |surface|
+          {
+            'id' => stable_id('unresolved', surface.fetch('id')),
+            'status' => 'unresolved',
+            'reason' => 'invalid_surface',
+            'source_count' => surface.fetch('source_count'),
+            'area_m2' => surface.fetch('area_m2'),
+            'validation_issues' => SurfaceValidator.validate(surface)
+          }
+        end.sort_by { |item| item.fetch('id') }
         components.sort_by! { |component| component.fetch('id') }
         excluded_objects.sort_by! { |item| item.fetch('id') }
         raw_vertices = surfaces.inject(0) do |total, surface|
@@ -112,7 +127,7 @@ module BOMEngine
           'surfaces' => surfaces,
           'components' => components,
           'excluded_objects' => excluded_objects,
-          'fallback_geometry' => [],
+          'fallback_geometry' => fallback_geometry,
           'diagnostics' => {
             'excluded' => {
               'analysis_irrelevant_objects' => excluded_objects.length,
@@ -123,9 +138,20 @@ module BOMEngine
               'architectural_surface_count' => surfaces.length,
               'component_count' => components.length,
               'excluded_object_count' => excluded_objects.length,
-              'fallback_geometry_count' => 0,
+              'fallback_geometry_count' => fallback_geometry.length,
+              'unresolved_fragment_count' => fallback_geometry.inject(0) do |sum, item|
+                sum + item.fetch('source_count')
+              end,
+              'omitted_component_source_fragments' => components.inject(0) do |sum, component|
+                sum + component.fetch('geometry').fetch('source_count')
+              end,
               'raw_vertices_serialized' => raw_vertices,
               'raw_triangle_indices_serialized' => 0
+            },
+            'area_m2' => {
+              'source' => clean_number(candidates.inject(0.0) { |sum, item| sum + item.fetch(:area_m2) }),
+              'resolved' => clean_number(surfaces.inject(0.0) { |sum, item| sum + item.fetch('area_m2') }),
+              'unresolved' => clean_number(fallback_geometry.inject(0.0) { |sum, item| sum + item.fetch('area_m2') })
             }
           }
         }
@@ -189,13 +215,17 @@ module BOMEngine
         }
       end
 
-      def compact_component(occurrence, label, category)
+      def compact_component(occurrence, definition, label, category)
         {
           'id' => stable_id('component', occurrence.uuid_path),
           'name' => display_name(label, category),
           'category' => category,
           'transform' => occurrence.transform.map { |value| clean_number(value) },
-          'geometry_status' => 'omitted_from_analysis'
+          'geometry' => {
+            'status' => 'omitted',
+            'reason' => 'clean_analysis_profile',
+            'source_count' => definition.primitive_keys.length
+          }
         }
       end
 
@@ -216,8 +246,13 @@ module BOMEngine
         outer = world_loops.find { |kind, _points| kind == 'outer' }.last
         holes = world_loops.select { |kind, _points| kind == 'hole' }.map(&:last)
         normal = transform_normal(occurrence.transform, primitive.normal)
-        classification_method = if label
-                                  label.explicit ? 'explicit_label' : 'label_hint'
+        semantic_role = explicit_role || inherited_role
+        classification_method = if semantic_role && label
+                                  label.explicit ? 'explicit_label' : 'semantic_label'
+                                elsif semantic_role
+                                  'semantic_role'
+                                elsif label
+                                  'label_hint'
                                 else
                                   'geometry_hint'
                                 end
@@ -233,12 +268,88 @@ module BOMEngine
           area_m2: loop_area(outer) - holes.inject(0.0) { |sum, hole| sum + loop_area(hole) },
           front_material_uuid: primitive.front_material_uuid,
           back_material_uuid: primitive.back_material_uuid,
+          source_count: 1,
           classification: {
             'method' => classification_method,
             'label' => label && label.label,
             'source' => label && label.source
           }.reject { |_key, value| value.nil? }
         }
+      end
+
+      def contextualize_geometry_hints!(candidates)
+        geometric = candidates.select do |candidate|
+          %w[geometry_hint label_hint].include?(
+            candidate.fetch(:classification).fetch('method')
+          )
+        end
+        return if geometric.empty?
+
+        all_points = candidates.flat_map { |candidate| candidate.fetch(:outer) }
+        minimum_z = all_points.map { |point| point[2] }.min
+        maximum_z = all_points.map { |point| point[2] }.max
+        model_height = maximum_z.to_f - minimum_z.to_f
+        upward = geometric.select { |candidate| candidate.fetch(:type) == 'floor' }
+        downward = geometric.select { |candidate| candidate.fetch(:type) == 'ceiling' }
+        primary_floor_z = upward.map { |candidate| mean_z(candidate.fetch(:outer)) }.min
+        primary_ceiling_z = downward.map { |candidate| mean_z(candidate.fetch(:outer)) }.max
+
+        geometric.each do |candidate|
+          type = candidate.fetch(:type)
+          reason = nil
+          case type
+          when 'wall'
+            height = z_span(candidate.fetch(:outer))
+            fill_ratio = planar_fill_ratio(candidate)
+            if model_height > POSITION_TOLERANCE_M &&
+               height / model_height >= 0.5 && fill_ratio >= 0.5
+              reason = 'full_height_vertical_region'
+            else
+              candidate[:type] = 'other_architectural_surface'
+              reason = 'thin_or_fragmentary_vertical_region'
+            end
+          when 'floor'
+            if primary_floor_z && (mean_z(candidate.fetch(:outer)) - primary_floor_z).abs <= POSITION_TOLERANCE_M
+              reason = 'primary_lowest_upward_region'
+            else
+              candidate[:type] = 'other_architectural_surface'
+              reason = 'secondary_upward_region'
+            end
+          when 'ceiling'
+            if primary_ceiling_z && (mean_z(candidate.fetch(:outer)) - primary_ceiling_z).abs <= POSITION_TOLERANCE_M
+              reason = 'primary_highest_downward_region'
+            else
+              candidate[:type] = 'other_architectural_surface'
+              reason = 'secondary_downward_region'
+            end
+          else
+            reason = 'sloped_geometry_region'
+          end
+          candidate.fetch(:classification)['reason'] = reason
+        end
+      end
+
+      def z_span(points)
+        values = points.map { |point| point[2] }
+        values.max.to_f - values.min.to_f
+      end
+
+      def mean_z(points)
+        points.inject(0.0) { |sum, point| sum + point[2].to_f } / points.length
+      end
+
+      def planar_fill_ratio(candidate)
+        normal = candidate.fetch(:normal)
+        omitted_axis = normal.each_index.max_by { |index| normal[index].abs }
+        axes = [0, 1, 2] - [omitted_axis]
+        points = candidate.fetch(:outer)
+        bounding_area = axes.inject(1.0) do |product, axis|
+          values = points.map { |point| point[axis] }
+          product * (values.max.to_f - values.min.to_f)
+        end
+        return 0.0 if bounding_area <= POSITION_TOLERANCE_M**2
+
+        candidate.fetch(:area_m2) / bounding_area
       end
 
       def geometric_surface_type(normal)
@@ -307,35 +418,45 @@ module BOMEngine
 
         ordered = boundary_loops.sort_by { |loop| -loop_area(loop) }
         first = component.first
+        return nil unless ordered.drop(1).all? do |loop|
+          SurfaceValidator.loop_inside?(loop, ordered.first, first.fetch(:normal))
+        end
+
         first.merge(
           primitive_key: component.map { |item| item.fetch(:primitive_key) }.sort,
           adjacent_keys: [],
           outer: ordered.first,
           holes: ordered.drop(1) + component.flat_map { |item| item.fetch(:holes) },
-          area_m2: component.inject(0.0) { |sum, item| sum + item.fetch(:area_m2) }
+          area_m2: component.inject(0.0) { |sum, item| sum + item.fetch(:area_m2) },
+          source_count: component.inject(0) { |sum, item| sum + item.fetch(:source_count) }
         )
       end
 
       def union_boundary_loops(loops)
+        all_points = loops.flatten(1)
         segments = {}
         loops.each do |loop|
           loop.each_with_index do |start_point, index|
             end_point = loop[(index + 1) % loop.length]
-            start_key = point_key(start_point)
-            end_key = point_key(end_point)
-            undirected = [start_key, end_key].sort
-            entry = segments[undirected]
-            if entry
-              return nil unless entry.fetch(:start_key) == end_key && entry.fetch(:end_key) == start_key
+            split_segment(start_point, end_point, all_points).each_cons(2) do |split_start, split_end|
+              start_key = point_key(split_start)
+              end_key = point_key(split_end)
+              next if start_key == end_key
 
-              segments.delete(undirected)
-            else
-              segments[undirected] = {
-                start_key: start_key,
-                end_key: end_key,
-                start_point: start_point,
-                end_point: end_point
-              }
+              undirected = [start_key, end_key].sort
+              entry = segments[undirected]
+              if entry
+                return nil unless entry.fetch(:start_key) == end_key && entry.fetch(:end_key) == start_key
+
+                segments.delete(undirected)
+              else
+                segments[undirected] = {
+                  start_key: start_key,
+                  end_key: end_key,
+                  start_point: split_start,
+                  end_point: split_end
+                }
+              end
             end
           end
         end
@@ -370,6 +491,23 @@ module BOMEngine
           result << normalize_loop_start(simplified)
         end
         result
+      end
+
+      def split_segment(start_point, end_point, candidates)
+        direction = subtract(end_point, start_point)
+        length_squared = dot(direction, direction)
+        return [start_point, end_point] if length_squared <= POSITION_TOLERANCE_M**2
+
+        points = candidates.each_with_object({}) do |point, index|
+          offset = subtract(point, start_point)
+          next if vector_length(cross(direction, offset)) > POSITION_TOLERANCE_M * Math.sqrt(length_squared)
+
+          parameter = dot(offset, direction) / length_squared
+          next if parameter < -POSITION_TOLERANCE_M || parameter > 1.0 + POSITION_TOLERANCE_M
+
+          index[point_key(point)] = [parameter, point]
+        end
+        points.values.sort_by(&:first).map(&:last)
       end
 
       def simplify_loop(loop)
@@ -413,6 +551,7 @@ module BOMEngine
           'holes' => holes,
           'normal' => clean_point(candidate.fetch(:normal)),
           'area_m2' => clean_number(candidate.fetch(:area_m2)),
+          'source_count' => candidate.fetch(:source_count),
           'orientation' => orientation(candidate.fetch(:normal)),
           'classification' => candidate.fetch(:classification)
         }

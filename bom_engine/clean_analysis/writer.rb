@@ -36,6 +36,10 @@ module BOMEngine
 
         forbidden = find_forbidden_key(document)
         raise ArgumentError, "redundant geometry key: #{forbidden}" if forbidden
+
+        document.fetch('surfaces', []).each do |surface|
+          SurfaceValidator.validate!(surface)
+        end
       end
       private_class_method :validate_document!
 
