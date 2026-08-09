@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'securerandom'
+require 'objspace'
 
 require_relative 'canonical_json'
 require_relative 'identity_registry'
@@ -19,6 +20,7 @@ module BOMEngine
       OPERATION_NAME = 'BOM Engine Semantic v2 Identity'
 
       EntityWrite = Struct.new(:entity, :source_uuid, :origin_model_id, keyword_init: true)
+      PendingState = Struct.new(:model_uuid, :entity_uuids, keyword_init: true)
 
       # Immutable lookup result consumed by compilation before any model write.
       class Plan
@@ -53,8 +55,12 @@ module BOMEngine
 
       class << self
         def plan(model:, roots:, uuid_generator: -> { SecureRandom.uuid })
-          registry = load_registry(model, uuid_generator)
-          entities = recursively_collect(roots)
+          pending = pending_state_for(model)
+          registry = load_registry(model, uuid_generator, pending)
+          # Persistent IDs locate owners for planning only. Sorting them makes
+          # random allocation independent of traversal without encoding a PID
+          # into any source or occurrence UUID.
+          entities = recursively_collect(roots).sort_by(&:persistent_id)
           source_uuids = {}
           entity_writes = []
           diagnostics = []
@@ -67,11 +73,12 @@ module BOMEngine
               source_uuids,
               entity_writes,
               diagnostics,
-              uuid_generator
+              uuid_generator,
+              pending
             )
           end
           invalid.each do |entity|
-            assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator)
+            assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
           end
 
           model_writes = planned_model_writes(model, registry)
@@ -100,6 +107,7 @@ module BOMEngine
               model.set_attribute(DICTIONARY, key, value)
             end
             model.commit_operation
+            clear_pending(model)
           rescue Exception
             model.abort_operation
             raise
@@ -107,7 +115,7 @@ module BOMEngine
           plan
         end
 
-        def load_registry(model, uuid_generator)
+        def load_registry(model, uuid_generator, pending)
           raw = model.get_attribute(DICTIONARY, REGISTRY_JSON_KEY, nil)
           return IdentityRegistry.load(raw, uuid_generator: uuid_generator) unless raw.nil? || raw.to_s.strip.empty?
 
@@ -125,8 +133,21 @@ module BOMEngine
               uuid_generator: uuid_generator
             )
           else
-            IdentityRegistry.load(nil, uuid_generator: uuid_generator)
+            pending.model_uuid ||= allocate_uuid(uuid_generator)
+            IdentityRegistry.load(nil, uuid_generator: -> { pending.model_uuid })
           end
+        end
+
+        def pending_state_for(model)
+          @pending_by_model ||= ObjectSpace::WeakMap.new
+          @pending_by_model[model] ||= PendingState.new(
+            model_uuid: nil,
+            entity_uuids: {}
+          )
+        end
+
+        def clear_pending(model)
+          @pending_by_model[model] = nil if @pending_by_model
         end
 
         def recursively_collect(roots)
@@ -173,7 +194,15 @@ module BOMEngine
           entity_source_uuid(entity).downcase
         end
 
-        def assign_valid_claims(claims, registry, source_uuids, entity_writes, diagnostics, uuid_generator)
+        def assign_valid_claims(
+          claims,
+          registry,
+          source_uuids,
+          entity_writes,
+          diagnostics,
+          uuid_generator,
+          pending
+        )
           winner = if claims.length == 1
                      claims.first
                    else
@@ -185,13 +214,13 @@ module BOMEngine
                      claims.find { |entity| entity.persistent_id == resolution.owner_pid }
                    end
 
-          assign_preserved_identity(winner, registry, source_uuids, entity_writes, uuid_generator)
+          assign_preserved_identity(winner, registry, source_uuids, entity_writes, uuid_generator, pending)
           (claims - [winner]).each do |entity|
-            assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator)
+            assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
           end
         end
 
-        def assign_preserved_identity(entity, registry, source_uuids, entity_writes, uuid_generator)
+        def assign_preserved_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
           source_uuid = normalized_source_uuid(entity)
           origin_model_id = entity_origin_model_id(entity).downcase
           registry.plan_source_claim(
@@ -203,15 +232,16 @@ module BOMEngine
         rescue ArgumentError => error
           raise unless error.message.start_with?('source UUID already belongs')
 
-          assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator)
+          assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
         end
 
-        def assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator)
-          source_uuid = uuid_generator.call.to_s.downcase
+        def assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
+          owner_pid = entity.persistent_id
+          source_uuid = pending.entity_uuids[owner_pid] ||= allocate_uuid(uuid_generator)
           origin_model_id = registry.to_h.fetch('model_id')
           registry.plan_source_claim(
             source_uuid: source_uuid,
-            owner_pid: entity.persistent_id,
+            owner_pid: owner_pid,
             origin_model_id: origin_model_id
           )
           source_uuids[entity] = source_uuid.freeze
@@ -220,6 +250,13 @@ module BOMEngine
             source_uuid: source_uuid.freeze,
             origin_model_id: origin_model_id.dup.freeze
           ).freeze
+        end
+
+        def allocate_uuid(uuid_generator)
+          value = uuid_generator.call.to_s.downcase
+          raise ArgumentError, "invalid generated UUID: #{value.inspect}" unless IdentityRegistry::UUID_PATTERN.match?(value)
+
+          value.freeze
         end
 
         def planned_model_writes(model, registry)

@@ -17,6 +17,8 @@ module BOMEngine
         raise 'SketchUp API is unavailable' unless defined?(Sketchup)
 
         model = Sketchup.active_model
+        assert_disposable_model!(model)
+        disposable_fixture = true
         created = []
         definitions = []
         failures = []
@@ -142,7 +144,7 @@ module BOMEngine
 
         report(failures)
       ensure
-        cleanup(model, created, definitions) if model
+        cleanup(model, created, definitions) if model && disposable_fixture
       end
 
       def component_fixture(model, root, definitions)
@@ -154,6 +156,13 @@ module BOMEngine
           second = root.entities.add_instance(definition, Geom::Transformation.translation([60, 0, 0]))
           [definition, first, second]
         end
+      end
+
+      def assert_disposable_model!(model)
+        safe = model && model.path.to_s.empty? && model.entities.empty? && !model.modified?
+        return if safe
+
+        raise 'Identity runtime test refused: use a new, empty, unmodified SketchUp model'
       end
 
       def nested_fixture(model, root)
@@ -218,4 +227,4 @@ module BOMEngine
   end
 end
 
-BOMEngine::Tests::SemanticV2IdentitySketchupTest.run
+BOMEngine::Tests::SemanticV2IdentitySketchupTest.run if defined?(Sketchup)

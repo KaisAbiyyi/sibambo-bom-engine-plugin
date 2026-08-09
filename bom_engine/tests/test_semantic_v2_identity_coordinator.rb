@@ -5,6 +5,7 @@ require 'minitest/autorun'
 
 require_relative '../semantic_v2'
 require_relative '../semantic_v2/identity_coordinator'
+require_relative 'test_semantic_v2_identity_sketchup'
 
 class SemanticV2IdentityCoordinatorTest < Minitest::Test
   DICTIONARY = 'BOMEngine.SemanticV2'
@@ -34,6 +35,10 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
 
       @writes << [dictionary, key, value]
       @attributes[[dictionary, key]] = value
+    end
+
+    def remove_attribute(dictionary, key)
+      @attributes.delete([dictionary, key])
     end
   end
 
@@ -164,6 +169,85 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     refute second_plan.write_required?
   end
 
+  def test_dirty_plan_keeps_each_entity_uuid_when_root_traversal_is_reversed
+    forward_first = FakeEntity.new(11)
+    forward_second = FakeEntity.new(12)
+    reversed_first = FakeEntity.new(11)
+    reversed_second = FakeEntity.new(12)
+
+    forward = coordinator.plan(
+      model: model_with_registry,
+      roots: [forward_first, forward_second],
+      uuid_generator: uuid_generator(MISSING_ID, MALFORMED_ID)
+    )
+    reversed = coordinator.plan(
+      model: model_with_registry,
+      roots: [reversed_second, reversed_first],
+      uuid_generator: uuid_generator(MISSING_ID, MALFORMED_ID)
+    )
+
+    assert_equal MISSING_ID, forward.source_uuid_for(forward_first)
+    assert_equal MALFORMED_ID, forward.source_uuid_for(forward_second)
+    assert_equal forward.source_uuid_for(forward_first), reversed.source_uuid_for(reversed_first)
+    assert_equal forward.source_uuid_for(forward_second), reversed.source_uuid_for(reversed_second)
+  end
+
+  def test_repeated_plan_of_unchanged_dirty_model_keeps_model_and_entity_uuid_mapping
+    first = FakeEntity.new(11)
+    second = FakeEntity.new(12)
+    model = FakeModel.new
+
+    initial = coordinator.plan(
+      model: model,
+      roots: [first, second],
+      uuid_generator: uuid_generator(MODEL_ID, MISSING_ID, MALFORMED_ID)
+    )
+    repeated = coordinator.plan(
+      model: model,
+      roots: [first, second],
+      uuid_generator: uuid_generator(DEFINITION_ID, COPY_ID, SEMANTIC_ID)
+    )
+
+    assert_equal MODEL_ID, initial.model_id
+    assert_equal initial.model_id, repeated.model_id
+    assert_equal initial.source_uuid_for(first), repeated.source_uuid_for(first)
+    assert_equal initial.source_uuid_for(second), repeated.source_uuid_for(second)
+    assert_equal plan_bytes(initial, [first, second]), plan_bytes(repeated, [first, second])
+  end
+
+  def test_pending_uuid_uses_persistent_id_only_as_an_internal_owner_locator
+    first_wrapper = FakeEntity.new(11)
+    second_wrapper = FakeEntity.new(11)
+    model = model_with_registry
+
+    initial = coordinator.plan(
+      model: model,
+      roots: [first_wrapper],
+      uuid_generator: uuid_generator(MISSING_ID)
+    )
+    repeated = coordinator.plan(
+      model: model,
+      roots: [second_wrapper],
+      uuid_generator: uuid_generator(COPY_ID)
+    )
+
+    assert_equal MISSING_ID, initial.source_uuid_for(first_wrapper)
+    assert_equal MISSING_ID, repeated.source_uuid_for(second_wrapper)
+  end
+
+  def test_runtime_harness_refuses_any_model_that_is_not_provably_disposable
+    guard = BOMEngine::Tests::SemanticV2IdentitySketchupTest
+    disposable = Struct.new(:path, :entities, :modified?).new('', [], false)
+    saved = Struct.new(:path, :entities, :modified?).new('user-model.skp', [], false)
+    nonempty = Struct.new(:path, :entities, :modified?).new('', [Object.new], false)
+    modified = Struct.new(:path, :entities, :modified?).new('', [], true)
+
+    guard.assert_disposable_model!(disposable)
+    [saved, nonempty, modified].each do |model|
+      assert_raises(RuntimeError) { guard.assert_disposable_model!(model) }
+    end
+  end
+
   def test_commit_is_private_and_clean_plan_returns_without_an_operation
     valid = entity(11, ORIGINAL_ID)
     model = model_with_registry(claims: { ORIGINAL_ID => claim(ORIGINAL_ID, 11) })
@@ -215,6 +299,28 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     assert_equal 'injected write failure', error.message
     assert_equal [[:start, 'BOM Engine Semantic v2 Identity', true], [:abort]], model.operation_calls
     assert_empty model.writes
+  end
+
+  def test_successful_commit_invalidates_pending_entity_allocations
+    missing = FakeEntity.new(12)
+    model = model_with_registry
+    initial = coordinator.plan(
+      model: model,
+      roots: [missing],
+      uuid_generator: uuid_generator(MISSING_ID)
+    )
+    coordinator.send(:commit!, model: model, plan: initial)
+    missing.remove_attribute(DICTIONARY, 'source_uuid')
+    missing.remove_attribute(DICTIONARY, 'origin_model_id')
+
+    after_commit = coordinator.plan(
+      model: model,
+      roots: [missing],
+      uuid_generator: uuid_generator(COPY_ID)
+    )
+
+    assert_equal COPY_ID, after_commit.source_uuid_for(missing)
+    refute_equal MISSING_ID, after_commit.source_uuid_for(missing)
   end
 
   def test_registry_changes_added_after_planning_are_committed
@@ -306,7 +412,7 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     BOMEngine::SemanticV2::CanonicalJSON.generate(
       'model_id' => plan.model_id,
       'registry' => plan.registry.to_h,
-      'source_uuids' => entities.map { |item| plan.source_uuid_for(item) }.sort,
+      'source_uuids' => entities.map { |item| plan.source_uuid_for(item) },
       'diagnostics' => plan.diagnostics.sort
     )
   end
