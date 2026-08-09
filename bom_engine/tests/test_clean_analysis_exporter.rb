@@ -50,4 +50,27 @@ class CleanAnalysisExporterTest < Minitest::Test
 
     assert_equal 'D:/models/clean-analysis-exports/scratch1_clean.json', path
   end
+
+  def test_exports_the_same_unchanged_fixture_to_byte_identical_clean_json
+    fixture = BOMEngine::Tests::SemanticV2Fixtures.complex_fixture
+
+    Dir.mktmpdir('clean-analysis-determinism') do |directory|
+      first_path = File.join(directory, 'first_clean.json')
+      second_path = File.join(directory, 'second_clean.json')
+      export_options = {
+        model: fixture.model,
+        roots: fixture.roots,
+        parent_transform: BOMEngine::Tests::SemanticV2Fixtures::FakeTransformation.identity,
+        identity_plan: fixture.identity_plan,
+        settings: { include_hidden: false, scope_mode: 'model' }
+      }
+
+      BOMEngine::CleanAnalysis::Exporter.export(**export_options.merge(output_path: first_path))
+      BOMEngine::CleanAnalysis::Exporter.export(**export_options.merge(output_path: second_path))
+
+      assert_equal File.binread(first_path), File.binread(second_path)
+      assert_equal [], fixture.model.operation_calls
+      assert_equal [], fixture.model.writes
+    end
+  end
 end

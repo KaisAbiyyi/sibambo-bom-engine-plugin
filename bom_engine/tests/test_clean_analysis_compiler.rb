@@ -47,6 +47,39 @@ class CleanAnalysisCompilerTest < Minitest::Test
     refute deep_key?(result, 'faces')
   end
 
+  def test_merges_three_coplanar_floor_splits_into_one_boundary
+    first_key = [uuid(1), uuid(40)].freeze
+    second_key = [uuid(1), uuid(41)].freeze
+    third_key = [uuid(1), uuid(42)].freeze
+    first = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(40),
+      points: [[0, 0, 0], [1, 0, 0], [1, 2, 0], [0, 2, 0]],
+      normal: [0, 0, 1], adjacent_keys: [second_key]
+    )
+    second = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(41),
+      points: [[1, 0, 0], [2, 0, 0], [2, 2, 0], [1, 2, 0]],
+      normal: [0, 0, 1], adjacent_keys: [first_key, third_key]
+    )
+    third = polygon(
+      definition_uuid: uuid(1), source_uuid: uuid(42),
+      points: [[2, 0, 0], [3, 0, 0], [3, 2, 0], [2, 2, 0]],
+      normal: [0, 0, 1], adjacent_keys: [second_key]
+    )
+
+    result = compile(document(root_primitives: [first, second, third]))
+
+    assert_equal 1, result.fetch('surfaces').length
+    surface = result.fetch('surfaces').first
+    assert_equal 3, surface.fetch('source_count')
+    assert_in_delta 6.0, surface.fetch('area_m2'), 1.0e-9
+    assert_in_delta 6.0, result.dig('diagnostics', 'area_m2', 'source'), 1.0e-9
+    assert_equal(
+      [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 2.0, 0.0], [0.0, 2.0, 0.0]],
+      surface.fetch('outer')
+    )
+  end
+
   def test_classifies_unlabelled_horizontal_surfaces_from_normals
     floor = polygon(
       definition_uuid: uuid(1),
@@ -66,6 +99,32 @@ class CleanAnalysisCompilerTest < Minitest::Test
     refute_nil result
     assert_equal %w[ceiling floor], result.fetch('surfaces').map { |surface| surface.fetch('type') }.sort
     assert_equal %w[geometry_hint geometry_hint], result.fetch('surfaces').map { |surface| surface.dig('classification', 'method') }.sort
+  end
+
+  def test_preserves_one_floor_polygon_hole_without_emitting_a_second_surface
+    outer = [[0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0]]
+    hole = [[1, 1, 0], [2, 1, 0], [2, 2, 0], [1, 2, 0]]
+    floor = polygon_with_hole(
+      definition_uuid: uuid(1),
+      source_uuid: uuid(43),
+      outer: outer,
+      hole: hole,
+      normal: [0, 0, 1]
+    )
+
+    result = compile(document(root_primitives: [floor]))
+
+    assert_equal 1, result.fetch('surfaces').length
+    surface = result.fetch('surfaces').first
+    assert_equal outer.map { |point| point.map(&:to_f) }, surface.fetch('outer')
+    assert_equal [hole.map { |point| point.map(&:to_f) }], surface.fetch('holes')
+    assert_in_delta 15.0, surface.fetch('area_m2'), 1.0e-9
+    refute result.fetch('surfaces').any? { |candidate| candidate.fetch('outer') == surface.fetch('holes').first }
+    assert_equal [], result.fetch('fallback_geometry')
+    assert_equal 1, surface.fetch('source_count')
+    assert_in_delta 15.0, result.dig('diagnostics', 'area_m2', 'source'), 1.0e-9
+    assert_in_delta 15.0, result.dig('diagnostics', 'area_m2', 'resolved'), 1.0e-9
+    assert_in_delta 0.0, result.dig('diagnostics', 'area_m2', 'unresolved'), 1.0e-9
   end
 
   def test_excludes_sree_entourage_without_serializing_its_geometry
@@ -395,6 +454,34 @@ class CleanAnalysisCompilerTest < Minitest::Test
       back_material_uuid: nil,
       normal: normal.map(&:to_f).freeze,
       area_m2: area_m2 || polygon_area(points),
+      construction_hints: [].freeze
+    )
+  end
+
+  def polygon_with_hole(definition_uuid:, source_uuid:, outer:, hole:, normal:)
+    loops = [
+      snapshot::Loop.new(
+        kind: 'outer',
+        vertices: outer.map { |point| point.map(&:to_f).freeze }.freeze,
+        edge_source_uuids: outer.each_index.map { |index| uuid(140 + index) }.freeze,
+        adjacent_primitive_keys: [].freeze
+      ),
+      snapshot::Loop.new(
+        kind: 'hole',
+        vertices: hole.map { |point| point.map(&:to_f).freeze }.freeze,
+        edge_source_uuids: hole.each_index.map { |index| uuid(150 + index) }.freeze,
+        adjacent_primitive_keys: [].freeze
+      )
+    ].freeze
+    snapshot::PolygonFragment.new(
+      key: [definition_uuid, source_uuid].freeze,
+      definition_uuid: definition_uuid,
+      source_uuid: source_uuid,
+      loops: loops,
+      front_material_uuid: nil,
+      back_material_uuid: nil,
+      normal: normal.map(&:to_f).freeze,
+      area_m2: 15.0,
       construction_hints: [].freeze
     )
   end
