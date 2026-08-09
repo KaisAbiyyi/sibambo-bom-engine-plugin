@@ -637,6 +637,34 @@ module BOMEngine
               primitive_keys: entry.fetch(:primitive_keys).sort.freeze
             )
           end.sort_by(&:source_uuid).freeze
+          checkpoint('Sorting snapshot occurrences')
+          occurrences = @occurrences.sort_by(&:uuid_path).freeze
+          checkpoint('Sorting snapshot primitives')
+          primitives = @primitives.sort_by(&:key).freeze
+          checkpoint('Sorting snapshot materials')
+          materials = @materials.values.sort_by(&:source_uuid).freeze
+          labels = []
+          other_evidence = []
+          @evidence.each do |item|
+            checkpoint('Indexing snapshot evidence')
+            if item.is_a?(Snapshot::LabelEvidence)
+              labels << item
+            else
+              other_evidence << item
+            end
+          end
+          checkpoint('Sorting snapshot labels')
+          labels.sort_by! do |item|
+            [
+              item.target_key,
+              item.target_kind.to_s,
+              Array(item.target_occurrence_uuid_path),
+              item.source.to_s,
+              item.annotation_source_uuid.to_s,
+              item.label.to_s
+            ]
+          end
+          evidence = (labels + other_evidence).freeze
           Snapshot::Document.new(
             model_id: model_id,
             scope: scope,
@@ -644,25 +672,14 @@ module BOMEngine
               true_north_xy: true_north_xy,
               context_transform: normalized_transform(context_transform)
             ),
-            occurrences: @occurrences.sort_by(&:uuid_path).freeze,
+            occurrences: occurrences,
             definitions: definitions,
-            primitives: @primitives.sort_by(&:key).freeze,
-            materials: @materials.values.sort_by(&:source_uuid).freeze,
-            evidence: @evidence.sort_by do |item|
-              [
-                item.target_key,
-                item.respond_to?(:target_kind) ? item.target_kind.to_s : '',
-                item.respond_to?(:target_occurrence_uuid_path) ? Array(item.target_occurrence_uuid_path) : [],
-                item.class.name,
-                item.respond_to?(:source) ? item.source.to_s : '',
-                item.respond_to?(:annotation_source_uuid) ? item.annotation_source_uuid.to_s : '',
-                item.respond_to?(:edge_source_uuid) ? item.edge_source_uuid.to_s : '',
-                item.respond_to?(:adjacent_source_uuid) ? item.adjacent_source_uuid.to_s : '',
-                item.respond_to?(:label) ? item.label.to_s : ''
-              ]
-            end.freeze,
+            primitives: primitives,
+            materials: materials,
+            evidence: evidence,
             foreign_source_provenance: foreign_source_provenance,
-            diagnostics: @diagnostics.uniq.sort.map(&:freeze).freeze
+            diagnostics: @diagnostics.uniq.sort.map(&:freeze).freeze,
+            progress: @progress
           )
         end
 

@@ -10,6 +10,25 @@ require_relative 'support/semantic_v2_fixtures'
 class CleanAnalysisExporterTest < Minitest::Test
   include BOMEngine::Tests::SemanticV2Fixtures
 
+  class ReadOnlyIdentityModel
+    attr_reader :entities, :shadow_info, :operation_calls, :writes
+
+    def initialize(entities)
+      @entities = entities
+      @shadow_info = { 'NorthAngle' => 0.0 }
+      @operation_calls = []
+      @writes = []
+    end
+
+    def active_path
+      []
+    end
+
+    def get_attribute(_dictionary, _key, default = nil)
+      default
+    end
+  end
+
   def test_exports_real_snapshot_pipeline_without_model_writes_or_triangles
     fixture = BOMEngine::Tests::SemanticV2Fixtures.complex_fixture
     result = nil
@@ -38,6 +57,50 @@ class CleanAnalysisExporterTest < Minitest::Test
     end
 
     refute_nil result
+  end
+
+  def test_read_only_clean_export_does_not_materialize_publication_registry
+    face = BOMEngine::Tests::SemanticV2Fixtures::FakeFace.new(
+      outer: [[0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0]],
+      area: 4.0
+    )
+    owners = [face] + face.loops.flat_map(&:edges)
+    owners.each_with_index do |owner, index|
+      owner.instance_variable_set(:@test_persistent_id, 100 + index)
+      owner.define_singleton_method(:persistent_id) { @test_persistent_id }
+      next if owner.respond_to?(:get_attribute)
+
+      owner.define_singleton_method(:get_attribute) do |_dictionary, _key, default = nil|
+        default
+      end
+    end
+    model = ReadOnlyIdentityModel.new([face])
+    registry_class = BOMEngine::SemanticV2::IdentityRegistry
+    original_to_h = registry_class.instance_method(:to_h)
+    materializations = 0
+    registry_class.define_method(:to_h) do
+      materializations += 1
+      original_to_h.bind(self).call
+    end
+
+    begin
+      Dir.mktmpdir('clean-analysis-read-only-plan') do |directory|
+        BOMEngine::CleanAnalysis::Exporter.export(
+          model: model,
+          roots: model.entities,
+          parent_transform: BOMEngine::Tests::SemanticV2Fixtures::FakeTransformation.identity,
+          output_path: File.join(directory, 'fixture_clean.json'),
+          settings: { include_hidden: false, scope_mode: 'model' }
+        )
+      end
+    ensure
+      registry_class.define_method(:to_h, original_to_h)
+    end
+
+    assert_equal 0, materializations,
+                 'read-only compilation must defer the registry publication snapshot'
+    assert_empty model.operation_calls
+    assert_empty model.writes
   end
 
   def test_default_output_path_is_separate_from_existing_export_formats
@@ -102,6 +165,7 @@ class CleanAnalysisExporterTest < Minitest::Test
     assert_operator events.length, :>, 2
     assert_equal 'Preparing clean export', events.first.fetch(:stage)
     assert events.any? { |event| event.fetch(:stage).include?('Extracting') }
+    assert events.any? { |event| event.fetch(:stage).include?('Validating neutral snapshot graph') }
     assert events.any? { |event| event.fetch(:stage).include?('Compiling') }
     assert_equal events.map { |event| event.fetch(:processed) }.sort,
                  events.map { |event| event.fetch(:processed) }

@@ -146,6 +146,31 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     assert progress.all? { |stage| stage == 'Planning source identities' }
   end
 
+  def test_missing_identity_planning_materializes_the_registry_only_once
+    missing = 5.times.map { |index| FakeEntity.new(100 + index) }
+    generated = [MISSING_ID, MALFORMED_ID, DEFINITION_ID, COPY_ID, SEMANTIC_ID]
+    registry_class = BOMEngine::SemanticV2::IdentityRegistry
+    original_to_h = registry_class.instance_method(:to_h)
+    materializations = 0
+    registry_class.define_method(:to_h) do
+      materializations += 1
+      original_to_h.bind(self).call
+    end
+
+    plan = coordinator.plan(
+      model: model_with_registry,
+      roots: missing,
+      uuid_generator: uuid_generator(*generated)
+    )
+
+    assert_equal MODEL_ID, plan.model_id
+    assert_equal generated, missing.map { |entity| plan.source_uuid_for(entity) }
+    assert_equal 1, materializations,
+                 'registry snapshots must not be rebuilt inside the per-entity identity loop'
+  ensure
+    registry_class.define_method(:to_h, original_to_h) if original_to_h
+  end
+
   def test_registry_owned_original_wins_a_copied_attribute_collision
     original = entity(44, ORIGINAL_ID)
     copied = entity(12, ORIGINAL_ID)

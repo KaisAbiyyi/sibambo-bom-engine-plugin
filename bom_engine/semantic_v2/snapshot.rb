@@ -469,7 +469,7 @@ module BOMEngine
                     :foreign_source_provenance
 
         def initialize(model_id:, scope:, model_context:, occurrences:, definitions:, primitives:,
-                       materials:, evidence:, foreign_source_provenance:, diagnostics:)
+                       materials:, evidence:, foreign_source_provenance:, diagnostics:, progress: nil)
           @model_id = Validation.uuid(model_id, 'model_id')
           unless scope.is_a?(ExtractionScope) && scope.frozen?
             raise ArgumentError, 'scope must be an immutable ExtractionScope record'
@@ -479,19 +479,20 @@ module BOMEngine
             raise ArgumentError, 'model_context must be an immutable ModelContext record'
           end
           @model_context = model_context
-          @occurrences = records(occurrences, Occurrence, 'occurrences')
-          @definitions = records(definitions, Definition, 'definitions')
-          @primitives = records(primitives, PolygonFragment, 'primitives')
-          @materials = records(materials, Material, 'materials')
-          @evidence = evidence_records(evidence)
+          @occurrences = records(occurrences, Occurrence, 'occurrences', progress)
+          @definitions = records(definitions, Definition, 'definitions', progress)
+          @primitives = records(primitives, PolygonFragment, 'primitives', progress)
+          @materials = records(materials, Material, 'materials', progress)
+          @evidence = evidence_records(evidence, progress)
           @foreign_source_provenance = records(
             foreign_source_provenance,
             ForeignSourceProvenance,
-            'foreign_source_provenance'
+            'foreign_source_provenance',
+            progress
           )
           Validation.frozen_array(diagnostics, 'diagnostics')
           @diagnostics = diagnostics.map { |item| Validation.text(item) }.freeze
-          validate_graph!
+          validate_graph!(progress)
           freeze
         end
 
@@ -501,14 +502,18 @@ module BOMEngine
 
         private
 
-        def records(value, type, field)
+        def records(value, type, field, progress)
           Validation.frozen_array(value, field)
-          raise ArgumentError, "#{field} must contain #{type.name.split('::').last} records" unless value.all? { |item| item.is_a?(type) && item.frozen? }
+          valid = value.all? do |item|
+            report_progress(progress)
+            item.is_a?(type) && item.frozen?
+          end
+          raise ArgumentError, "#{field} must contain #{type.name.split('::').last} records" unless valid
 
           value.dup.freeze
         end
 
-        def evidence_records(value)
+        def evidence_records(value, progress)
           Validation.frozen_array(value, 'evidence')
           permitted = [
             ConstructionHint,
@@ -517,22 +522,38 @@ module BOMEngine
             ExclusionEvidence,
             AdjacencyBoundary
           ]
-          unless value.all? { |item| permitted.any? { |type| item.is_a?(type) } && item.frozen? }
+          unless value.all? do |item|
+                   report_progress(progress)
+                   permitted.any? { |type| item.is_a?(type) } && item.frozen?
+                 end
             raise ArgumentError, 'evidence must contain neutral evidence records'
           end
           value.dup.freeze
         end
 
-        def validate_graph!
-          primitive_keys = @primitives.map(&:key)
+        def validate_graph!(progress)
+          primitive_keys = @primitives.map do |primitive|
+            report_progress(progress)
+            primitive.key
+          end
           raise ArgumentError, 'duplicate primitive key' unless primitive_keys.uniq.length == primitive_keys.length
 
-          definition_uuids = @definitions.map(&:source_uuid)
+          definition_uuids = @definitions.map do |definition|
+            report_progress(progress)
+            definition.source_uuid
+          end
           raise ArgumentError, 'duplicate definition source_uuid' unless definition_uuids.uniq.length == definition_uuids.length
-          unless @occurrences.all? { |occurrence| definition_uuids.include?(occurrence.definition_uuid) }
+          definition_uuid_lookup = definition_uuids.each_with_object({}) do |uuid, lookup|
+            lookup[uuid] = true
+          end
+          unless @occurrences.all? do |occurrence|
+                   report_progress(progress)
+                   definition_uuid_lookup.key?(occurrence.definition_uuid)
+                 end
             raise ArgumentError, 'unresolved occurrence definition ownership'
           end
           root_occurrence = @occurrences.find do |occurrence|
+            report_progress(progress)
             occurrence.uuid_path == @scope.context_occurrence_uuid_path &&
               occurrence.definition_uuid == @scope.root_definition_uuid
           end
@@ -547,33 +568,53 @@ module BOMEngine
               @scope.root_definition_uuid != @model_id)
             raise ArgumentError, 'model scope must use the model root context and definition'
           end
-          unless @primitives.all? { |primitive| definition_uuids.include?(primitive.definition_uuid) }
+          unless @primitives.all? do |primitive|
+                   report_progress(progress)
+                   definition_uuid_lookup.key?(primitive.definition_uuid)
+                 end
             raise ArgumentError, 'unresolved definition ownership'
           end
           definitions_by_uuid = @definitions.each_with_object({}) do |definition, by_uuid|
+            report_progress(progress)
             by_uuid[definition.source_uuid] = definition
           end
           primitives_by_key = @primitives.each_with_object({}) do |primitive, by_key|
+            report_progress(progress)
             by_key[primitive.key] = primitive
           end
           adjacency_keys = @primitives.flat_map do |primitive|
+            report_progress(progress)
             primitive.loops.flat_map(&:adjacent_primitive_keys)
           end
           unless adjacency_keys.all? { |key| primitives_by_key.key?(key) }
             raise ArgumentError, 'unresolved primitive adjacency'
           end
-          @evidence.grep(AdjacencyBoundary).each do |boundary|
+          evidence_by_type = @evidence.each_with_object(Hash.new { |hash, key| hash[key] = [] }) do |item, by_type|
+            report_progress(progress)
+            by_type[item.class] << item
+          end
+          evidence_by_type[AdjacencyBoundary].each do |boundary|
+            report_progress(progress)
             primitive = primitives_by_key[boundary.target_key]
             edge_owned = primitive && primitive.loops.any? do |loop|
               loop.edge_source_uuids.include?(boundary.edge_source_uuid)
             end
             raise ArgumentError, 'unresolved adjacency boundary owner/edge' unless edge_owned
           end
-          validate_evidence_graph!(definitions_by_uuid, primitives_by_key)
+          validate_evidence_graph!(definitions_by_uuid, primitives_by_key, evidence_by_type, progress)
+          primitive_key_ownership = @definitions.each_with_object({}) do |definition, by_definition|
+            report_progress(progress)
+            by_definition[definition.source_uuid] = definition.primitive_keys.each_with_object({}) do |key, keys|
+              report_progress(progress)
+              keys[key] = true
+            end
+          end
           owned = @primitives.all? do |primitive|
-            definitions_by_uuid.fetch(primitive.definition_uuid).primitive_keys.include?(primitive.key)
+            report_progress(progress)
+            primitive_key_ownership.fetch(primitive.definition_uuid).key?(primitive.key)
           end
           declared = @definitions.all? do |definition|
+            report_progress(progress)
             definition.primitive_keys.all? do |key|
               primitive = primitives_by_key[key]
               primitive && primitive.definition_uuid == definition.source_uuid
@@ -581,29 +622,39 @@ module BOMEngine
           end
           raise ArgumentError, 'unresolved definition ownership' unless owned && declared
 
-          material_uuids = @materials.map(&:source_uuid)
+          material_uuids = @materials.map do |material|
+            report_progress(progress)
+            material.source_uuid
+          end
           referenced_materials = @primitives.flat_map do |primitive|
+            report_progress(progress)
             [primitive.front_material_uuid, primitive.back_material_uuid].compact
           end
           referenced_materials.concat(@occurrences.map(&:material_uuid).compact)
-          raise ArgumentError, 'unresolved material ownership' unless (referenced_materials - material_uuids).empty?
+          material_uuid_lookup = material_uuids.each_with_object({}) { |uuid, lookup| lookup[uuid] = true }
+          unless referenced_materials.all? { |uuid| material_uuid_lookup.key?(uuid) }
+            raise ArgumentError, 'unresolved material ownership'
+          end
         end
 
-        def validate_evidence_graph!(definitions_by_uuid, primitives_by_key)
+        def validate_evidence_graph!(definitions_by_uuid, primitives_by_key, evidence_by_type, progress)
           occurrences_by_path = @occurrences.each_with_object({}) do |occurrence, by_path|
+            report_progress(progress)
             by_path[occurrence.uuid_path] = occurrence
           end
 
-          construction_hints = @evidence.grep(ConstructionHint) +
+          construction_hints = evidence_by_type[ConstructionHint] +
                                @primitives.flat_map(&:construction_hints)
           construction_hints.uniq.each do |hint|
+            report_progress(progress)
             primitive = primitives_by_key[hint.target_key]
             unless primitive && primitive.source_uuid == hint.source_uuid
               raise ArgumentError, 'unresolved construction evidence target/source correspondence'
             end
           end
 
-          @evidence.grep(LabelEvidence).each do |label|
+          evidence_by_type[LabelEvidence].each do |label|
+            report_progress(progress)
             resolved = evidence_target_resolved?(
               label.target_kind,
               label.target_key,
@@ -624,8 +675,9 @@ module BOMEngine
             end
           end
 
-          exclusions = @evidence.grep(ExclusionEvidence)
+          exclusions = evidence_by_type[ExclusionEvidence]
           exclusions.each do |item|
+            report_progress(progress)
             resolved = if item.eligible
                          evidence_target_resolved?(
                            item.target_kind,
@@ -643,14 +695,19 @@ module BOMEngine
             raise ArgumentError, 'unresolved eligibility evidence target' unless resolved
           end
 
-          @evidence.grep(VisibilityEvidence).each do |item|
-            eligibility = exclusions.find do |candidate|
-              candidate.target_kind == item.target_kind &&
-                candidate.target_key == item.target_key &&
-                candidate.source_uuid == item.source_uuid
-            end
-            raise ArgumentError, 'unresolved visibility evidence target' if eligibility.nil?
+          eligibility_keys = exclusions.each_with_object({}) do |item, keys|
+            report_progress(progress)
+            keys[[item.target_kind, item.target_key, item.source_uuid]] = true
           end
+          evidence_by_type[VisibilityEvidence].each do |item|
+            report_progress(progress)
+            key = [item.target_kind, item.target_key, item.source_uuid]
+            raise ArgumentError, 'unresolved visibility evidence target' unless eligibility_keys.key?(key)
+          end
+        end
+
+        def report_progress(progress)
+          progress.call('Validating neutral snapshot graph') if progress
         end
 
         def evidence_target_resolved?(kind, key, occurrences_by_path, primitives_by_key)

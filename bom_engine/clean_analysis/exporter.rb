@@ -18,7 +18,8 @@ module BOMEngine
         plan = identity_plan || SemanticV2::IdentityCoordinator.plan(
           model: model,
           roots: root_items,
-          progress: batcher.method(:step)
+          progress: batcher.method(:step),
+          prepare_model_writes: false
         )
         extraction_settings = {
           include_hidden: false,
@@ -35,7 +36,11 @@ module BOMEngine
         batcher.force('Compiling architectural surfaces')
         document = Compiler.compile(snapshot, progress: batcher.method(:step))
         batcher.force('Writing clean JSON')
-        result = Writer.write(output_path, document).merge(document: document)
+        result = Writer.write(
+          output_path,
+          document,
+          progress: batcher.method(:step)
+        ).merge(document: document)
         batcher.force('Clean export complete')
         result
       end

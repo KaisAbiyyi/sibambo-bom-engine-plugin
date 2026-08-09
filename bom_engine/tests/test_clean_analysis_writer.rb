@@ -42,6 +42,30 @@ class CleanAnalysisWriterTest < Minitest::Test
     assert_match(/redundant geometry key: triangles/, error.message)
   end
 
+  def test_cooperative_write_matches_pretty_json_bytes_and_reports_progress
+    events = []
+    error = nil
+
+    Dir.mktmpdir('clean-analysis-streaming-writer') do |directory|
+      path = File.join(directory, 'streamed_clean.json')
+      begin
+        BOMEngine::CleanAnalysis::Writer.write(
+          path,
+          clean_document,
+          progress: ->(stage) { events << stage }
+        )
+      rescue ArgumentError => caught
+        error = caught
+      end
+
+      assert_nil error
+      assert_equal JSON.pretty_generate(clean_document) + "\n", File.binread(path)
+    end
+
+    assert_operator events.length, :>, 10
+    assert events.all? { |stage| stage == 'Writing clean JSON' }
+  end
+
   def test_blocks_every_invalid_surface_polygon_invariant
     invalid_surfaces = {
       'outer requires three vertices' => valid_surface.merge(

@@ -173,4 +173,32 @@ class CleanAnalysisBatchingTest < Minitest::Test
     assert_nil job_class.active
     assert_equal 1, UI.messages.length
   end
+
+  def test_progress_batcher_yields_on_time_budget_before_a_large_item_batch_is_full
+    now = 0.0
+    events = []
+    batcher = nil
+    error = nil
+
+    begin
+      batcher = BOMEngine::CleanAnalysis::ProgressBatcher.new(
+        ->(event) { events << event },
+        8_192,
+        clock: -> { now },
+        max_slice_seconds: 0.08
+      )
+    rescue ArgumentError => caught
+      error = caught
+    end
+
+    assert_nil error
+    batcher.step('Extracting polygon fragments')
+    assert_empty events
+    now = 0.081
+    batcher.step('Extracting polygon fragments')
+
+    assert_equal [
+      { stage: 'Extracting polygon fragments', processed: 2 }
+    ], events
+  end
 end

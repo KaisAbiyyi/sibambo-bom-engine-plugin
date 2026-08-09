@@ -76,7 +76,7 @@ module BOMEngine
 
       class << self
         def plan(model:, roots:, uuid_generator: -> { SecureRandom.uuid }, runtime_version: nil,
-                 progress: nil)
+                 progress: nil, prepare_model_writes: true)
           validate_runtime_version!(detected_runtime_version || runtime_version)
           entities = recursively_collect(identity_roots(model, roots), progress)
           validate_persistent_owners!(entities)
@@ -95,7 +95,7 @@ module BOMEngine
             report_progress(progress)
             (valid_entity_identity?(entity) ? valid : invalid) << entity
           end
-          destination_model_id = registry.to_h.fetch('model_id')
+          destination_model_id = registry.model_id
           domestic = []
           foreign = []
           valid.each do |entity|
@@ -158,9 +158,9 @@ module BOMEngine
             assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
           end
 
-          model_writes = planned_model_writes(model, registry)
+          model_writes = prepare_model_writes ? planned_model_writes(model, registry) : {}.freeze
           Plan.new(
-            model_id: registry.to_h.fetch('model_id'),
+            model_id: registry.model_id,
             registry: registry,
             source_uuids: source_uuids,
             entity_writes: entity_writes,
@@ -435,7 +435,7 @@ module BOMEngine
         def assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
           owner_pid = entity.persistent_id
           source_uuid = pending_uuid_for(pending, entity, uuid_generator)
-          origin_model_id = registry.to_h.fetch('model_id')
+          origin_model_id = registry.model_id
           registry.plan_source_claim(
             source_uuid: source_uuid,
             owner_pid: owner_pid,

@@ -244,6 +244,23 @@ class SemanticV2SnapshotTest < Minitest::Test
     refute_respond_to snapshot, :serialize
   end
 
+  def test_document_reports_progress_while_validating_the_snapshot_graph
+    stages = []
+    result = nil
+    error = nil
+
+    begin
+      result = document(progress: ->(stage) { stages << stage })
+    rescue ArgumentError => caught
+      error = caught
+    end
+
+    assert_nil error
+    refute_nil result
+    assert_operator stages.length, :>=, 3
+    assert stages.all? { |stage| stage == 'Validating neutral snapshot graph' }
+  end
+
   def test_all_neutral_evidence_record_types_remain_value_objects
     material = snapshot::Material.new(
       source_uuid: MATERIAL_ID,
@@ -499,7 +516,7 @@ class SemanticV2SnapshotTest < Minitest::Test
   end
 
   def document(primitives: [polygon].freeze, evidence: [].freeze,
-               foreign_source_provenance: [].freeze)
+               foreign_source_provenance: [].freeze, progress: nil)
     definition = snapshot::Definition.new(
       source_uuid: DEFINITION_ID,
       kind: 'component',
@@ -520,7 +537,8 @@ class SemanticV2SnapshotTest < Minitest::Test
       materials: [].freeze,
       evidence: evidence,
       foreign_source_provenance: foreign_source_provenance,
-      diagnostics: [].freeze
+      diagnostics: [].freeze,
+      progress: progress
     )
   end
 
