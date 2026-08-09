@@ -108,7 +108,7 @@ module BOMEngine
         existing = @semantic_lineage.dig(type, exact_key)
         if existing
           return SemanticResolution.new(
-            semantic_uuid: existing.fetch('semantic_uuid'),
+            semantic_uuid: detached_string(existing.fetch('semantic_uuid')),
             outcome: 'exact_lineage_match',
             diagnostics: []
           ).freeze
@@ -124,7 +124,7 @@ module BOMEngine
         }
         @changed = true
         SemanticResolution.new(
-          semantic_uuid: semantic_uuid,
+          semantic_uuid: detached_string(semantic_uuid),
           outcome: 'new_identity',
           diagnostics: []
         ).freeze
@@ -231,7 +231,7 @@ module BOMEngine
       end
 
       def normalize_uuid(value, label)
-        uuid = value.to_s.downcase
+        uuid = value.to_s.downcase.freeze
         raise ArgumentError, "invalid #{label}: #{value.inspect}" unless UUID_PATTERN.match?(uuid)
 
         uuid
@@ -244,7 +244,7 @@ module BOMEngine
       end
 
       def normalize_nonempty_string(value, label)
-        string = value.to_s
+        string = value.to_s.dup.freeze
         raise ArgumentError, "#{label} cannot be empty" if string.empty?
 
         string
@@ -252,10 +252,14 @@ module BOMEngine
 
       def source_claim_value(claim)
         SourceClaim.new(
-          source_uuid: claim.fetch('source_uuid'),
+          source_uuid: detached_string(claim.fetch('source_uuid')),
           owner_pid: claim.fetch('owner_pid'),
-          origin_model_id: claim.fetch('origin_model_id')
+          origin_model_id: detached_string(claim.fetch('origin_model_id'))
         ).freeze
+      end
+
+      def detached_string(value)
+        value.dup.freeze
       end
 
       def stringify_keys(value)

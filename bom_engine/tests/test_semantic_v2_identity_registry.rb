@@ -209,6 +209,80 @@ class SemanticV2IdentityRegistryTest < Minitest::Test
     assert_equal 3, registry.next_revision
   end
 
+  def test_returned_source_claim_cannot_mutate_registry_state
+    raw = JSON.generate(
+      'model_id' => MODEL_ID,
+      'revision' => 7,
+      'prepared_generation' => nil,
+      'source_claims' => {
+        SOURCE_ID => {
+          'source_uuid' => SOURCE_ID,
+          'owner_pid' => 42,
+          'origin_model_id' => MODEL_ID
+        }
+      },
+      'semantic_lineage' => {}
+    )
+    registry = registry_from(raw, [])
+    claim = registry.plan_source_claim(
+      source_uuid: SOURCE_ID,
+      owner_pid: 42,
+      origin_model_id: MODEL_ID
+    )
+    persisted = registry.to_h
+
+    claim.source_uuid.replace(SEMANTIC_ID) unless claim.source_uuid.frozen?
+    claim.origin_model_id.replace(GENERATION_ID) unless claim.origin_model_id.frozen?
+
+    assert_equal persisted, registry.to_h
+    refute registry.changed?
+    assert_equal 7, registry.next_revision
+  end
+
+  def test_returned_semantic_resolution_cannot_mutate_registry_state
+    raw = JSON.generate(
+      'model_id' => MODEL_ID,
+      'revision' => 7,
+      'prepared_generation' => nil,
+      'source_claims' => {},
+      'semantic_lineage' => {
+        'Wall' => {
+          'wall-lineage-key' => {
+            'semantic_uuid' => SEMANTIC_ID,
+            'type' => 'Wall',
+            'exact_key' => 'wall-lineage-key'
+          }
+        }
+      }
+    )
+    registry = registry_from(raw, [])
+    resolution = registry.resolve_semantic(
+      type: 'Wall',
+      exact_key: 'wall-lineage-key',
+      candidates: []
+    )
+    persisted = registry.to_h
+
+    resolution.semantic_uuid.replace(SOURCE_ID) unless resolution.semantic_uuid.frozen?
+
+    assert_equal persisted, registry.to_h
+    refute registry.changed?
+    assert_equal 7, registry.next_revision
+  end
+
+  def test_caller_owned_semantic_strings_cannot_mutate_registry_state
+    type = String.new('Wall')
+    exact_key = String.new('wall-lineage-key')
+    registry = registry_from(nil, [MODEL_ID, SEMANTIC_ID])
+    registry.resolve_semantic(type: type, exact_key: exact_key, candidates: [])
+    persisted = registry.to_h
+
+    type.replace('Door')
+    exact_key.replace('mutated-lineage-key')
+
+    assert_equal persisted, registry.to_h
+  end
+
   def test_rejects_invalid_uuids_in_loaded_and_planned_state
     assert_raises(ArgumentError) do
       registry_from(JSON.generate('model_id' => 'not-a-uuid', 'revision' => 0))
