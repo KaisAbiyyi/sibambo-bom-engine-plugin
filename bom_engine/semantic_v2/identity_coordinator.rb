@@ -1,0 +1,239 @@
+# frozen_string_literal: true
+
+require 'securerandom'
+
+require_relative 'canonical_json'
+require_relative 'identity_registry'
+
+module BOMEngine
+  module SemanticV2
+    # Produces source identities without mutating SketchUp and owns the isolated
+    # model write primitive used later by recoverable publication.
+    class IdentityCoordinator
+      DICTIONARY = 'BOMEngine.SemanticV2'
+      SOURCE_UUID_KEY = 'source_uuid'
+      ORIGIN_MODEL_ID_KEY = 'origin_model_id'
+      MODEL_ID_KEY = 'model_id'
+      REGISTRY_JSON_KEY = 'registry_json'
+      REGISTRY_REVISION_KEY = 'registry_revision'
+      OPERATION_NAME = 'BOM Engine Semantic v2 Identity'
+
+      EntityWrite = Struct.new(:entity, :source_uuid, :origin_model_id, keyword_init: true)
+
+      # Immutable lookup result consumed by compilation before any model write.
+      class Plan
+        attr_reader :model_id, :registry, :diagnostics
+
+        def initialize(model_id:, registry:, source_uuids:, entity_writes:, model_writes:, diagnostics:)
+          @model_id = model_id.dup.freeze
+          @registry = registry
+          @source_uuids = source_uuids.freeze
+          @entity_writes = entity_writes.freeze
+          @model_writes = model_writes.freeze
+          @diagnostics = diagnostics.map { |item| item.dup.freeze }.freeze
+          freeze
+        end
+
+        def source_uuid_for(entity)
+          @source_uuids.fetch(entity)
+        end
+
+        def occurrence_uuid_for(instance)
+          source_uuid_for(instance)
+        end
+
+        def write_required?
+          registry.changed? || !@entity_writes.empty? || !@model_writes.empty?
+        end
+
+        private
+
+        attr_reader :entity_writes, :model_writes
+      end
+
+      class << self
+        def plan(model:, roots:, uuid_generator: -> { SecureRandom.uuid })
+          registry = load_registry(model, uuid_generator)
+          entities = recursively_collect(roots)
+          source_uuids = {}
+          entity_writes = []
+          diagnostics = []
+
+          valid, invalid = entities.partition { |entity| valid_entity_identity?(entity) }
+          valid.group_by { |entity| normalized_source_uuid(entity) }.each_value do |claims|
+            assign_valid_claims(
+              claims,
+              registry,
+              source_uuids,
+              entity_writes,
+              diagnostics,
+              uuid_generator
+            )
+          end
+          invalid.each do |entity|
+            assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator)
+          end
+
+          model_writes = planned_model_writes(model, registry)
+          Plan.new(
+            model_id: registry.to_h.fetch('model_id'),
+            registry: registry,
+            source_uuids: source_uuids,
+            entity_writes: entity_writes,
+            model_writes: model_writes,
+            diagnostics: diagnostics.uniq
+          )
+        end
+
+        private
+
+        def commit!(model:, plan:)
+          return plan unless plan.write_required?
+
+          model.start_operation(OPERATION_NAME, true)
+          begin
+            plan.send(:entity_writes).each do |write|
+              write.entity.set_attribute(DICTIONARY, SOURCE_UUID_KEY, write.source_uuid)
+              write.entity.set_attribute(DICTIONARY, ORIGIN_MODEL_ID_KEY, write.origin_model_id)
+            end
+            planned_model_writes(model, plan.registry).each do |key, value|
+              model.set_attribute(DICTIONARY, key, value)
+            end
+            model.commit_operation
+          rescue Exception
+            model.abort_operation
+            raise
+          end
+          plan
+        end
+
+        def load_registry(model, uuid_generator)
+          raw = model.get_attribute(DICTIONARY, REGISTRY_JSON_KEY, nil)
+          return IdentityRegistry.load(raw, uuid_generator: uuid_generator) unless raw.nil? || raw.to_s.strip.empty?
+
+          model_id = model.get_attribute(DICTIONARY, MODEL_ID_KEY, nil)
+          revision = model.get_attribute(DICTIONARY, REGISTRY_REVISION_KEY, 0)
+          if IdentityRegistry::UUID_PATTERN.match?(model_id.to_s) && revision.is_a?(Integer) && revision >= 0
+            IdentityRegistry.load(
+              {
+                'model_id' => model_id,
+                'revision' => revision,
+                'prepared_generation' => nil,
+                'source_claims' => {},
+                'semantic_lineage' => {}
+              },
+              uuid_generator: uuid_generator
+            )
+          else
+            IdentityRegistry.load(nil, uuid_generator: uuid_generator)
+          end
+        end
+
+        def recursively_collect(roots)
+          entities = []
+          visited = {}
+          visit_collection = nil
+          visit_entity = lambda do |entity|
+            identity = entity.__id__
+            return if visited[identity]
+
+            visited[identity] = true
+            entities << entity
+            children = entity.entities if entity.respond_to?(:entities)
+            visit_collection.call(children) if children
+            definition = entity.definition if entity.respond_to?(:definition)
+            visit_entity.call(definition) if definition
+          end
+          visit_collection = lambda do |collection|
+            collection.each { |entity| visit_entity.call(entity) }
+          end
+          visit_collection.call(roots)
+          entities
+        end
+
+        def valid_entity_identity?(entity)
+          IdentityRegistry::UUID_PATTERN.match?(entity_source_uuid(entity).to_s) &&
+            IdentityRegistry::UUID_PATTERN.match?(entity_origin_model_id(entity).to_s) &&
+            valid_persistent_id?(entity)
+        end
+
+        def valid_persistent_id?(entity)
+          entity.respond_to?(:persistent_id) && entity.persistent_id.is_a?(Integer) && entity.persistent_id >= 0
+        end
+
+        def entity_source_uuid(entity)
+          entity.get_attribute(DICTIONARY, SOURCE_UUID_KEY, nil)
+        end
+
+        def entity_origin_model_id(entity)
+          entity.get_attribute(DICTIONARY, ORIGIN_MODEL_ID_KEY, nil)
+        end
+
+        def normalized_source_uuid(entity)
+          entity_source_uuid(entity).downcase
+        end
+
+        def assign_valid_claims(claims, registry, source_uuids, entity_writes, diagnostics, uuid_generator)
+          winner = if claims.length == 1
+                     claims.first
+                   else
+                     resolution = registry.resolve_source_collision(
+                       source_uuid: normalized_source_uuid(claims.first),
+                       claims: claims.map { |entity| { owner_pid: entity.persistent_id } }
+                     )
+                     diagnostics.concat(resolution.diagnostics)
+                     claims.find { |entity| entity.persistent_id == resolution.owner_pid }
+                   end
+
+          assign_preserved_identity(winner, registry, source_uuids, entity_writes, uuid_generator)
+          (claims - [winner]).each do |entity|
+            assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator)
+          end
+        end
+
+        def assign_preserved_identity(entity, registry, source_uuids, entity_writes, uuid_generator)
+          source_uuid = normalized_source_uuid(entity)
+          origin_model_id = entity_origin_model_id(entity).downcase
+          registry.plan_source_claim(
+            source_uuid: source_uuid,
+            owner_pid: entity.persistent_id,
+            origin_model_id: origin_model_id
+          )
+          source_uuids[entity] = source_uuid.freeze
+        rescue ArgumentError => error
+          raise unless error.message.start_with?('source UUID already belongs')
+
+          assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator)
+        end
+
+        def assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator)
+          source_uuid = uuid_generator.call.to_s.downcase
+          origin_model_id = registry.to_h.fetch('model_id')
+          registry.plan_source_claim(
+            source_uuid: source_uuid,
+            owner_pid: entity.persistent_id,
+            origin_model_id: origin_model_id
+          )
+          source_uuids[entity] = source_uuid.freeze
+          entity_writes << EntityWrite.new(
+            entity: entity,
+            source_uuid: source_uuid.freeze,
+            origin_model_id: origin_model_id.dup.freeze
+          ).freeze
+        end
+
+        def planned_model_writes(model, registry)
+          state = registry.to_h
+          desired = {
+            MODEL_ID_KEY => state.fetch('model_id'),
+            REGISTRY_JSON_KEY => CanonicalJSON.generate(state),
+            REGISTRY_REVISION_KEY => state.fetch('revision')
+          }
+          desired.reject do |key, value|
+            model.get_attribute(DICTIONARY, key, nil) == value
+          end.freeze
+        end
+      end
+    end
+  end
+end
