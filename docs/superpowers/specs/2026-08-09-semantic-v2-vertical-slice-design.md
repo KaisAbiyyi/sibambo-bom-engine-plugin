@@ -66,6 +66,8 @@ The extraction snapshot is an internal compiler representation. It must not acqu
 
 Semantic v2 code may depend on extraction, identity, reconstruction policy, and shared mathematical utilities. It may not require, parse, adapt from, or construct Canonical v3, BOME2, or Model-Eval JSON. Compatibility code may adapt the extraction snapshot to the current canonical graph.
 
+The final architecture has one shared extraction traversal, but migration reaches it in two checkpoints. The new identity, extraction, and Semantic v2 compiler path is implemented and independently tested while the existing Canonical v3/BOME2 traversal remains unchanged. Only after the native Semantic v2 path passes its plugin and `model-eval` acceptance tests does a separate compatibility-adapter milestone move Canonical v3 onto the shared snapshot. The two traversals may coexist temporarily; combining both migrations into one change is prohibited.
+
 ### 4.2 Authority hierarchy
 
 For a reconstructed semantic entity:
@@ -201,13 +203,23 @@ Semantic certainty and property completeness are independent. A reliably identif
 
 New wall baselines use lexicographically ordered XY endpoints. A reconciled wall retains its prior baseline direction so host-relative opening and room-range coordinates do not flip.
 
+Alignment is defined mathematically from that authoritative direction. For baseline start `p0`, end `p1`, length `L`, unit tangent `d = (p1 - p0) / L`, and left unit normal `n = (-d.y, d.x)`:
+
+- `center`: wall material occupies normal offsets `[-thickness_m / 2, +thickness_m / 2]` from the baseline.
+- `left`: the baseline is the left reference face and wall material occupies offsets `[-thickness_m, 0]`.
+- `right`: the baseline is the right reference face and wall material occupies offsets `[0, +thickness_m]`.
+
+Positive offsets always follow `n`. When thickness is unknown, alignment remains authoritative but physical face offsets are unavailable.
+
 ### 5.9 Floor
 
 A Floor has an ordered non-self-intersecting outer XY boundary, zero or more ordered hole boundaries, level-relative elevation, and nullable `thickness_m`. A reliable floor remains semantic when thickness or construction is unknown.
 
 ### 5.10 Opening
 
-An Opening has a host-relative normalized or metric offset, sill/base offset, width, height, and authoritative `kind`:
+An Opening has exactly one authoritative horizontal placement representation: normalized host coordinate `u_center` in `[0, 1]`, measured along the authoritative host-wall baseline direction. Vertical placement and dimensions remain metric through `base_offset_m`, `width_m`, and `height_m`. A metric horizontal host offset must not coexist as an alternative authoritative property. Consumers derive the metric center distance as `u_center * host_wall_length_m` and validate that the opening's half-width remains inside the host range.
+
+Opening `kind` is authoritative:
 
 ```text
 door | window | void | unknown
@@ -229,7 +241,7 @@ A Room references ordered boundary relationships and a floor relationship. Its i
 }
 ```
 
-Future minor versions may add ceiling-surface, boundary-profile, or height-field variants without changing room identity or boundary relationships.
+Ceiling-surface, boundary-profile, or height-field variants may be introduced without changing room identity or boundary relationships, but a new tagged-union variant is not automatically safe for an older reader. A variant that an older reader cannot interpret requires either a negotiated format version that reader rejects or a declared required extension. Optional-extension handling is allowed only when ignoring the variant cannot alter required geometry, validation, rendering, or analysis behavior.
 
 ### 5.12 GenericMesh
 
@@ -244,6 +256,8 @@ The normalized relationship table is authoritative. Entities do not duplicate di
 - `room_floor`
 - `wall_opening`
 - `room_adjacency`
+
+`room_adjacency` means that two Rooms share a nonzero spatial boundary range. It does not mean that occupants, air, light, or services can pass between them. Traversable or airflow connectivity through an Opening is reserved for a separate future relationship such as `space_connectivity`; consumers must not infer it from `room_adjacency` alone.
 
 A room-boundary relationship includes an ordered normalized wall interval:
 
@@ -575,7 +589,9 @@ This protocol provides recovery and detection, not false cross-domain atomicity.
 
 ## 13. Compatibility adapter
 
-The current Canonical v3 builder is refactored to consume the extraction snapshot through a dedicated adapter. The adapter preserves existing definition-local geometry, instance transforms, holes, labels, materials, IDs, and exporter settings. BOME2 continues to derive from the current canonical graph.
+The final Canonical v3 builder consumes the extraction snapshot through a dedicated adapter. The adapter preserves existing definition-local geometry, instance transforms, holes, labels, materials, IDs, and exporter settings. BOME2 continues to derive from the current canonical graph.
+
+This migration is deliberately staged. The initial identity/extraction and Semantic v2 milestones add a new traversal path without modifying the existing Canonical v3 traversal. After Semantic v2 serialization and native `model-eval` consumption pass independently, the legacy-adapter milestone ports Canonical v3 to the shared snapshot behind its existing public interfaces. Each checkpoint keeps the prior legacy path as the rollback boundary until parity tests pass.
 
 Existing Canonical v3, BOME2, and Model-Eval JSON commands and schemas remain available. Semantic v2 receives a distinct export option and becomes the preferred architecture without silently changing legacy output contracts.
 
