@@ -195,6 +195,10 @@ module BOMEngine
             visit_collection.call(children) if children
             definition = entity.definition if entity.respond_to?(:definition)
             visit_entity.call(definition) if definition
+            material = entity.material if entity.respond_to?(:material)
+            visit_entity.call(material) if material
+            back_material = entity.back_material if entity.respond_to?(:back_material)
+            visit_entity.call(back_material) if back_material
           end
           visit_collection = lambda do |collection|
             collection.each { |entity| visit_entity.call(entity) }

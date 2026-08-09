@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require 'digest'
 require_relative '../semantic_labeler'
 require_relative 'snapshot'
 
@@ -42,6 +41,12 @@ module BOMEngine
           checkpoint('Extracting neutral snapshot')
           root_uuid = uuid(@identity_plan.model_id, 'model_id')
           @definition_data[root_uuid] = { kind: 'model', primitive_keys: [], children: [] }
+          root_transform = matrix(parent_transform)
+          @occurrences << Snapshot::Occurrence.new(
+            uuid_path: [].freeze,
+            definition_uuid: root_uuid,
+            transform: normalized_transform(root_transform)
+          )
           root_items = Array(roots)
           index_direct_attached_labels(root_items)
           root_items.each do |entity|
@@ -49,7 +54,7 @@ module BOMEngine
               extract_face(entity, definition_uuid: root_uuid, owner_chain: [])
             elsif instance?(entity)
               ensure_definition(entity.definition)
-              emit_occurrence(entity, parent_path: [], parent_transform: matrix(parent_transform))
+              emit_occurrence(entity, parent_path: [], parent_transform: root_transform)
             end
           end
           checkpoint('Neutral snapshot ready')
@@ -63,7 +68,7 @@ module BOMEngine
           return definition_uuid if @definition_data.key?(definition_uuid)
 
           entry = {
-            kind: definition.respond_to?(:kind) ? definition.kind.to_s : 'component',
+            kind: definition_kind(definition),
             primitive_keys: [],
             children: []
           }
@@ -177,11 +182,7 @@ module BOMEngine
             alpha_channel(material, color)
           ].freeze
           texture = texture_hint(material.respond_to?(:texture) ? material.texture : nil)
-          material_source_uuid = optional_source_uuid(material)
-          if material_source_uuid.nil?
-            material_source_uuid = appearance_uuid(rgba, texture)
-            @diagnostics << 'material.virtual_appearance_identity'
-          end
+          material_source_uuid = source_uuid(material)
           return material_source_uuid if @materials.key?(material_source_uuid)
 
           @materials[material_source_uuid] = Snapshot::Material.new(
@@ -191,20 +192,6 @@ module BOMEngine
             texture: texture
           )
           material_source_uuid
-        end
-
-        def appearance_uuid(rgba, texture)
-          seed = [
-            @identity_plan.model_id,
-            rgba.join(','),
-            texture && texture[:filename],
-            texture && texture[:width],
-            texture && texture[:height]
-          ].map(&:to_s).join("\0")
-          hex = Digest::SHA256.hexdigest(seed)[0, 32]
-          hex[12] = '5'
-          hex[16] = ((hex[16].to_i(16) & 0x3) | 0x8).to_s(16)
-          [hex[0, 8], hex[8, 4], hex[12, 4], hex[16, 4], hex[20, 12]].join('-').freeze
         end
 
         def texture_hint(texture)
@@ -247,7 +234,9 @@ module BOMEngine
             attached = entity.respond_to?(:attached_to) ? entity.attached_to : nil
             path = attached.is_a?(Array) ? attached.first : nil
             path = path.to_a if path.respond_to?(:to_a)
-            target = Array(path).last
+            path_entities = Array(path)
+            target = path_entities.reverse.find { |candidate| instance?(candidate) }
+            target ||= path_entities.last
             label = SemanticLabeler.clean(entity.text)
             next if target.nil? || label.empty?
 
@@ -338,6 +327,13 @@ module BOMEngine
 
         def face?(entity)
           entity.respond_to?(:loops) && entity.respond_to?(:normal) && entity.respond_to?(:area)
+        end
+
+        def definition_kind(definition)
+          return 'group' if definition.respond_to?(:group?) && definition.group?
+          return definition.kind.to_s if definition.respond_to?(:kind)
+
+          'component'
         end
 
         def instance?(entity)

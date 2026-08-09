@@ -31,6 +31,11 @@ module BOMEngine
 
           shared = model.definitions.add('Semantic v2 Shared Door')
           shared_face = shared.entities.add_face([0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0])
+          front_material = model.materials.add('Semantic v2 Concrete')
+          front_material.color = Sketchup::Color.new(120, 121, 122)
+          alternate_material = model.materials.add('Semantic v2 Concrete Alternate')
+          alternate_material.color = Sketchup::Color.new(120, 121, 122)
+          shared_face.material = front_material
           inner = shared.entities.add_face([1, 1, 0], [1, 3, 0], [3, 3, 0], [3, 1, 0])
           inner.erase! if inner && !inner.deleted?
           first = fixture.entities.add_instance(shared, Geom::Transformation.translation([10, 0, 0]))
@@ -40,15 +45,22 @@ module BOMEngine
           nested = fixture.entities.add_group
           nested.name = 'Nested Group'
           nested.entities.add_face([0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0])
+          nested.material = alternate_material
+          nested_child = nested.entities.add_instance(
+            shared,
+            Geom::Transformation.translation([1, 0, 0])
+          )
 
           roots = fixture.entities.to_a
           plan = SemanticV2::IdentityCoordinator.plan(model: model, roots: roots)
           before_uuid = loose.get_attribute('BOMEngine.SemanticV2', 'source_uuid', nil)
-          extraction_roots = roots + [AttachedText.new('Pintu Utama', first)]
+          attached_text = build_attached_text(model, fixture, first, shared_face)
+          extraction_roots = roots + [attached_text]
+          parent_transform = Geom::Transformation.translation([2, 0, 0])
           snapshot = SemanticV2::Extractor.extract(
             model: model,
             roots: extraction_roots,
-            parent_transform: Geom::Transformation.new,
+            parent_transform: parent_transform,
             identity_plan: plan,
             settings: {
               include_hidden: false,
@@ -59,9 +71,15 @@ module BOMEngine
           assert(snapshot.primitives.any? { |item| item.source_uuid == plan.source_uuid_for(loose) }, 'loose face extracted')
           assert(snapshot.definitions.count { |item| item.source_uuid == plan.source_uuid_for(shared) } == 1, 'shared definition stored once')
           shared_occurrences = snapshot.occurrences.select { |item| item.definition_uuid == plan.source_uuid_for(shared) }
-          assert(shared_occurrences.length == 2, 'repeated instances have separate occurrences')
-          assert(shared_occurrences.map(&:uuid_path).uniq.length == 2, 'occurrences use UUID paths')
+          assert(shared_occurrences.length == 3, 'repeated and nested instances have separate occurrences')
+          assert(shared_occurrences.map(&:uuid_path).uniq.length == 3, 'occurrences use UUID paths')
+          nested_path = [plan.occurrence_uuid_for(nested), plan.occurrence_uuid_for(nested_child)]
+          assert(shared_occurrences.any? { |item| item.uuid_path == nested_path }, 'genuinely nested UUID occurrence path extracted')
           assert(snapshot.occurrences.any? { |item| item.definition_uuid == plan.source_uuid_for(nested.definition) }, 'nested group occurrence extracted')
+          group_definition = snapshot.definitions.find { |item| item.source_uuid == plan.source_uuid_for(nested.definition) }
+          assert(group_definition.kind == 'group', 'SketchUp group definition classified through group?')
+          root_occurrence = snapshot.occurrences.find { |item| item.uuid_path.empty? }
+          assert(root_occurrence && root_occurrence.transform[12] == 0.0508, 'parent transform represented by root occurrence')
           polygon = snapshot.primitives.find { |item| item.source_uuid == plan.source_uuid_for(shared_face) }
           assert(polygon.loops.count { |loop| loop.kind == 'hole' } == 1, 'face hole preserved')
           exclusions = snapshot.evidence.grep(SemanticV2::Snapshot::ExclusionEvidence)
@@ -69,6 +87,9 @@ module BOMEngine
           assert(exclusions.any? { |item| item.target_key.last == plan.source_uuid_for(policy_excluded) && item.reasons.include?('policy_excluded') }, 'policy exclusion preserved')
           labels = snapshot.evidence.grep(SemanticV2::Snapshot::LabelEvidence)
           assert(labels.any? { |item| item.label == 'Pintu Utama' && item.explicit }, 'attached-text evidence preserved')
+          material_ids = snapshot.materials.map(&:source_uuid)
+          assert(material_ids.include?(plan.source_uuid_for(front_material)), 'front material consumes planned source UUID')
+          assert(material_ids.include?(plan.source_uuid_for(alternate_material)), 'override material consumes distinct planned source UUID')
           assert(before_uuid.nil? && loose.get_attribute('BOMEngine.SemanticV2', 'source_uuid', nil).nil?, 'extraction remains read-only')
           puts 'Semantic v2 Extractor SketchUp Tests: ALL PASSED'
           true
@@ -81,6 +102,19 @@ module BOMEngine
         safe = model && model.path.to_s.empty? && model.entities.empty? &&
                (!model.respond_to?(:modified?) || !model.modified?)
         raise 'Refusing to run extractor fixture in a non-disposable model' unless safe
+      end
+
+      def build_attached_text(model, fixture, instance, face)
+        return AttachedText.new('Pintu Utama', instance) if Sketchup.version.to_i < 19
+
+        edge = face.edges.first
+        path = Sketchup::InstancePath.new([fixture, instance, edge])
+        point = edge.start.position.transform(instance.transformation).transform(fixture.transformation)
+        model.entities.add_text(
+          'Pintu Utama',
+          [path, point],
+          Geom::Vector3d.new(4, 4, 4)
+        )
       end
 
       def assert(condition, message)

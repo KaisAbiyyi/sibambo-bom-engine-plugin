@@ -18,12 +18,17 @@ class SemanticV2ExtractorTest < Minitest::Test
     assert_instance_of BOMEngine::SemanticV2::Snapshot::Document, result
     assert_equal MODEL_ID, result.model_id
     assert_equal 3, result.definitions.length
-    assert_equal 3, result.occurrences.length
+    assert_equal 5, result.occurrences.length
+    assert result.occurrences.any? { |item| item.uuid_path.empty? && item.definition_uuid == MODEL_ID }
     assert_equal 1, result.definitions.count { |definition| definition.source_uuid == SHARED_DEFINITION_ID }
+    group_definition = result.definitions.find { |definition| definition.source_uuid == GROUP_DEFINITION_ID }
+    assert_equal 'group', group_definition.kind
+    shared_occurrences = result.occurrences.select { |item| item.definition_uuid == SHARED_DEFINITION_ID }
     assert_equal [[FIRST_INSTANCE_ID], [SECOND_INSTANCE_ID]],
-                 result.occurrences.select { |item| item.definition_uuid == SHARED_DEFINITION_ID }.map(&:uuid_path)
+                 shared_occurrences.select { |item| item.uuid_path.length == 1 }.map(&:uuid_path)
+    assert_includes shared_occurrences.map(&:uuid_path), [GROUP_INSTANCE_ID, NESTED_INSTANCE_ID]
     translations = result.occurrences
-                         .select { |item| item.definition_uuid == SHARED_DEFINITION_ID }
+                         .select { |item| item.definition_uuid == SHARED_DEFINITION_ID && item.uuid_path.length == 1 }
                          .map { |item| item.transform[12] }
     assert_equal [0.254, 0.508], translations
     assert_equal [[SHARED_DEFINITION_ID, SHARED_FACE_ID]],
@@ -43,10 +48,11 @@ class SemanticV2ExtractorTest < Minitest::Test
     assert_includes fragment.loops.first.adjacent_primitive_keys,
                     [SHARED_DEFINITION_ID, ADJACENT_FACE_ID]
     assert_equal MATERIAL_ID, fragment.front_material_uuid
-    assert_equal MATERIAL_ID, result.materials.first.source_uuid
-    assert_equal [120, 121, 122, 255], result.materials.first.rgba
+    assert_equal [MATERIAL_ID, SECOND_MATERIAL_ID], result.materials.map(&:source_uuid)
+    assert_equal ['Concrete', 'Concrete Alternate'], result.materials.map(&:name)
+    assert_equal [[120, 121, 122, 255], [120, 121, 122, 255]], result.materials.map(&:rgba)
     group_occurrence = result.occurrences.find { |item| item.uuid_path == [GROUP_INSTANCE_ID] }
-    assert_equal MATERIAL_ID, group_occurrence.material_uuid
+    assert_equal SECOND_MATERIAL_ID, group_occurrence.material_uuid
     assert_equal 'surface_normal', fragment.construction_hints.first.kind
     assert_equal 12.0 * 0.00064516, fragment.area_m2
     refute_respond_to fragment, :triangles
@@ -98,18 +104,39 @@ class SemanticV2ExtractorTest < Minitest::Test
     assert_equal 0.762, moved.transform[12]
   end
 
-  def test_unplanned_material_uses_deterministic_appearance_identity_only
+  def test_nonidentity_parent_transform_is_explicit_for_loose_and_instanced_geometry
+    parent = FakeTransformation.new([
+      0.0, 1.0, 0.0, 0.0,
+      -1.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 1.0, 0.0,
+      2.0, 0.0, 0.0, 1.0
+    ])
+
+    result = extractor.extract(
+      model: @fixture.model,
+      roots: @fixture.roots,
+      parent_transform: parent,
+      identity_plan: @fixture.identity_plan,
+      settings: settings
+    )
+
+    root = result.occurrences.find { |item| item.uuid_path.empty? }
+    refute_nil root
+    assert_equal MODEL_ID, root.definition_uuid
+    assert_equal [0.0, 1.0, 0.0, 0.0,
+                  -1.0, 0.0, 0.0, 0.0,
+                  0.0, 0.0, 1.0, 0.0,
+                  0.0508, 0.0, 0.0, 1.0], root.transform
+    loose = result.primitives.find { |item| item.source_uuid == ROOT_FACE_ID }
+    assert_equal [0.0, 0.0, 0.0], loose.loops.first.vertices.first
+    first = result.occurrences.find { |item| item.uuid_path == [FIRST_INSTANCE_ID] }
+    assert_equal [0.0508, 0.254], [first.transform[12], first.transform[13]]
+  end
+
+  def test_material_missing_from_virtual_identity_plan_is_rejected
     @fixture.identity_plan.forget(@fixture.material)
 
-    initial = extract
-    repeated = extract
-
-    material_uuid = initial.materials.first.source_uuid
-    assert_match BOMEngine::SemanticV2::IdentityRegistry::UUID_PATTERN, material_uuid
-    assert_equal material_uuid, repeated.materials.first.source_uuid
-    assert_includes initial.diagnostics, 'material.virtual_appearance_identity'
-    assert_equal material_uuid,
-                 initial.occurrences.find { |item| item.uuid_path == [GROUP_INSTANCE_ID] }.material_uuid
+    assert_raises(KeyError) { extract }
   end
 
   private

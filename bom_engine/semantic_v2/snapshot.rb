@@ -30,17 +30,26 @@ module BOMEngine
           value
         end
 
-        def frozen_value(value, field)
+        def immutable_copy(value, field)
           case value
           when Array
-            frozen_array(value, field)
-            value.each_with_index { |item, index| frozen_value(item, "#{field}[#{index}]") }
+            value.map.with_index { |item, index| immutable_copy(item, "#{field}[#{index}]") }.freeze
           when Hash
-            raise ArgumentError, "#{field} must be frozen" unless value.frozen?
+            value.each_with_object({}) do |(key, item), copy|
+              immutable_key = immutable_copy(key, "#{field} key")
+              copy[immutable_key] = immutable_copy(item, "#{field}[#{key}]")
+            end.freeze
+          when String
+            value.dup.freeze
+          when NilClass, TrueClass, FalseClass, Symbol, Integer
+            value
+          when Float
+            raise ArgumentError, "#{field} must be finite" unless value.finite?
 
-            value.each { |key, item| frozen_value(key, "#{field} key"); frozen_value(item, "#{field}[#{key}]") }
+            value
+          else
+            raise ArgumentError, "unsupported snapshot value for #{field}: #{value.class}"
           end
-          value
         end
 
         def text(value)
@@ -157,8 +166,7 @@ module BOMEngine
             raise ArgumentError, 'rgba must contain four byte values'
           end
           @rgba = rgba.dup.freeze
-          Validation.frozen_value(texture, 'texture') unless texture.nil?
-          @texture = texture
+          @texture = Validation.immutable_copy(texture, 'texture') unless texture.nil?
           freeze
         end
       end
@@ -169,8 +177,7 @@ module BOMEngine
         def initialize(target_key:, kind:, value:, source:)
           @target_key = Validation.uuid_path(target_key, 'target_key')
           @kind = Validation.text(kind)
-          Validation.frozen_value(value, 'value')
-          @value = value
+          @value = Validation.immutable_copy(value, 'value')
           @source = Validation.text(source)
           freeze
         end

@@ -16,6 +16,7 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
   MALFORMED_ID = '50000000-0000-4000-8000-000000000005'
   DEFINITION_ID = '60000000-0000-4000-8000-000000000006'
   SEMANTIC_ID = '70000000-0000-4000-8000-000000000007'
+  SECOND_MATERIAL_ID = '80000000-0000-4000-8000-000000000008'
 
   class FakeAttributeOwner
     attr_reader :writes
@@ -43,7 +44,8 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
   end
 
   class FakeEntity < FakeAttributeOwner
-    attr_accessor :persistent_id, :entities, :definition, :name, :transformation
+    attr_accessor :persistent_id, :entities, :definition, :name, :transformation,
+                  :material, :back_material
 
     def initialize(persistent_id, attributes = {}, entities: nil, definition: nil)
       super(attributes)
@@ -145,6 +147,28 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     assert_equal ORIGINAL_ID, plan.occurrence_uuid_for(instance)
     assert_equal DEFINITION_ID, plan.source_uuid_for(definition)
     assert_equal COPY_ID, plan.source_uuid_for(definition_face)
+  end
+
+  def test_recursive_scan_assigns_distinct_virtual_identity_to_referenced_materials
+    front_material = FakeEntity.new(31)
+    back_material = FakeEntity.new(32)
+    face = FakeEntity.new(30)
+    face.material = front_material
+    face.back_material = back_material
+    model = model_with_registry
+
+    plan = coordinator.plan(
+      model: model,
+      roots: [face],
+      uuid_generator: uuid_generator(MISSING_ID, MALFORMED_ID, SECOND_MATERIAL_ID)
+    )
+
+    assert_equal MISSING_ID, plan.source_uuid_for(face)
+    assert_equal MALFORMED_ID, plan.source_uuid_for(front_material)
+    assert_equal SECOND_MATERIAL_ID, plan.source_uuid_for(back_material)
+    assert_empty front_material.writes
+    assert_empty back_material.writes
+    assert_empty model.operation_calls
   end
 
   def test_second_clean_plan_is_byte_stable_across_order_names_and_transforms

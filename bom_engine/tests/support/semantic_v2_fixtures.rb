@@ -17,11 +17,13 @@ module BOMEngine
       ADJACENT_FACE_ID = 'c0000000-0000-4000-8000-00000000000c'
       MATERIAL_ID = 'd0000000-0000-4000-8000-00000000000d'
       TEXT_ID = 'e0000000-0000-4000-8000-00000000000e'
+      SECOND_MATERIAL_ID = 'f0000000-0000-4000-8000-00000000000f'
+      NESTED_INSTANCE_ID = '11000000-0000-4000-8000-000000000011'
 
       Fixture = Struct.new(
         :model, :roots, :identity_plan, :shared_definition, :first_instance,
-        :second_instance, :group_instance, :root_face, :hidden_face,
-        :policy_face, :material, keyword_init: true
+        :second_instance, :group_instance, :nested_instance, :root_face, :hidden_face,
+        :policy_face, :material, :second_material, keyword_init: true
       )
 
       class FakeIdentityPlan
@@ -174,12 +176,16 @@ module BOMEngine
 
       class FakeDefinition
         attr_accessor :name
-        attr_reader :entities, :kind
+        attr_reader :entities
 
         def initialize(name:, entities:, kind: 'component')
           @name = name
           @entities = entities
-          @kind = kind
+          @group = kind == 'group'
+        end
+
+        def group?
+          @group
         end
       end
 
@@ -209,13 +215,13 @@ module BOMEngine
       class FakeText
         attr_reader :text
 
-        def initialize(text:, target:)
+        def initialize(text:, target: nil, path: nil)
           @text = text
-          @target = target
+          @path = path || [target]
         end
 
         def attached_to
-          [[@target], FakePoint.new(0, 0, 0)]
+          [@path, FakePoint.new(0, 0, 0)]
         end
       end
 
@@ -223,6 +229,7 @@ module BOMEngine
 
       def complex_fixture
         material = FakeMaterial.new('Concrete', [120, 121, 122, 255])
+        second_material = FakeMaterial.new('Concrete Alternate', [120, 121, 122, 255])
         root_face = FakeFace.new(
           outer: [[0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0]],
           area: 4.0,
@@ -262,17 +269,29 @@ module BOMEngine
           outer: [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]],
           area: 1.0
         )
-        group_definition = FakeDefinition.new(name: 'Nested Group Definition', entities: [group_face], kind: 'group')
+        nested_instance = FakeInstance.new(
+          definition: shared_definition,
+          transformation: FakeTransformation.translation(1, 0, 0),
+          name: 'Nested Door'
+        )
+        group_definition = FakeDefinition.new(
+          name: 'Nested Group Definition',
+          entities: [group_face, nested_instance],
+          kind: 'group'
+        )
         group_instance = FakeInstance.new(
           definition: group_definition,
           transformation: FakeTransformation.translation(0, 5, 0),
           name: 'Nested Group',
           kind: 'group'
         )
-        group_instance.material = material
-        attached_text = FakeText.new(text: 'Pintu Utama', target: first_instance)
+        group_instance.material = second_material
+        attached_text = FakeText.new(
+          text: 'Pintu Utama',
+          path: [first_instance, shared_face.loops.first.edges.first]
+        )
         roots = [root_face, first_instance, second_instance, group_instance, hidden_face, policy_face, attached_text]
-        model = FakeModel.new(entities: roots, materials: [material])
+        model = FakeModel.new(entities: roots, materials: [material, second_material])
         source_uuids = {
           root_face => ROOT_FACE_ID,
           shared_definition => SHARED_DEFINITION_ID,
@@ -281,11 +300,13 @@ module BOMEngine
           second_instance => SECOND_INSTANCE_ID,
           group_definition => GROUP_DEFINITION_ID,
           group_instance => GROUP_INSTANCE_ID,
+          nested_instance => NESTED_INSTANCE_ID,
           group_face => GROUP_FACE_ID,
           hidden_face => HIDDEN_FACE_ID,
           policy_face => POLICY_FACE_ID,
           adjacent_face => ADJACENT_FACE_ID,
           material => MATERIAL_ID,
+          second_material => SECOND_MATERIAL_ID,
           attached_text => TEXT_ID
         }
         Fixture.new(
@@ -296,10 +317,12 @@ module BOMEngine
           first_instance: first_instance,
           second_instance: second_instance,
           group_instance: group_instance,
+          nested_instance: nested_instance,
           root_face: root_face,
           hidden_face: hidden_face,
           policy_face: policy_face,
-          material: material
+          material: material,
+          second_material: second_material
         )
       end
     end

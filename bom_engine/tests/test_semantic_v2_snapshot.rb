@@ -151,6 +151,62 @@ class SemanticV2SnapshotTest < Minitest::Test
     assert_match(/private neutral snapshot/, error.message)
   end
 
+  def test_supported_nested_values_are_defensively_copied_and_deeply_frozen
+    filename = 'surface.png'.dup
+    tag = 'masonry'.dup
+    tags = [tag]
+    metadata = { tags: tags }
+    texture = { filename: filename, metadata: metadata }
+    note = 'surveyed'.dup
+    hint_value = { note: note, samples: [['A'.dup]] }
+
+    material = snapshot::Material.new(
+      source_uuid: MATERIAL_ID,
+      name: 'Concrete',
+      rgba: [120, 121, 122, 255].freeze,
+      texture: texture
+    )
+    hint = snapshot::ConstructionHint.new(
+      target_key: [INSTANCE_ID, FACE_ID].freeze,
+      kind: 'survey',
+      value: hint_value,
+      source: 'fixture'
+    )
+
+    filename.replace('changed.png')
+    tag.replace('changed')
+    tags << 'late'
+    metadata[:added] = true
+    texture[:filename] = 'replaced.png'
+    note.replace('changed')
+    hint_value[:samples].first << 'B'
+    hint_value[:added] = true
+
+    assert_equal 'surface.png', material.texture[:filename]
+    assert_equal ['masonry'], material.texture.dig(:metadata, :tags)
+    assert_equal({ note: 'surveyed', samples: [['A']] }, hint.value)
+    assert material.texture.frozen?
+    assert material.texture[:filename].frozen?
+    assert material.texture.dig(:metadata, :tags).frozen?
+    assert material.texture.dig(:metadata, :tags).first.frozen?
+    assert hint.value.frozen?
+    assert hint.value[:samples].first.frozen?
+    assert hint.value[:samples].first.first.frozen?
+  end
+
+  def test_snapshot_values_reject_unsupported_arbitrary_objects
+    error = assert_raises(ArgumentError) do
+      snapshot::ConstructionHint.new(
+        target_key: [INSTANCE_ID, FACE_ID].freeze,
+        kind: 'unsupported',
+        value: Object.new,
+        source: 'fixture'
+      )
+    end
+
+    assert_match(/unsupported snapshot value/, error.message)
+  end
+
   private
 
   def snapshot
