@@ -213,6 +213,28 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     assert_equal plan_bytes(initial, [first, second]), plan_bytes(repeated, [first, second])
   end
 
+  def test_pending_identity_survives_gc_after_first_plan_is_released
+    first = FakeEntity.new(11)
+    second = FakeEntity.new(12)
+    model = FakeModel.new
+    expected = detached_dirty_plan_ids(
+      model,
+      [first, second],
+      [MODEL_ID, MISSING_ID, MALFORMED_ID]
+    )
+
+    3.times { GC.start(full_mark: true, immediate_sweep: true) }
+    repeated = coordinator.plan(
+      model: model,
+      roots: [second, first],
+      uuid_generator: uuid_generator(DEFINITION_ID, COPY_ID, SEMANTIC_ID)
+    )
+
+    assert_equal MODEL_ID, repeated.model_id
+    assert_equal expected.fetch(first), repeated.source_uuid_for(first)
+    assert_equal expected.fetch(second), repeated.source_uuid_for(second)
+  end
+
   def test_pending_uuid_is_associated_with_the_live_entity_not_its_pid
     entity = FakeEntity.new(11)
     model = model_with_registry
@@ -426,6 +448,17 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
       raise 'unexpected UUID allocation' if values.empty?
 
       values.shift
+    end
+  end
+
+  def detached_dirty_plan_ids(model, entities, generated)
+    plan = coordinator.plan(
+      model: model,
+      roots: entities,
+      uuid_generator: uuid_generator(*generated)
+    )
+    entities.each_with_object({}) do |entity, ids|
+      ids[entity] = plan.source_uuid_for(entity).dup
     end
   end
 

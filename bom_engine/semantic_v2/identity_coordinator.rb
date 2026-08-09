@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require 'securerandom'
-require 'objspace'
+require 'weakref'
 
 require_relative 'canonical_json'
 require_relative 'identity_registry'
@@ -21,6 +21,7 @@ module BOMEngine
 
       EntityWrite = Struct.new(:entity, :source_uuid, :origin_model_id, keyword_init: true)
       PendingState = Struct.new(:model_uuid, :entity_uuids, keyword_init: true)
+      PendingOwner = Struct.new(:owner_ref, :value, keyword_init: true)
 
       # Immutable lookup result consumed by compilation before any model write.
       class Plan
@@ -136,15 +137,48 @@ module BOMEngine
         end
 
         def pending_state_for(model)
-          @pending_by_model ||= ObjectSpace::WeakMap.new
-          @pending_by_model[model] ||= PendingState.new(
+          @pending_by_model ||= {}
+          prune_dead_owners!(@pending_by_model)
+          owner_key = model.__id__
+          entry = @pending_by_model[owner_key]
+          if same_live_owner?(entry, model)
+            prune_dead_owners!(entry.value.entity_uuids)
+            return entry.value
+          end
+
+          state = PendingState.new(
             model_uuid: nil,
-            entity_uuids: ObjectSpace::WeakMap.new
+            entity_uuids: {}
           )
+          @pending_by_model[owner_key] = PendingOwner.new(
+            owner_ref: WeakRef.new(model),
+            value: state
+          )
+          state
         end
 
         def clear_pending(model)
-          @pending_by_model[model] = nil if @pending_by_model
+          return unless @pending_by_model
+
+          owner_key = model.__id__
+          entry = @pending_by_model[owner_key]
+          @pending_by_model.delete(owner_key) if same_live_owner?(entry, model)
+        end
+
+        def prune_dead_owners!(owners)
+          owners.delete_if { |_key, entry| !live_owner?(entry) }
+        end
+
+        def live_owner?(entry)
+          entry && entry.owner_ref.weakref_alive?
+        rescue WeakRef::RefError
+          false
+        end
+
+        def same_live_owner?(entry, owner)
+          entry && entry.owner_ref.__getobj__.equal?(owner)
+        rescue WeakRef::RefError
+          false
         end
 
         def recursively_collect(roots)
@@ -234,7 +268,7 @@ module BOMEngine
 
         def assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
           owner_pid = entity.persistent_id
-          source_uuid = pending.entity_uuids[entity] ||= allocate_uuid(uuid_generator)
+          source_uuid = pending_uuid_for(pending, entity, uuid_generator)
           origin_model_id = registry.to_h.fetch('model_id')
           registry.plan_source_claim(
             source_uuid: source_uuid,
@@ -247,6 +281,20 @@ module BOMEngine
             source_uuid: source_uuid.freeze,
             origin_model_id: origin_model_id.dup.freeze
           ).freeze
+        end
+
+        def pending_uuid_for(pending, entity, uuid_generator)
+          owners = pending.entity_uuids
+          owner_key = entity.__id__
+          entry = owners[owner_key]
+          return entry.value if same_live_owner?(entry, entity)
+
+          source_uuid = allocate_uuid(uuid_generator)
+          owners[owner_key] = PendingOwner.new(
+            owner_ref: WeakRef.new(entity),
+            value: source_uuid
+          )
+          source_uuid
         end
 
         def allocate_uuid(uuid_generator)
