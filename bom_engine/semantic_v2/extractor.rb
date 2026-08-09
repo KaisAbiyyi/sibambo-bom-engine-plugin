@@ -644,6 +644,8 @@ module BOMEngine
             evidence: @evidence.sort_by do |item|
               [
                 item.target_key,
+                item.respond_to?(:target_kind) ? item.target_kind.to_s : '',
+                item.respond_to?(:target_occurrence_uuid_path) ? Array(item.target_occurrence_uuid_path) : [],
                 item.class.name,
                 item.respond_to?(:source) ? item.source.to_s : '',
                 item.respond_to?(:annotation_source_uuid) ? item.annotation_source_uuid.to_s : '',

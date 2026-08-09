@@ -362,6 +362,37 @@ class SemanticV2ExtractorTest < Minitest::Test
     assert_equal [FIRST_INSTANCE_ID], attached.target_occurrence_uuid_path
   end
 
+  def test_repeated_direct_face_label_evidence_is_independent_of_root_order
+    annotation = FakeText.new(text: 'Panel Bersama', path: [@fixture.shared_face])
+    @fixture.shared_definition.entities << annotation
+    @fixture.identity_plan.remember(annotation, DIRECT_FACE_ANNOTATION_ID)
+    roots = [@fixture.first_instance, @fixture.second_instance]
+
+    forward = extractor.extract(
+      model: @fixture.model,
+      roots: roots,
+      parent_transform: FakeTransformation.identity,
+      identity_plan: @fixture.identity_plan,
+      settings: settings.merge(scope_mode: 'selection')
+    )
+    reversed = extractor.extract(
+      model: @fixture.model,
+      roots: roots.reverse,
+      parent_transform: FakeTransformation.identity,
+      identity_plan: @fixture.identity_plan,
+      settings: settings.merge(scope_mode: 'selection')
+    )
+
+    shape = lambda do |document|
+      document.evidence.grep(BOMEngine::SemanticV2::Snapshot::LabelEvidence).select do |item|
+        item.annotation_source_uuid == DIRECT_FACE_ANNOTATION_ID
+      end.map do |item|
+        [item.target_key, item.target_occurrence_uuid_path, item.label]
+      end
+    end
+    assert_equal shape.call(forward), shape.call(reversed)
+  end
+
   def test_identity_is_independent_of_names_root_order_and_transform_values
     initial = extract
     @fixture.first_instance.name = 'Renamed without identity effect'
