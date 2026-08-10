@@ -11,7 +11,7 @@ module BOMEngine
       module_function
 
       def export(model:, roots:, parent_transform:, output_path:, identity_plan: nil, settings: {},
-                 progress: nil, batch_size: 24)
+                 progress: nil, batch_size: 24, pretty_print: false)
         root_items = Array(roots)
         batcher = ProgressBatcher.new(progress, batch_size)
         batcher.force('Preparing clean export')
@@ -39,6 +39,7 @@ module BOMEngine
         result = Writer.write(
           output_path,
           document,
+          pretty_print: pretty_print,
           progress: batcher.method(:step)
         ).merge(document: document)
         batcher.force('Clean export complete')

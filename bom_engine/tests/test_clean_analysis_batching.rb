@@ -103,8 +103,8 @@ class CleanAnalysisBatchingTest < Minitest::Test
     selections = []
     dialog = options.show(
       profile: { cores: 8, recommended_batch: 24, calibration_iterations: 100 }
-    ) do |batch_size, mode|
-      selections << [batch_size, mode]
+    ) do |batch_size, mode, pretty_print|
+      selections << [batch_size, mode, pretty_print]
     end
 
     assert dialog.shown?
@@ -112,8 +112,24 @@ class CleanAnalysisBatchingTest < Minitest::Test
     dialog.trigger('ready')
     dialog.trigger('start', JSON.generate(mode: 'manual', batch_size: 8))
 
-    assert_equal [[8, 'manual']], selections
+    assert_equal [[8, 'manual', false]], selections
     assert dialog.closed?
+  end
+
+  def test_batch_options_pass_the_pretty_print_selection_to_the_export
+    selections = []
+    dialog = BOMEngine::CleanAnalysis::BatchOptions.show(
+      profile: { cores: 8, recommended_batch: 24, calibration_iterations: 100 }
+    ) do |batch_size, mode, pretty_print|
+      selections << [batch_size, mode, pretty_print]
+    end
+
+    dialog.trigger(
+      'start',
+      JSON.generate(mode: 'auto', batch_size: 8, pretty_print: true)
+    )
+
+    assert_equal [[24, 'auto', true]], selections
   end
 
   def test_batch_recommendations_match_the_existing_engine_profiles

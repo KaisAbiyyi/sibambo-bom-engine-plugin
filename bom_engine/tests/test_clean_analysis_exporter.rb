@@ -131,9 +131,32 @@ class CleanAnalysisExporterTest < Minitest::Test
       BOMEngine::CleanAnalysis::Exporter.export(**export_options.merge(output_path: first_path))
       BOMEngine::CleanAnalysis::Exporter.export(**export_options.merge(output_path: second_path))
 
-      assert_equal File.binread(first_path), File.binread(second_path)
+      first = File.binread(first_path)
+      assert_equal first, File.binread(second_path)
+      assert_equal JSON.generate(JSON.parse(first)), first
       assert_equal [], fixture.model.operation_calls
       assert_equal [], fixture.model.writes
+    end
+  end
+
+  def test_pretty_print_is_an_explicit_export_option
+    fixture = BOMEngine::Tests::SemanticV2Fixtures.complex_fixture
+
+    Dir.mktmpdir('clean-analysis-pretty-print') do |directory|
+      output_path = File.join(directory, 'pretty_clean.json')
+      BOMEngine::CleanAnalysis::Exporter.export(
+        model: fixture.model,
+        roots: fixture.roots,
+        parent_transform: BOMEngine::Tests::SemanticV2Fixtures::FakeTransformation.identity,
+        output_path: output_path,
+        identity_plan: fixture.identity_plan,
+        settings: { include_hidden: false, scope_mode: 'model' },
+        pretty_print: true
+      )
+
+      bytes = File.binread(output_path)
+      assert_includes bytes, "\n  \"format\""
+      assert_equal JSON.pretty_generate(JSON.parse(bytes)) + "\n", bytes
     end
   end
 

@@ -21,7 +21,8 @@ module BOMEngine
         File.join(directory, "#{base_name}_clean.json")
       end
 
-      def export_model(model, output_path: nil, progress: nil, batch_size: 24)
+      def export_model(model, output_path: nil, progress: nil, batch_size: 24,
+                       pretty_print: false)
         path = output_path || default_output_path(model.path)
         Exporter.export(
           model: model,
@@ -30,7 +31,8 @@ module BOMEngine
           output_path: path,
           settings: { scope_mode: 'model' },
           progress: progress,
-          batch_size: batch_size
+          batch_size: batch_size,
+          pretty_print: pretty_print
         )
       end
 
@@ -46,15 +48,15 @@ module BOMEngine
         )
         return nil if selected.nil?
 
-        BatchOptions.show(profile: BatchOptions.device_profile) do |batch_size, mode|
-          start_export(model, selected, batch_size, mode)
+        BatchOptions.show(profile: BatchOptions.device_profile) do |batch_size, mode, pretty_print|
+          start_export(model, selected, batch_size, mode, pretty_print)
         end
       rescue StandardError => error
         UI.messagebox("Clean analysis export failed:\n#{error.message}")
         nil
       end
 
-      def start_export(model, output_path, batch_size, mode = 'auto')
+      def start_export(model, output_path, batch_size, mode = 'auto', pretty_print = false)
         ConversionJob.start(
           title: "BOM Engine Clean - #{mode} batch #{batch_size}",
           output_path: output_path,
@@ -64,7 +66,8 @@ module BOMEngine
             model,
             output_path: output_path,
             progress: progress,
-            batch_size: batch_size
+            batch_size: batch_size,
+            pretty_print: pretty_print
           )
         end
       end

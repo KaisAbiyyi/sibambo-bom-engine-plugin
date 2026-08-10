@@ -11,23 +11,23 @@ module BOMEngine
 
       module_function
 
-      def generate(document, progress: nil)
+      def generate(document, progress: nil, pretty_print: false)
         validate_document!(document, progress)
         output = StringIO.new
-        write_json(output, document, 0, progress)
-        output.write("\n")
+        write_json(output, document, 0, progress, pretty_print)
+        output.write("\n") if pretty_print
         output.string
       end
 
-      def write(path, document, progress: nil)
+      def write(path, document, progress: nil, pretty_print: false)
         output_path = File.expand_path(path.to_s)
         raise ArgumentError, 'clean analysis output path is required' if path.to_s.strip.empty?
 
         validate_document!(document, progress)
         FileUtils.mkdir_p(File.dirname(output_path))
         bytes = File.open(output_path, 'wb') do |file|
-          write_json(file, document, 0, progress)
-          file.write("\n")
+          write_json(file, document, 0, progress, pretty_print)
+          file.write("\n") if pretty_print
           file.pos
         end
         {
@@ -72,27 +72,29 @@ module BOMEngine
       end
       private_class_method :find_forbidden_key
 
-      def write_json(output, value, depth, progress)
+      def write_json(output, value, depth, progress, pretty_print)
         report_progress(progress)
         case value
         when Hash
-          write_object(output, value, depth, progress)
+          write_object(output, value, depth, progress, pretty_print)
         when Array
-          write_array(output, value, depth, progress)
+          write_array(output, value, depth, progress, pretty_print)
         else
           output.write(JSON.generate(value))
         end
       end
       private_class_method :write_json
 
-      def write_object(output, value, depth, progress)
+      def write_object(output, value, depth, progress, pretty_print)
+        return write_compact_object(output, value, depth, progress) unless pretty_print
+
         output.write("{\n")
         unless value.empty?
           value.each_with_index do |(key, child), index|
             output.write(' ' * (depth + 2))
             output.write(JSON.generate(key.to_s))
             output.write(': ')
-            write_json(output, child, depth + 2, progress)
+            write_json(output, child, depth + 2, progress, true)
             output.write(',') if index + 1 < value.length
             output.write("\n")
           end
@@ -102,14 +104,16 @@ module BOMEngine
       end
       private_class_method :write_object
 
-      def write_array(output, value, depth, progress)
+      def write_array(output, value, depth, progress, pretty_print)
+        return write_compact_array(output, value, depth, progress) unless pretty_print
+
         output.write("[\n")
         if value.empty?
           output.write("\n")
         else
           value.each_with_index do |child, index|
             output.write(' ' * (depth + 2))
-            write_json(output, child, depth + 2, progress)
+            write_json(output, child, depth + 2, progress, true)
             output.write(',') if index + 1 < value.length
             output.write("\n")
           end
@@ -118,6 +122,28 @@ module BOMEngine
         output.write(']')
       end
       private_class_method :write_array
+
+      def write_compact_object(output, value, depth, progress)
+        output.write('{')
+        value.each_with_index do |(key, child), index|
+          output.write(',') if index.positive?
+          output.write(JSON.generate(key.to_s))
+          output.write(':')
+          write_json(output, child, depth, progress, false)
+        end
+        output.write('}')
+      end
+      private_class_method :write_compact_object
+
+      def write_compact_array(output, value, depth, progress)
+        output.write('[')
+        value.each_with_index do |child, index|
+          output.write(',') if index.positive?
+          write_json(output, child, depth, progress, false)
+        end
+        output.write(']')
+      end
+      private_class_method :write_compact_array
 
       def report_progress(progress)
         progress.call('Writing clean JSON') if progress

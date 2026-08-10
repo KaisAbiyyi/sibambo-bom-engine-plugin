@@ -65,9 +65,9 @@ module BOMEngine
           scrollable: false,
           resizable: false,
           width: 470,
-          height: 480,
+          height: 530,
           min_width: 420,
-          min_height: 450,
+          min_height: 500,
           style: UI::HtmlDialog::STYLE_DIALOG
         )
         dialog.set_file(File.join(File.dirname(__FILE__), 'ui', 'batch_options.html'))
@@ -86,7 +86,11 @@ module BOMEngine
                     profile.fetch(:recommended_batch)
                   end
           dialog.close
-          callback.call(batch, manual ? 'manual' : 'auto')
+          callback.call(
+            batch,
+            manual ? 'manual' : 'auto',
+            settings['pretty_print'] == true
+          )
         rescue JSON::ParserError
           nil
         end

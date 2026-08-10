@@ -7,7 +7,7 @@ require 'tmpdir'
 require_relative '../clean_analysis'
 
 class CleanAnalysisWriterTest < Minitest::Test
-  def test_writes_readable_deterministic_json_without_mesh_representations
+  def test_writes_minified_deterministic_json_without_mesh_representations
     result = nil
     Dir.mktmpdir('clean-analysis-writer') do |directory|
       path = File.join(directory, 'model_clean.json')
@@ -18,7 +18,8 @@ class CleanAnalysisWriterTest < Minitest::Test
         second = File.binread(path)
 
         assert_equal first, second
-        assert_includes first, "\n  \"format\""
+        assert_equal JSON.generate(clean_document), first
+        refute_includes first, "\n"
         assert_equal clean_document, JSON.parse(first)
         refute_match(/\"(?:triangles|faces|positions|loops)\"\s*:/, first)
         assert_equal first.bytesize, result.fetch(:bytes)
@@ -42,7 +43,7 @@ class CleanAnalysisWriterTest < Minitest::Test
     assert_match(/redundant geometry key: triangles/, error.message)
   end
 
-  def test_cooperative_write_matches_pretty_json_bytes_and_reports_progress
+  def test_minified_write_is_cooperative_and_reports_progress
     events = []
     error = nil
 
@@ -59,7 +60,7 @@ class CleanAnalysisWriterTest < Minitest::Test
       end
 
       assert_nil error
-      assert_equal JSON.pretty_generate(clean_document) + "\n", File.binread(path)
+      assert_equal JSON.generate(clean_document), File.binread(path)
     end
 
     assert_operator events.length, :>, 10
