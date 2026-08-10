@@ -670,6 +670,48 @@ class CleanAnalysisCompilerTest < Minitest::Test
     assert_equal first, second
   end
 
+  def test_shared_definition_hole_order_and_vertex_pool_are_input_order_independent
+    outer = [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]]
+    small_hole = [[1, 1, 0], [1, 2, 0], [2, 2, 0], [2, 1, 0]]
+    large_hole = [[7, 7, 0], [7, 9, 0], [9, 9, 0], [9, 7, 0]]
+    first_face = polygon_with_holes(
+      definition_uuid: uuid(12),
+      source_uuid: uuid(68),
+      outer: outer,
+      holes: [large_hole, small_hole],
+      normal: [0, 0, 1]
+    )
+    second_face = polygon_with_holes(
+      definition_uuid: uuid(12),
+      source_uuid: uuid(68),
+      outer: outer,
+      holes: [small_hole, large_hole],
+      normal: [0, 0, 1]
+    )
+    occurrences = [
+      occurrence(path: [uuid(180)], definition_uuid: uuid(12)),
+      occurrence(path: [uuid(181)], definition_uuid: uuid(12), translation: [12, 0, 0])
+    ]
+
+    first = compile(document(
+      extra_definitions: [definition(uuid(12), 'component', [first_face])],
+      extra_primitives: [first_face],
+      extra_occurrences: occurrences
+    ))
+    second = compile(document(
+      extra_definitions: [definition(uuid(12), 'component', [second_face])],
+      extra_primitives: [second_face],
+      extra_occurrences: occurrences.reverse
+    ))
+
+    assert_equal BOMEngine::CleanAnalysis::Writer.generate(first),
+                 BOMEngine::CleanAnalysis::Writer.generate(second)
+    assert_equal first.dig('definitions', 0, 'geometry', 'vertices'),
+                 second.dig('definitions', 0, 'geometry', 'vertices')
+    assert_equal first.dig('definitions', 0, 'geometry', 'surfaces', 0, 'holes'),
+                 second.dig('definitions', 0, 'geometry', 'surfaces', 0, 'holes')
+  end
+
   def test_contextual_geometry_hints_do_not_promote_slab_edges_and_secondary_horizontal_faces
     full_wall = polygon(
       definition_uuid: uuid(1), source_uuid: uuid(20),
@@ -950,6 +992,38 @@ class CleanAnalysisCompilerTest < Minitest::Test
       back_material_uuid: nil,
       normal: normal.map(&:to_f).freeze,
       area_m2: 15.0,
+      construction_hints: [].freeze
+    )
+  end
+
+  def polygon_with_holes(definition_uuid:, source_uuid:, outer:, holes:, normal:)
+    loops = [
+      snapshot::Loop.new(
+        kind: 'outer',
+        vertices: outer.map { |point| point.map(&:to_f).freeze }.freeze,
+        edge_source_uuids: outer.each_index.map { |index| uuid(140 + index) }.freeze,
+        adjacent_primitive_keys: [].freeze
+      )
+    ]
+    holes.each_with_index do |hole, hole_index|
+      loops << snapshot::Loop.new(
+        kind: 'hole',
+        vertices: hole.map { |point| point.map(&:to_f).freeze }.freeze,
+        edge_source_uuids: hole.each_index.map do |edge_index|
+          uuid(170 + (hole_index * 4) + edge_index)
+        end.freeze,
+        adjacent_primitive_keys: [].freeze
+      )
+    end
+    snapshot::PolygonFragment.new(
+      key: [definition_uuid, source_uuid].freeze,
+      definition_uuid: definition_uuid,
+      source_uuid: source_uuid,
+      loops: loops.freeze,
+      front_material_uuid: nil,
+      back_material_uuid: nil,
+      normal: normal.map(&:to_f).freeze,
+      area_m2: 95.0,
       construction_hints: [].freeze
     )
   end

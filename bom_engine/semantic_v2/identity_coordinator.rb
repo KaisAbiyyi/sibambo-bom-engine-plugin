@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'digest'
 require 'securerandom'
 require 'weakref'
 
@@ -76,12 +77,21 @@ module BOMEngine
 
       class << self
         def plan(model:, roots:, uuid_generator: -> { SecureRandom.uuid }, runtime_version: nil,
-                 progress: nil, prepare_model_writes: true)
+                 progress: nil, prepare_model_writes: true,
+                 deterministic_virtual_identities: false)
           validate_runtime_version!(detected_runtime_version || runtime_version)
           entities = recursively_collect(identity_roots(model, roots), progress)
           validate_persistent_owners!(entities)
-          pending = pending_state_for(model)
-          registry = load_registry(model, uuid_generator, pending)
+          fallback_model_uuid = if deterministic_virtual_identities
+                                  deterministic_model_uuid(model, entities)
+                                end
+          pending = deterministic_virtual_identities ? nil : pending_state_for(model)
+          registry = load_registry(
+            model,
+            uuid_generator,
+            pending,
+            fallback_model_uuid: fallback_model_uuid
+          )
           source_uuids = {}
           entity_writes = []
           diagnostics = []
@@ -93,14 +103,19 @@ module BOMEngine
           invalid = []
           entities.each do |entity|
             report_progress(progress)
-            (valid_entity_identity?(entity) ? valid : invalid) << entity
+            valid_identity = valid_entity_identity?(
+              entity,
+              allow_missing_origin: deterministic_virtual_identities
+            )
+            (valid_identity ? valid : invalid) << entity
           end
           destination_model_id = registry.model_id
           domestic = []
           foreign = []
           valid.each do |entity|
             report_progress(progress)
-            destination = entity_origin_model_id(entity).to_s.downcase == destination_model_id
+            origin_model_id = entity_origin_model_id(entity).to_s.downcase
+            destination = origin_model_id.empty? || origin_model_id == destination_model_id
             (destination ? domestic : foreign) << entity
           end
           domestic_claims = Hash.new { |hash, key| hash[key] = [] }
@@ -117,7 +132,8 @@ module BOMEngine
               entity_writes,
               diagnostics,
               uuid_generator,
-              pending
+              pending,
+              deterministic_virtual_identities
             )
           end
           foreign.each do |entity|
@@ -132,7 +148,8 @@ module BOMEngine
               source_uuids,
               entity_writes,
               uuid_generator,
-              pending
+              pending,
+              deterministic_virtual_identities
             )
             foreign_source_provenance << ForeignSourceProvenance.new(
               source_uuid: prior_source_uuid.dup.freeze,
@@ -155,7 +172,15 @@ module BOMEngine
           end
           invalid.each do |entity|
             report_progress(progress)
-            assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
+            assign_new_identity(
+              entity,
+              registry,
+              source_uuids,
+              entity_writes,
+              uuid_generator,
+              pending,
+              deterministic_virtual_identities
+            )
           end
 
           model_writes = prepare_model_writes ? planned_model_writes(model, registry) : {}.freeze
@@ -222,7 +247,7 @@ module BOMEngine
           plan
         end
 
-        def load_registry(model, uuid_generator, pending)
+        def load_registry(model, uuid_generator, pending, fallback_model_uuid: nil)
           raw = model.get_attribute(DICTIONARY, REGISTRY_JSON_KEY, nil)
           return IdentityRegistry.load(raw, uuid_generator: uuid_generator) unless raw.nil? || raw.to_s.strip.empty?
 
@@ -233,6 +258,17 @@ module BOMEngine
               {
                 'model_id' => model_id,
                 'revision' => revision,
+                'prepared_generation' => nil,
+                'source_claims' => {},
+                'semantic_lineage' => {}
+              },
+              uuid_generator: uuid_generator
+            )
+          elsif fallback_model_uuid
+            IdentityRegistry.load(
+              {
+                'model_id' => fallback_model_uuid,
+                'revision' => 0,
                 'prepared_generation' => nil,
                 'source_claims' => {},
                 'semantic_lineage' => {}
@@ -363,9 +399,10 @@ module BOMEngine
           items
         end
 
-        def valid_entity_identity?(entity)
+        def valid_entity_identity?(entity, allow_missing_origin: false)
+          origin_model_id = entity_origin_model_id(entity).to_s
           IdentityRegistry::UUID_PATTERN.match?(entity_source_uuid(entity).to_s) &&
-            IdentityRegistry::UUID_PATTERN.match?(entity_origin_model_id(entity).to_s) &&
+            (allow_missing_origin || IdentityRegistry::UUID_PATTERN.match?(origin_model_id)) &&
             valid_persistent_id?(entity)
         end
 
@@ -398,7 +435,8 @@ module BOMEngine
           entity_writes,
           diagnostics,
           uuid_generator,
-          pending
+          pending,
+          deterministic_virtual_identities
         )
           winner = if claims.length == 1
                      claims.first
@@ -411,15 +449,40 @@ module BOMEngine
                      claims.find { |entity| entity.persistent_id == resolution.owner_pid }
                    end
 
-          assign_preserved_identity(winner, registry, source_uuids, entity_writes, uuid_generator, pending)
+          assign_preserved_identity(
+            winner,
+            registry,
+            source_uuids,
+            entity_writes,
+            uuid_generator,
+            pending,
+            deterministic_virtual_identities
+          )
           (claims - [winner]).each do |entity|
-            assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
+            assign_new_identity(
+              entity,
+              registry,
+              source_uuids,
+              entity_writes,
+              uuid_generator,
+              pending,
+              deterministic_virtual_identities
+            )
           end
         end
 
-        def assign_preserved_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
+        def assign_preserved_identity(
+          entity,
+          registry,
+          source_uuids,
+          entity_writes,
+          uuid_generator,
+          pending,
+          deterministic_virtual_identities
+        )
           source_uuid = normalized_source_uuid(entity)
-          origin_model_id = entity_origin_model_id(entity).downcase
+          origin_model_id = entity_origin_model_id(entity).to_s.downcase
+          origin_model_id = registry.model_id if origin_model_id.empty?
           registry.plan_source_claim(
             source_uuid: source_uuid,
             owner_pid: entity.persistent_id,
@@ -429,12 +492,32 @@ module BOMEngine
         rescue ArgumentError => error
           raise unless error.message.start_with?('source UUID already belongs')
 
-          assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
+          assign_new_identity(
+            entity,
+            registry,
+            source_uuids,
+            entity_writes,
+            uuid_generator,
+            pending,
+            deterministic_virtual_identities
+          )
         end
 
-        def assign_new_identity(entity, registry, source_uuids, entity_writes, uuid_generator, pending)
+        def assign_new_identity(
+          entity,
+          registry,
+          source_uuids,
+          entity_writes,
+          uuid_generator,
+          pending,
+          deterministic_virtual_identities
+        )
           owner_pid = entity.persistent_id
-          source_uuid = pending_uuid_for(pending, entity, uuid_generator)
+          source_uuid = if deterministic_virtual_identities
+                          deterministic_entity_uuid(registry.model_id, entity)
+                        else
+                          pending_uuid_for(pending, entity, uuid_generator)
+                        end
           origin_model_id = registry.model_id
           registry.plan_source_claim(
             source_uuid: source_uuid,
@@ -448,6 +531,56 @@ module BOMEngine
             origin_model_id: origin_model_id.dup.freeze
           ).freeze
           source_uuid
+        end
+
+        def deterministic_model_uuid(model, entities)
+          guid = stable_guid(model)
+          values = if guid.empty?
+                     entities.map { |entity| stable_entity_identity(entity) }.sort
+                   else
+                     ["guid=#{guid}"]
+                   end
+          deterministic_uuid('bom-engine-clean-model-v1', values)
+        end
+
+        def deterministic_entity_uuid(model_id, entity)
+          deterministic_uuid(
+            'bom-engine-clean-source-v1',
+            [model_id, stable_entity_identity(entity)]
+          )
+        end
+
+        def stable_entity_identity(entity)
+          values = [
+            "kind=#{entity.class.name}",
+            "persistent_id=#{entity.persistent_id}"
+          ]
+          guid = stable_guid(entity)
+          values << "guid=#{guid}" unless guid.empty?
+          values.join('|')
+        end
+
+        def stable_guid(owner)
+          return '' unless owner.respond_to?(:guid)
+
+          owner.guid.to_s.strip.downcase
+        rescue StandardError
+          ''
+        end
+
+        def deterministic_uuid(domain, values)
+          hexadecimal = Digest::SHA256.hexdigest(
+            ([domain] + Array(values).map(&:to_s)).join('|')
+          )[0, 32]
+          hexadecimal[12] = '5'
+          hexadecimal[16] = format('%x', (hexadecimal[16].to_i(16) & 0x3) | 0x8)
+          [
+            hexadecimal[0, 8],
+            hexadecimal[8, 4],
+            hexadecimal[12, 4],
+            hexadecimal[16, 4],
+            hexadecimal[20, 12]
+          ].join('-').freeze
         end
 
         def pending_uuid_for(pending, entity, uuid_generator)

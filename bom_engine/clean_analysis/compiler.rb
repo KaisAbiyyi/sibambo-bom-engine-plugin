@@ -411,7 +411,7 @@ module BOMEngine
           normalize_loop_start(
             project_loop_to_plane(loop.vertices, normal, plane_origin)
           ).map { |point| clean_point(point) }
-        end
+        end.sort_by { |loop| loop_sort_key(loop) }
         {
           'id' => stable_id('definition-surface', primitive.key),
           'type' => 'polygon',
@@ -633,7 +633,7 @@ module BOMEngine
         boundary_loops = union_boundary_loops(component.map { |candidate| candidate.fetch(:outer) })
         return nil if boundary_loops.nil? || boundary_loops.empty?
 
-        ordered = boundary_loops.sort_by { |loop| -loop_area(loop) }
+        ordered = boundary_loops.sort_by { |loop| [-loop_area(loop), loop_sort_key(loop)] }
         first = component.first
         return nil unless ordered.drop(1).all? do |loop|
           SurfaceValidator.loop_inside?(loop, ordered.first, first.fetch(:normal))
@@ -757,7 +757,9 @@ module BOMEngine
         primitive_keys = candidate.fetch(:primitive_key)
         primitive_keys = [primitive_keys] unless primitive_keys.first.is_a?(Array)
         outer = normalize_loop_start(candidate.fetch(:outer)).map { |point| clean_point(point) }
-        holes = candidate.fetch(:holes).map { |hole| normalize_loop_start(hole).map { |point| clean_point(point) } }
+        holes = candidate.fetch(:holes).map do |hole|
+          normalize_loop_start(hole).map { |point| clean_point(point) }
+        end.sort_by { |hole| loop_sort_key(hole) }
         surface = {
           'id' => stable_id(
             'surface',
@@ -895,6 +897,10 @@ module BOMEngine
 
       def point_key(point)
         point.map { |value| quantize(value, POSITION_TOLERANCE_M) }.join(',')
+      end
+
+      def loop_sort_key(loop)
+        loop.map { |point| point_key(point) }.join('|')
       end
 
       def quantize(value, tolerance)

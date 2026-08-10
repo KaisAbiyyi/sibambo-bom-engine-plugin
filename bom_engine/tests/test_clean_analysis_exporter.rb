@@ -140,6 +140,51 @@ class CleanAnalysisExporterTest < Minitest::Test
     end
   end
 
+  def test_fresh_unpersisted_object_graphs_and_reordered_input_export_identically
+    first_fixture = virtual_identity_fixture
+    second_fixture = virtual_identity_fixture
+    second_fixture.model.entities.reverse!
+    second_fixture.group_instance.definition.entities.reverse!
+    second_fixture.shared_face.loops.reverse!
+
+    Dir.mktmpdir('clean-analysis-fresh-determinism') do |directory|
+      first_path = File.join(directory, 'first_clean.json')
+      second_path = File.join(directory, 'second_clean.json')
+      export_virtual_fixture(first_fixture, first_path)
+      export_virtual_fixture(second_fixture, second_path)
+
+      first_bytes = File.binread(first_path)
+      second_bytes = File.binread(second_path)
+      assert_equal first_bytes, second_bytes
+
+      first = JSON.parse(first_bytes)
+      second = JSON.parse(second_bytes)
+      assert_equal first.fetch('definitions').map { |item| item.fetch('id') },
+                   second.fetch('definitions').map { |item| item.fetch('id') }
+      assert_equal first.fetch('instances').map { |item| item.fetch('id') },
+                   second.fetch('instances').map { |item| item.fetch('id') }
+      assert_equal first.fetch('surfaces').map { |item| item.fetch('id') },
+                   second.fetch('surfaces').map { |item| item.fetch('id') }
+      assert_equal definition_surface_ids(first), definition_surface_ids(second)
+      assert_equal definition_vertex_pools(first), definition_vertex_pools(second)
+
+      first_occurrence = first.fetch('instances').find do |item|
+        item.fetch('transform')[12] == 0.254
+      end
+      second_occurrence = first.fetch('instances').find do |item|
+        item.fetch('transform')[12] == 0.508
+      end
+      refute_nil first_occurrence
+      refute_nil second_occurrence
+      refute_equal first_occurrence.fetch('id'), second_occurrence.fetch('id')
+      assert_equal first_occurrence.fetch('definition_id'), second_occurrence.fetch('definition_id')
+      assert_empty first_fixture.model.operation_calls
+      assert_empty first_fixture.model.writes
+      assert_empty second_fixture.model.operation_calls
+      assert_empty second_fixture.model.writes
+    end
+  end
+
   def test_pretty_print_is_an_explicit_export_option
     fixture = BOMEngine::Tests::SemanticV2Fixtures.complex_fixture
 
@@ -215,5 +260,51 @@ class CleanAnalysisExporterTest < Minitest::Test
     assert events.any? { |event| event.fetch(:stage).include?('Compiling') }
     assert_equal events.map { |event| event.fetch(:processed) }.sort,
                  events.map { |event| event.fetch(:processed) }
+  end
+
+  private
+
+  def virtual_identity_fixture
+    fixture = BOMEngine::Tests::SemanticV2Fixtures.complex_fixture
+    owners = BOMEngine::SemanticV2::IdentityCoordinator.send(
+      :recursively_collect,
+      fixture.roots
+    )
+    owners.each_with_index do |owner, index|
+      owner.instance_variable_set(:@clean_test_persistent_id, 10_000 + index)
+      owner.define_singleton_method(:persistent_id) { @clean_test_persistent_id }
+      next if owner.respond_to?(:get_attribute)
+
+      owner.define_singleton_method(:get_attribute) do |_dictionary, _key, default = nil|
+        default
+      end
+    end
+    fixture.model.define_singleton_method(:guid) { 'clean-determinism-fixture-guid' }
+    fixture.model.define_singleton_method(:get_attribute) do |_dictionary, _key, default = nil|
+      default
+    end
+    fixture
+  end
+
+  def export_virtual_fixture(fixture, output_path)
+    BOMEngine::CleanAnalysis::Exporter.export(
+      model: fixture.model,
+      roots: fixture.model.entities,
+      parent_transform: BOMEngine::Tests::SemanticV2Fixtures::FakeTransformation.identity,
+      output_path: output_path,
+      settings: { include_hidden: false, scope_mode: 'model' }
+    )
+  end
+
+  def definition_surface_ids(document)
+    document.fetch('definitions').map do |definition|
+      definition.dig('geometry', 'surfaces').map { |surface| surface['id'] }
+    end
+  end
+
+  def definition_vertex_pools(document)
+    document.fetch('definitions').map do |definition|
+      definition.dig('geometry', 'vertices')
+    end
   end
 end

@@ -233,7 +233,9 @@ module BOMEngine
       end
 
       def index_by_id(items)
-        items.each_with_index.to_h { |item, index| [item[:id], index] }
+        items.each_with_index.each_with_object({}) do |(item, index), indices|
+          indices[item[:id]] = index
+        end
       end
 
       def value_index(index, value)

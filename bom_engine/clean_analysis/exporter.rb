@@ -19,7 +19,8 @@ module BOMEngine
           model: model,
           roots: root_items,
           progress: batcher.method(:step),
-          prepare_model_writes: false
+          prepare_model_writes: false,
+          deterministic_virtual_identities: true
         )
         extraction_settings = {
           include_hidden: false,

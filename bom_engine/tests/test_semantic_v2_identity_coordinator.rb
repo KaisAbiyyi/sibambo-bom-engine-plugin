@@ -540,6 +540,57 @@ class SemanticV2IdentityCoordinatorTest < Minitest::Test
     assert_equal plan_bytes(initial, [first, second]), plan_bytes(repeated, [first, second])
   end
 
+  def test_deterministic_virtual_identity_is_fresh_graph_and_root_order_stable
+    first_graph = [FakeEntity.new(11), FakeEntity.new(12)]
+    second_graph = [FakeEntity.new(11), FakeEntity.new(12)]
+    first_model = FakeModel.new
+    second_model = FakeModel.new
+    [first_model, second_model].each do |model|
+      model.define_singleton_method(:guid) { 'deterministic-identity-model-guid' }
+    end
+    unexpected_randomness = -> { raise 'random UUID allocation is forbidden' }
+
+    first_plan = coordinator.plan(
+      model: first_model,
+      roots: first_graph,
+      uuid_generator: unexpected_randomness,
+      deterministic_virtual_identities: true
+    )
+    second_plan = coordinator.plan(
+      model: second_model,
+      roots: second_graph.reverse,
+      uuid_generator: unexpected_randomness,
+      deterministic_virtual_identities: true
+    )
+
+    assert_equal first_plan.model_id, second_plan.model_id
+    assert_equal first_plan.source_uuid_for(first_graph[0]),
+                 second_plan.source_uuid_for(second_graph[0])
+    assert_equal first_plan.source_uuid_for(first_graph[1]),
+                 second_plan.source_uuid_for(second_graph[1])
+    refute_equal first_plan.source_uuid_for(first_graph[0]),
+                 first_plan.source_uuid_for(first_graph[1])
+  end
+
+  def test_deterministic_virtual_identity_preserves_persisted_source_uuid_without_origin
+    persisted = FakeEntity.new(
+      11,
+      {
+        [DICTIONARY, 'source_uuid'] => ORIGINAL_ID
+      }
+    )
+    unexpected_randomness = -> { raise 'random UUID allocation is forbidden' }
+
+    plan = coordinator.plan(
+      model: model_with_registry,
+      roots: [persisted],
+      uuid_generator: unexpected_randomness,
+      deterministic_virtual_identities: true
+    )
+
+    assert_equal ORIGINAL_ID, plan.source_uuid_for(persisted)
+  end
+
   def test_fresh_model_uses_real_generator_for_multiple_semantic_allocations
     model = FakeModel.new
     plan = coordinator.plan(
