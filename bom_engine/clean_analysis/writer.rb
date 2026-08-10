@@ -72,13 +72,61 @@ module BOMEngine
           SurfaceValidator.validate!(surface)
         end
         document.fetch('definitions', []).each do |definition|
-          definition.fetch('geometry').fetch('surfaces').each do |surface|
+          geometry = definition.fetch('geometry')
+          vertices = geometry['vertices']
+          validate_vertex_pool!(vertices) unless vertices.nil?
+          geometry.fetch('surfaces').each do |surface|
             report_progress(progress)
-            SurfaceValidator.validate!(surface)
+            candidate = vertices.nil? ? surface : resolve_indexed_surface(surface, vertices)
+            if definition.fetch('retention') == 'visual_architectural_detail' &&
+               (candidate['normal'].nil? || candidate['area_m2'].nil?)
+              candidate = visual_surface_validation_candidate(candidate)
+            end
+            SurfaceValidator.validate!(candidate)
           end
         end
       end
       private_class_method :validate_document!
+
+      def visual_surface_validation_candidate(surface)
+        outer = surface.fetch('outer')
+        holes = surface.fetch('holes')
+        area = SurfaceValidator.polygon_area(outer) - holes.inject(0.0) do |sum, hole|
+          sum + SurfaceValidator.polygon_area(hole)
+        end
+        surface.merge(
+          'normal' => SurfaceValidator.polygon_normal(outer),
+          'area_m2' => area,
+          'source_count' => 1
+        )
+      end
+      private_class_method :visual_surface_validation_candidate
+
+      def validate_vertex_pool!(vertices)
+        unless vertices.is_a?(Array) && vertices.all? { |point| SurfaceValidator.valid_point?(point) }
+          raise ArgumentError, 'definition vertex pool must contain finite XYZ coordinates'
+        end
+      end
+      private_class_method :validate_vertex_pool!
+
+      def resolve_indexed_surface(surface, vertices)
+        surface.merge(
+          'outer' => resolve_index_loop(surface.fetch('outer'), vertices),
+          'holes' => surface.fetch('holes').map { |loop| resolve_index_loop(loop, vertices) }
+        )
+      end
+      private_class_method :resolve_indexed_surface
+
+      def resolve_index_loop(indices, vertices)
+        unless indices.is_a?(Array) && indices.all? { |index| index.is_a?(Integer) && index >= 0 }
+          raise ArgumentError, 'definition polygon loops must contain non-negative vertex indices'
+        end
+
+        indices.map { |index| vertices.fetch(index) }
+      rescue IndexError
+        raise ArgumentError, 'definition polygon vertex index is out of range'
+      end
+      private_class_method :resolve_index_loop
 
       def find_forbidden_key(value, progress)
         report_progress(progress)

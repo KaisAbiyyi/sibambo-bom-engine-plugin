@@ -30,6 +30,9 @@ class CleanAnalysisProfilerTest < Minitest::Test
     assert_equal 3, report.dig('geometry', 'analytical_polygon_count')
     assert_equal 1, report.dig('geometry', 'definition_polygon_count')
     assert_equal 20, report.dig('geometry', 'total_polygon_vertex_occurrences')
+    assert_equal 20, report.dig('geometry', 'serialized_vertex_positions')
+    assert_equal 8, report.dig('geometry', 'definition_vertex_pool_positions')
+    assert_equal 1.0, report.dig('geometry', 'serialized_vertex_duplication_ratio')
     assert_equal 5, report.dig('sketchup_structure', 'occurrence_count')
     assert_equal 1, report.dig('sketchup_structure', 'group_count')
     assert_equal 3, report.dig('sketchup_structure', 'component_instance_count')
@@ -38,6 +41,7 @@ class CleanAnalysisProfilerTest < Minitest::Test
     assert_equal 1, report.dig('expansion', 'occurrence_expanded_geometry')
     assert_equal 1.0, report.dig('expansion', 'instance_expansion_ratio')
     assert_operator report.dig('serialized_byte_attribution', 'polygon_coordinates'), :>, 0
+    assert_operator report.dig('serialized_byte_attribution', 'polygon_topology_indices'), :>, 0
     assert_equal 3, report.dig('top_offenders', 'surfaces').length
     assert_operator report.dig('top_offenders', 'definitions').length, :>=, 1
   end

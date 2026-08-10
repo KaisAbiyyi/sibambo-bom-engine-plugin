@@ -109,6 +109,19 @@ module BOMEngine
         end
         unique_positions = positions.length
         vertex_ratio = unique_positions.zero? ? 0.0 : vertex_occurrences.to_f / unique_positions
+        top_level_vertex_occurrences = document.fetch('surfaces').inject(0) do |sum, surface|
+          sum + surface.fetch('outer').length +
+            surface.fetch('holes').inject(0) { |hole_sum, loop| hole_sum + loop.length }
+        end
+        definition_vertex_pool_positions = document.fetch('definitions', []).inject(0) do |sum, definition|
+          sum + definition.dig('geometry', 'vertices').length
+        end
+        serialized_vertex_positions = top_level_vertex_occurrences + definition_vertex_pool_positions
+        serialized_vertex_ratio = if unique_positions.zero?
+                                    0.0
+                                  else
+                                    serialized_vertex_positions.to_f / unique_positions
+                                  end
         instance_definitions = @snapshot.occurrences.reject { |item| item.uuid_path.empty? }
         definitions_by_id = @snapshot.definitions.each_with_object({}) do |definition, index|
           index[definition.source_uuid] = definition
@@ -140,7 +153,10 @@ module BOMEngine
             'definition_polygon_count' => definition_polygon_count,
             'total_polygon_vertex_occurrences' => vertex_occurrences,
             'unique_vertex_positions' => unique_positions,
-            'vertex_duplication_ratio' => rounded_ratio(vertex_ratio)
+            'vertex_duplication_ratio' => rounded_ratio(vertex_ratio),
+            'serialized_vertex_positions' => serialized_vertex_positions,
+            'serialized_vertex_duplication_ratio' => rounded_ratio(serialized_vertex_ratio),
+            'definition_vertex_pool_positions' => definition_vertex_pool_positions
           },
           'sketchup_structure' => structure_report(
             definitions_by_id,
@@ -185,6 +201,7 @@ module BOMEngine
       def byte_attribution(document, minified_bytes, progress)
         surface_bytes = Hash.new(0)
         polygon_coordinates = 0
+        polygon_topology = 0
         document.fetch('surfaces').each do |surface|
           report_progress(progress)
           surface_bytes[surface.fetch('type')] += JSON.generate(surface).bytesize
@@ -197,10 +214,12 @@ module BOMEngine
         excluded_bytes = json_record_bytes(document.fetch('excluded_objects'))
         fallback_bytes = json_record_bytes(document.fetch('fallback_geometry'))
         document.fetch('definitions', []).each do |definition|
+          geometry = definition.fetch('geometry')
+          polygon_coordinates += JSON.generate(geometry.fetch('vertices')).bytesize
           definition.dig('geometry', 'surfaces').each do |surface|
             report_progress(progress)
-            polygon_coordinates += JSON.generate(surface.fetch('outer')).bytesize
-            polygon_coordinates += JSON.generate(surface.fetch('holes')).bytesize
+            polygon_topology += JSON.generate(surface.fetch('outer')).bytesize
+            polygon_topology += JSON.generate(surface.fetch('holes')).bytesize
           end
         end
         attributed = surface_bytes.values.inject(0, :+) + definition_bytes + instance_bytes +
@@ -219,7 +238,8 @@ module BOMEngine
           'metadata' => [minified_bytes - attributed, 0].max,
           'excluded_objects' => excluded_bytes,
           'fallback_geometry' => fallback_bytes,
-          'polygon_coordinates' => polygon_coordinates
+          'polygon_coordinates' => polygon_coordinates,
+          'polygon_topology_indices' => polygon_topology
         )
       end
 
@@ -280,8 +300,16 @@ module BOMEngine
       def each_geometry_surface(document)
         document.fetch('surfaces').each { |surface| yield('model', surface) }
         document.fetch('definitions', []).each do |definition|
-          definition.dig('geometry', 'surfaces').each do |surface|
-            yield(definition.fetch('id'), surface)
+          geometry = definition.fetch('geometry')
+          vertices = geometry.fetch('vertices')
+          geometry.fetch('surfaces').each do |surface|
+            resolved = surface.merge(
+              'outer' => surface.fetch('outer').map { |index| vertices.fetch(index) },
+              'holes' => surface.fetch('holes').map do |loop|
+                loop.map { |index| vertices.fetch(index) }
+              end
+            )
+            yield(definition.fetch('id'), resolved)
           end
         end
       end

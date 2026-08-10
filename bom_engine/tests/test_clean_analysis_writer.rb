@@ -122,7 +122,7 @@ class CleanAnalysisWriterTest < Minitest::Test
     definition = {
       'id' => 'definition-example',
       'kind' => 'component',
-      'retention' => 'visual_architectural_detail',
+      'retention' => 'analysis_boundary',
       'geometry' => {
         'coordinate_space' => 'definition_local',
         'source_count' => 1,
@@ -137,6 +137,37 @@ class CleanAnalysisWriterTest < Minitest::Test
     end
 
     assert_match(/invalid surface definition-surface-example/, error.message)
+  end
+
+  def test_validates_indexed_definition_polygon_with_a_hole_against_its_vertex_pool
+    definition = {
+      'id' => 'definition-indexed',
+      'kind' => 'component',
+      'retention' => 'visual_architectural_detail',
+      'geometry' => {
+        'coordinate_space' => 'definition_local',
+        'source_count' => 1,
+        'vertices' => [
+          [0.0, 0.0, 0.0], [2.0, 0.0, 0.0],
+          [2.0, 0.0, 2.0], [0.0, 0.0, 2.0],
+          [0.5, 0.0, 0.5], [1.5, 0.0, 0.5],
+          [1.5, 0.0, 1.5], [0.5, 0.0, 1.5]
+        ],
+        'surfaces' => [valid_surface.merge(
+          'id' => 'definition-surface-indexed',
+          'outer' => [0, 1, 2, 3],
+          'holes' => [[4, 5, 6, 7]],
+          'area_m2' => 3.0
+        )]
+      }
+    }
+    document = clean_document.merge('definitions' => [definition], 'instances' => [])
+
+    bytes = BOMEngine::CleanAnalysis::Writer.generate(document)
+
+    encoded = JSON.parse(bytes).dig('definitions', 0, 'geometry')
+    assert_equal definition.fetch('geometry').fetch('vertices'), encoded.fetch('vertices')
+    assert_equal [[4, 5, 6, 7]], encoded.dig('surfaces', 0, 'holes')
   end
 
   private

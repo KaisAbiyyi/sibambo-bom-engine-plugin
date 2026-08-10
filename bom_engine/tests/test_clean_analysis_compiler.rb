@@ -250,6 +250,190 @@ class CleanAnalysisCompilerTest < Minitest::Test
     assert_operator JSON.generate(result).bytesize, :<, retained_geometry_bytes * 100
   end
 
+  def test_shared_definition_surfaces_reuse_definition_local_vertex_indices
+    first = polygon(
+      definition_uuid: uuid(5),
+      source_uuid: uuid(50),
+      points: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]],
+      normal: [0, -1, 0]
+    )
+    second = polygon(
+      definition_uuid: uuid(5),
+      source_uuid: uuid(51),
+      points: [[1, 0, 0], [2, 0, 0], [2, 0, 1], [1, 0, 1]],
+      normal: [0, -1, 0]
+    )
+
+    result = compile(
+      document(
+        extra_definitions: [definition(uuid(5), 'component', [first, second])],
+        extra_primitives: [first, second],
+        extra_occurrences: [
+          occurrence(path: [uuid(80)], definition_uuid: uuid(5)),
+          occurrence(path: [uuid(81)], definition_uuid: uuid(5), translation: [3, 0, 0])
+        ]
+      )
+    )
+
+    geometry = result.dig('definitions', 0, 'geometry')
+    assert_equal [
+      [0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+      [1.0, 0.0, 1.0], [0.0, 0.0, 1.0],
+      [2.0, 0.0, 0.0], [2.0, 0.0, 1.0]
+    ], geometry.fetch('vertices')
+    assert_equal [[0, 1, 2, 3], [1, 4, 5, 2]],
+                 geometry.fetch('surfaces').map { |surface| surface.fetch('outer') }
+  end
+
+  def test_vertex_pool_does_not_collapse_distinct_positions_within_tolerance
+    first = polygon(
+      definition_uuid: uuid(5), source_uuid: uuid(50),
+      points: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]],
+      normal: [0, -1, 0]
+    )
+    second = polygon(
+      definition_uuid: uuid(5), source_uuid: uuid(51),
+      points: [[0, 0.0000004, 0], [1, 0.0000004, 0],
+               [1, 0.0000004, 1], [0, 0.0000004, 1]],
+      normal: [0, -1, 0]
+    )
+    result = compile(
+      document(
+        extra_definitions: [definition(uuid(5), 'component', [first, second])],
+        extra_primitives: [first, second],
+        extra_occurrences: [
+          occurrence(path: [uuid(80)], definition_uuid: uuid(5)),
+          occurrence(path: [uuid(81)], definition_uuid: uuid(5))
+        ]
+      )
+    )
+
+    vertices = result.dig('definitions', 0, 'geometry', 'vertices')
+    assert_equal 8, vertices.length
+    assert_equal [0.0, 0.0000004], vertices.map { |point| point[1] }.uniq.sort
+  end
+
+  def test_visual_definition_surfaces_keep_only_indexed_geometry
+    face = polygon(
+      definition_uuid: uuid(5),
+      source_uuid: uuid(50),
+      points: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]],
+      normal: [0, -1, 0]
+    )
+    result = compile(
+      document(
+        extra_definitions: [definition(uuid(5), 'component', [face])],
+        extra_primitives: [face],
+        extra_occurrences: [
+          occurrence(path: [uuid(80)], definition_uuid: uuid(5)),
+          occurrence(path: [uuid(81)], definition_uuid: uuid(5), translation: [3, 0, 0])
+        ]
+      )
+    )
+
+    retained = result.fetch('definitions').first
+    assert_equal 'visual_architectural_detail', retained.fetch('retention')
+    assert_equal %w[holes outer type], retained.dig('geometry', 'surfaces', 0).keys.sort
+    assert_equal [0, 1, 2, 3], retained.dig('geometry', 'surfaces', 0, 'outer')
+    assert_equal 4, retained.dig('geometry', 'vertices').length
+    BOMEngine::CleanAnalysis::Writer.generate(result)
+  end
+
+  def test_many_visual_surfaces_share_one_deterministic_vertex_pool
+    faces = 20.times.map do |index|
+      polygon(
+        definition_uuid: uuid(5),
+        source_uuid: uuid(40 + index),
+        points: [[index, 0, 0], [index + 1, 0, 0],
+                 [index + 1, 0, 1], [index, 0, 1]],
+        normal: [0, -1, 0]
+      )
+    end
+    fixture = document(
+      extra_definitions: [definition(uuid(5), 'component', faces)],
+      extra_primitives: faces,
+      extra_occurrences: [
+        occurrence(path: [uuid(180)], definition_uuid: uuid(5)),
+        occurrence(path: [uuid(181)], definition_uuid: uuid(5), translation: [30, 0, 0])
+      ]
+    )
+
+    first = compile(fixture)
+    second = compile(fixture)
+    geometry = first.dig('definitions', 0, 'geometry')
+
+    assert_equal 42, geometry.fetch('vertices').length
+    assert_equal 80, geometry.fetch('surfaces').inject(0) { |sum, surface| sum + surface.fetch('outer').length }
+    assert_equal JSON.generate(first), JSON.generate(second)
+    BOMEngine::CleanAnalysis::Writer.generate(first)
+  end
+
+  def test_visual_definition_holes_use_the_same_vertex_pool
+    outer = [[0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0]]
+    hole = [[1, 1, 0], [2, 1, 0], [2, 2, 0], [1, 2, 0]]
+    face = polygon_with_hole(
+      definition_uuid: uuid(5), source_uuid: uuid(50),
+      outer: outer, hole: hole, normal: [0, 0, 1]
+    )
+    result = compile(
+      document(
+        extra_definitions: [definition(uuid(5), 'component', [face])],
+        extra_primitives: [face],
+        extra_occurrences: [
+          occurrence(path: [uuid(180)], definition_uuid: uuid(5)),
+          occurrence(path: [uuid(181)], definition_uuid: uuid(5), translation: [5, 0, 0])
+        ]
+      )
+    )
+
+    geometry = result.dig('definitions', 0, 'geometry')
+    surface = geometry.fetch('surfaces').first
+    assert_equal 8, geometry.fetch('vertices').length
+    assert_equal [0, 1, 2, 3], surface.fetch('outer')
+    assert_equal [[4, 5, 6, 7]], surface.fetch('holes')
+    BOMEngine::CleanAnalysis::Writer.generate(result)
+  end
+
+  def test_definition_coordinate_normalization_stays_below_geometry_tolerance_and_preserves_area
+    source_points = [
+      [0.12345678949, 0, 0], [2.12345678949, 0, 0],
+      [2.12345678949, 0, 1.23456789149], [0.12345678949, 0, 1.23456789149]
+    ]
+    face = polygon(
+      definition_uuid: uuid(5), source_uuid: uuid(50),
+      points: source_points, normal: [0, -1, 0]
+    )
+    wall_label = label(
+      target_key: [uuid(180)].freeze,
+      target_kind: 'occurrence', label: 'Wall', role: 'wall'
+    )
+    result = compile(
+      document(
+        extra_definitions: [definition(uuid(5), 'component', [face])],
+        extra_primitives: [face],
+        extra_occurrences: [
+          occurrence(path: [uuid(180)], definition_uuid: uuid(5)),
+          occurrence(path: [uuid(181)], definition_uuid: uuid(5), translation: [3, 0, 0])
+        ],
+        evidence: [wall_label]
+      )
+    )
+
+    geometry = result.dig('definitions', 0, 'geometry')
+    surface = geometry.fetch('surfaces').first
+    resolved = surface.fetch('outer').map { |index| geometry.fetch('vertices').fetch(index) }
+    max_error = source_points.zip(resolved).map do |source, normalized|
+      Math.sqrt(3.times.inject(0.0) { |sum, axis| sum + (source[axis] - normalized[axis])**2 })
+    end.max
+
+    decimal_places = BOMEngine::CleanAnalysis::Compiler::SERIALIZATION_DECIMAL_PLACES
+    max_rounding_error = Math.sqrt(3.0) * 0.5 * (10.0**-decimal_places)
+    assert_operator max_error, :<=, max_rounding_error
+    assert_in_delta polygon_area(resolved), surface.fetch('area_m2'), 1.0e-9
+    assert_equal 'analysis_boundary', result.dig('definitions', 0, 'retention')
+    BOMEngine::CleanAnalysis::Writer.generate(result)
+  end
+
   def test_projects_shared_definition_vertices_onto_the_sketchup_face_plane
     face = polygon(
       definition_uuid: uuid(5),
@@ -269,9 +453,17 @@ class CleanAnalysisCompilerTest < Minitest::Test
       )
     )
 
-    surface = result.dig('definitions', 0, 'geometry', 'surfaces', 0)
-    assert_empty BOMEngine::CleanAnalysis::SurfaceValidator.validate(surface)
-    assert_equal [0.0], surface.fetch('outer').map { |point| point[1] }.uniq
+    geometry = result.dig('definitions', 0, 'geometry')
+    surface = geometry.fetch('surfaces').first
+    outer = surface.fetch('outer').map { |index| geometry.fetch('vertices').fetch(index) }
+    resolved = surface.merge(
+      'outer' => outer,
+      'holes' => [],
+      'normal' => BOMEngine::CleanAnalysis::SurfaceValidator.polygon_normal(outer),
+      'area_m2' => BOMEngine::CleanAnalysis::SurfaceValidator.polygon_area(outer)
+    )
+    assert_empty BOMEngine::CleanAnalysis::SurfaceValidator.validate(resolved)
+    assert_equal [0.0], outer.map { |point| point[1] }.uniq
   end
 
   def test_routes_invalid_shared_definition_polygon_to_existing_fallback
@@ -420,7 +612,8 @@ class CleanAnalysisCompilerTest < Minitest::Test
     assert_includes transforms, scale
     assert_equal 1, result.dig('definitions', 0, 'geometry', 'surfaces').length
     assert_equal [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
-                 result.dig('definitions', 0, 'geometry', 'surfaces', 0, 'outer')
+                 result.dig('definitions', 0, 'geometry', 'vertices')
+    assert_equal [0, 1, 2, 3], result.dig('definitions', 0, 'geometry', 'surfaces', 0, 'outer')
     assert_equal 'world', result.dig('coordinate_system', 'instance_transform_space')
   end
 
@@ -636,9 +829,14 @@ class CleanAnalysisCompilerTest < Minitest::Test
 
     assert_empty result.fetch('surfaces')
     assert_equal 1, result.fetch('definitions').length
+    retained_surface = result.dig('definitions', 0, 'geometry', 'surfaces', 0)
+    assert_equal 'analysis_boundary', result.dig('definitions', 0, 'retention')
+    assert_equal %w[area_m2 classification_hint holes id normal outer source_count type],
+                 retained_surface.keys.sort
     overrides = result.fetch('instances').flat_map do |instance|
       instance.fetch('surface_classification_overrides')
     end
+    assert overrides.all? { |item| item.fetch('surface_id') == retained_surface.fetch('id') }
     assert_equal %w[roof wall], overrides.map { |item| item.fetch('type') }.sort
     assert_equal ['Atap Occurrence B', 'Dinding Occurrence A'],
                  overrides.map { |item| item.dig('classification', 'label') }.sort

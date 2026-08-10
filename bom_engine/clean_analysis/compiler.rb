@@ -11,6 +11,7 @@ module BOMEngine
       FORMAT_IDENTIFIER = 'bom_engine_clean_v1'.freeze
       FORMAT_VERSION = '1.0.0'.freeze
       POSITION_TOLERANCE_M = 1.0e-6
+      SERIALIZATION_DECIMAL_PLACES = 9
       NORMAL_TOLERANCE = 1.0e-6
       VERTICAL_NORMAL_Z_MAX = 0.15
       HORIZONTAL_NORMAL_Z_MIN = 0.95
@@ -146,11 +147,14 @@ module BOMEngine
         top_level_vertices = surfaces.inject(0) do |total, surface|
           total + surface.fetch('outer').length + surface.fetch('holes').inject(0) { |sum, loop| sum + loop.length }
         end
-        definition_vertices = retained_definitions.inject(0) do |definition_total, definition|
+        definition_vertex_references = retained_definitions.inject(0) do |definition_total, definition|
           definition_total + definition.dig('geometry', 'surfaces').inject(0) do |surface_total, surface|
             surface_total + surface.fetch('outer').length +
               surface.fetch('holes').inject(0) { |sum, loop| sum + loop.length }
           end
+        end
+        definition_vertices = retained_definitions.inject(0) do |sum, definition|
+          sum + definition.dig('geometry', 'vertices').length
         end
         retained_definition_fragments = retained_definition_categories.keys.inject(0) do |sum, definition_uuid|
           sum + @definitions.fetch(definition_uuid).primitive_keys.length
@@ -200,6 +204,7 @@ module BOMEngine
                 sum + component.fetch('geometry').fetch('source_count')
               end,
               'raw_vertices_serialized' => top_level_vertices + definition_vertices,
+              'polygon_vertex_references' => top_level_vertices + definition_vertex_references,
               'raw_triangle_indices_serialized' => 0
             },
             'area_m2' => {
@@ -346,17 +351,52 @@ module BOMEngine
             definition_id: definition_id
           )
         end
+        vertices, indexed_surfaces = pool_definition_vertices(surfaces)
+        retention = categories.include?('analysis_boundary') ?
+          'analysis_boundary' : 'visual_architectural_detail'
+        if retention == 'visual_architectural_detail'
+          indexed_surfaces = indexed_surfaces.map do |surface|
+            {
+              'type' => surface.fetch('type'),
+              'outer' => surface.fetch('outer'),
+              'holes' => surface.fetch('holes')
+            }
+          end
+        end
         {
           'id' => definition_id,
           'kind' => definition.kind,
-          'retention' => categories.include?('analysis_boundary') ?
-            'analysis_boundary' : 'visual_architectural_detail',
+          'retention' => retention,
           'geometry' => {
             'coordinate_space' => 'definition_local',
             'source_count' => definition.primitive_keys.length,
-            'surfaces' => surfaces
+            'vertices' => vertices,
+            'surfaces' => indexed_surfaces
           }
         }
+      end
+
+      def pool_definition_vertices(surfaces)
+        vertices = []
+        indices_by_point = {}
+        indexed_surfaces = surfaces.map do |surface|
+          surface.merge(
+            'outer' => pooled_loop(surface.fetch('outer'), vertices, indices_by_point),
+            'holes' => surface.fetch('holes').map do |loop|
+              pooled_loop(loop, vertices, indices_by_point)
+            end
+          )
+        end
+        [vertices, indexed_surfaces]
+      end
+
+      def pooled_loop(points, vertices, indices_by_point)
+        points.map do |point|
+          indices_by_point[point] ||= begin
+            vertices << point
+            vertices.length - 1
+          end
+        end
       end
 
       def definition_surface(primitive)
@@ -866,7 +906,7 @@ module BOMEngine
       end
 
       def clean_number(value)
-        rounded = value.to_f.round(9)
+        rounded = value.to_f.round(SERIALIZATION_DECIMAL_PLACES)
         rounded.zero? ? 0.0 : rounded
       end
 
