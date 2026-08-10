@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Plugin', 'CleanRc')]
+    [ValidateSet('Plugin', 'CleanRc', 'AppearanceRc')]
     [string]$Target = 'Plugin'
 )
 
@@ -152,7 +152,11 @@ try {
         throw 'A valid source Git commit is required for a clean release candidate.'
     }
     $ShortSha = $Commit.Substring(0, 7)
-    $PackageName = "bom_engine_clean_v1-rc-$ShortSha"
+    $PackageName = if ($Target -eq 'AppearanceRc') {
+        "bom_engine_clean_v1-appearance-rc-$ShortSha"
+    } else {
+        "bom_engine_clean_v1-rc-$ShortSha"
+    }
     $DistRoot = Join-Path $PluginDir 'dist'
     $OutputDir = Join-Path $DistRoot $PackageName
     $ResolvedDistRoot = [System.IO.Path]::GetFullPath($DistRoot)
@@ -174,14 +178,30 @@ try {
         PACKAGE_NAME = $PackageName
         GIT_COMMIT = $Commit
     }
+    $InstallTemplate = if ($Target -eq 'AppearanceRc') {
+        'release\appearance\INSTALL.template.md'
+    } else {
+        'release\INSTALL.template.md'
+    }
+    $AcceptanceTemplate = if ($Target -eq 'AppearanceRc') {
+        'release\appearance\MANUAL_ACCEPTANCE.template.md'
+    } else {
+        'release\MANUAL_ACCEPTANCE.template.md'
+    }
     Expand-Template `
-        -TemplatePath (Join-Path $PluginDir 'release\INSTALL.template.md') `
+        -TemplatePath (Join-Path $PluginDir $InstallTemplate) `
         -OutputPath (Join-Path $OutputDir 'INSTALL.md') `
         -Values $TemplateValues
     Expand-Template `
-        -TemplatePath (Join-Path $PluginDir 'release\MANUAL_ACCEPTANCE.template.md') `
+        -TemplatePath (Join-Path $PluginDir $AcceptanceTemplate) `
         -OutputPath (Join-Path $OutputDir 'MANUAL_ACCEPTANCE.md') `
         -Values $TemplateValues
+    if ($Target -eq 'AppearanceRc') {
+        Expand-Template `
+            -TemplatePath (Join-Path $PluginDir 'release\appearance\APPEARANCE_CONTRACT.template.md') `
+            -OutputPath (Join-Path $OutputDir 'APPEARANCE_CONTRACT.md') `
+            -Values $TemplateValues
+    }
 
     $VersionText = @"
 format:
@@ -191,13 +211,13 @@ version:
     1.0.0
 
 release status:
-    RELEASE CANDIDATE — REQUIRES SKETCHUP ACCEPTANCE
+    $(if ($Target -eq 'AppearanceRc') { 'APPEARANCE RELEASE CANDIDATE — REQUIRES SKETCHUP ACCEPTANCE' } else { 'RELEASE CANDIDATE — REQUIRES SKETCHUP ACCEPTANCE' })
 
 git commit:
     $Commit
 
 base handoff commit:
-    72af3c2ef4b47bdbda8e8504a84e9ef3b651df76
+    $(if ($Target -eq 'AppearanceRc') { 'd611d59b4ac9fdb7c4b785cfd4ae072e418e67a9' } else { '72af3c2ef4b47bdbda8e8504a84e9ef3b651df76' })
 "@
     Write-Utf8NoBom -Path (Join-Path $OutputDir 'VERSION.txt') -Content $VersionText
 
@@ -207,6 +227,9 @@ base handoff commit:
         (Join-Path $OutputDir 'MANUAL_ACCEPTANCE.md'),
         (Join-Path $OutputDir 'VERSION.txt')
     )
+    if ($Target -eq 'AppearanceRc') {
+        $ChecksumTargets += (Join-Path $OutputDir 'APPEARANCE_CONTRACT.md')
+    }
     $ChecksumLines = $ChecksumTargets | ForEach-Object {
         $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash.ToLowerInvariant()
         "$Hash  $([System.IO.Path]::GetFileName($_))"

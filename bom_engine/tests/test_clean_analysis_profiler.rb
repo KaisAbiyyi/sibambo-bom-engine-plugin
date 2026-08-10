@@ -26,6 +26,15 @@ class CleanAnalysisProfilerTest < Minitest::Test
                  report.dig('output_bytes', 'minified')
     assert_equal BOMEngine::CleanAnalysis::Writer.measure(document, pretty_print: true),
                  report.dig('output_bytes', 'pretty_estimated')
+    assert_equal report.dig('output_bytes', 'minified'),
+                 report.dig('appearance', 'with_appearance_bytes')
+    assert_operator report.dig('appearance', 'without_appearance_bytes'), :<,
+                    report.dig('appearance', 'with_appearance_bytes')
+    assert_operator report.dig('appearance', 'total_overhead_bytes'), :>, 0
+    assert_operator report.dig('appearance', 'breakdown_bytes', 'material_table'), :>, 0
+    assert_operator report.dig('appearance', 'breakdown_bytes', 'analytical_surface_material_ids'), :>, 0
+    assert_operator report.dig('appearance', 'breakdown_bytes', 'definition_polygon_material_ids'), :>, 0
+    assert_equal 0, report.dig('appearance', 'breakdown_bytes', 'uv_data')
     assert_equal 4, report.dig('geometry', 'polygon_count')
     assert_equal 3, report.dig('geometry', 'analytical_polygon_count')
     assert_equal 1, report.dig('geometry', 'definition_polygon_count')

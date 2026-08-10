@@ -43,6 +43,58 @@ class CleanAnalysisWriterTest < Minitest::Test
     assert_match(/redundant geometry key: triangles/, error.message)
   end
 
+  def test_validates_material_table_and_references
+    material = {
+      'id' => 'mat-0123456789abcdef',
+      'name' => 'Wall Paint',
+      'base_color_rgba' => [0.25, 0.5, 0.75, 0.8],
+      'opacity' => 0.8,
+      'color_space' => 'srgb',
+      'texture' => { 'reference' => 'wall.png', 'width_m' => 0.5, 'height_m' => 0.25 }
+    }
+    document = clean_document.merge(
+      'materials' => [material],
+      'surfaces' => [valid_surface.merge('front_material_id' => material.fetch('id'))]
+    )
+
+    assert_equal JSON.generate(document), BOMEngine::CleanAnalysis::Writer.generate(document)
+  end
+
+  def test_rejects_unknown_material_references
+    error = assert_raises(ArgumentError) do
+      BOMEngine::CleanAnalysis::Writer.generate(
+        clean_document.merge(
+          'surfaces' => [valid_surface.merge('front_material_id' => 'mat-0123456789abcdef')]
+        )
+      )
+    end
+
+    assert_match(/unknown material reference/, error.message)
+  end
+
+  def test_rejects_malformed_or_duplicate_materials
+    base = {
+      'id' => 'mat-0123456789abcdef',
+      'name' => 'Paint',
+      'base_color_rgba' => [0.25, 0.5, 0.75, 0.8],
+      'opacity' => 0.8,
+      'color_space' => 'srgb',
+      'texture' => nil
+    }
+    invalid = {
+      'invalid id' => [base.merge('id' => 'random')],
+      'invalid channel' => [base.merge('base_color_rgba' => [0.25, 1.1, 0.75, 0.8])],
+      'mismatched opacity' => [base.merge('opacity' => 0.7)],
+      'duplicate id' => [base, base.dup]
+    }
+
+    invalid.each do |name, materials|
+      assert_raises(ArgumentError, name) do
+        BOMEngine::CleanAnalysis::Writer.generate(clean_document.merge('materials' => materials))
+      end
+    end
+  end
+
   def test_measures_compact_and_pretty_bytes_without_changing_the_document
     compact = BOMEngine::CleanAnalysis::Writer.measure(clean_document)
     pretty = BOMEngine::CleanAnalysis::Writer.measure(

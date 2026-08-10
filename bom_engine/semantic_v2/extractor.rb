@@ -322,10 +322,10 @@ module BOMEngine
         end
 
         def alpha_channel(material, color)
-          value = if color&.respond_to?(:alpha)
-                    color.alpha
-                  elsif material.respond_to?(:alpha)
+          value = if material.respond_to?(:alpha)
                     material.alpha
+                  elsif color&.respond_to?(:alpha)
+                    color.alpha
                   else
                     255
                   end

@@ -663,6 +663,15 @@ class SemanticV2ExtractorTest < Minitest::Test
     assert material.texture.frozen?
   end
 
+  def test_material_opacity_comes_from_material_alpha_not_color_alpha
+    @fixture.material.instance_variable_set(:@alpha, 0.25)
+
+    result = extract
+    material = result.materials.find { |item| item.source_uuid == MATERIAL_ID }
+
+    assert_equal 64, material.rgba.fetch(3)
+  end
+
   private
 
   def extract(progress: nil)

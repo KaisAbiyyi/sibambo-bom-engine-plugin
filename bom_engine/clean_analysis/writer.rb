@@ -8,6 +8,10 @@ module BOMEngine
   module CleanAnalysis
     module Writer
       FORBIDDEN_GEOMETRY_KEYS = %w[triangles faces positions loops].freeze
+      MATERIAL_REFERENCE_KEYS = %w[
+        material_id front_material_id back_material_id inherited_material_id
+      ].freeze
+      MATERIAL_ID_PATTERN = /\Amat-[0-9a-f]{16}\z/.freeze
 
       module_function
 
@@ -67,6 +71,9 @@ module BOMEngine
         forbidden = find_forbidden_key(document, progress)
         raise ArgumentError, "redundant geometry key: #{forbidden}" if forbidden
 
+        material_ids = validate_materials!(document.fetch('materials', []), progress)
+        validate_material_references!(document, material_ids, progress)
+
         document.fetch('surfaces', []).each do |surface|
           report_progress(progress)
           SurfaceValidator.validate!(surface)
@@ -87,6 +94,76 @@ module BOMEngine
         end
       end
       private_class_method :validate_document!
+
+      def validate_materials!(materials, progress)
+        raise ArgumentError, 'materials must be an array' unless materials.is_a?(Array)
+
+        ids = {}
+        materials.each do |material|
+          report_progress(progress)
+          raise ArgumentError, 'material must be an object' unless material.is_a?(Hash)
+
+          id = material['id']
+          unless id.is_a?(String) && MATERIAL_ID_PATTERN.match?(id)
+            raise ArgumentError, 'material id must use deterministic mat-<16 lowercase hex> format'
+          end
+          raise ArgumentError, "duplicate material id: #{id}" if ids.key?(id)
+
+          rgba = material['base_color_rgba']
+          unless rgba.is_a?(Array) && rgba.length == 4 && rgba.all? { |value| unit_number?(value) }
+            raise ArgumentError, "material #{id} base_color_rgba must contain four finite 0..1 values"
+          end
+          unless unit_number?(material['opacity'])
+            raise ArgumentError, "material #{id} opacity must be a finite 0..1 value"
+          end
+          unless material['opacity'] == rgba[3]
+            raise ArgumentError, "material #{id} opacity must match base_color_rgba alpha"
+          end
+          unless material['color_space'] == 'srgb'
+            raise ArgumentError, "material #{id} color_space must be srgb"
+          end
+          validate_texture!(material['texture'], id)
+          ids[id] = true
+        end
+        ids
+      end
+      private_class_method :validate_materials!
+
+      def validate_texture!(texture, material_id)
+        return if texture.nil?
+        raise ArgumentError, "material #{material_id} texture must be an object or null" unless texture.is_a?(Hash)
+
+        %w[width_m height_m].each do |key|
+          next unless texture.key?(key)
+
+          value = texture[key]
+          unless value.is_a?(Numeric) && value.finite? && value >= 0.0
+            raise ArgumentError, "material #{material_id} texture #{key} must be finite and non-negative"
+          end
+        end
+      end
+      private_class_method :validate_texture!
+
+      def validate_material_references!(value, material_ids, progress)
+        report_progress(progress)
+        case value
+        when Hash
+          value.each do |key, child|
+            if MATERIAL_REFERENCE_KEYS.include?(key.to_s) && !material_ids.key?(child)
+              raise ArgumentError, "unknown material reference: #{child.inspect}"
+            end
+            validate_material_references!(child, material_ids, progress)
+          end
+        when Array
+          value.each { |child| validate_material_references!(child, material_ids, progress) }
+        end
+      end
+      private_class_method :validate_material_references!
+
+      def unit_number?(value)
+        value.is_a?(Numeric) && value.finite? && value.between?(0.0, 1.0)
+      end
+      private_class_method :unit_number?
 
       def visual_surface_validation_candidate(surface)
         outer = surface.fetch('outer')

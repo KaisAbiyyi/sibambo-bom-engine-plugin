@@ -57,6 +57,10 @@ module BOMEngine
           checkpoint('Compiling primitive index')
           index[primitive.key] = primitive
         end
+        @material_ids = snapshot_document.materials.each_with_object({}) do |material, index|
+          checkpoint('Compiling material index')
+          index[material.source_uuid] = stable_id('mat', material.source_uuid)
+        end
         @labels = Hash.new { |hash, key| hash[key] = [] }
         snapshot_document.evidence.each do |item|
           checkpoint('Compiling semantic evidence')
@@ -144,6 +148,10 @@ module BOMEngine
         fallback_geometry.concat(@definition_fallback_geometry)
         fallback_geometry.sort_by! { |item| item.fetch('id') }
         excluded_objects.sort_by! { |item| item.fetch('id') }
+        materials = @snapshot.materials.sort_by(&:source_uuid).map do |material|
+          checkpoint('Compiling material appearance')
+          compiled_material(material)
+        end
         top_level_vertices = surfaces.inject(0) do |total, surface|
           total + surface.fetch('outer').length + surface.fetch('holes').inject(0) { |sum, loop| sum + loop.length }
         end
@@ -175,6 +183,7 @@ module BOMEngine
           'model' => {
             'bounds' => bounds(surfaces, components, instances)
           },
+          'materials' => materials,
           'surfaces' => surfaces,
           'definitions' => retained_definitions,
           'instances' => instances,
@@ -193,6 +202,7 @@ module BOMEngine
               'retained_definition_polygon_count' => retained_definitions.inject(0) do |sum, definition|
                 sum + definition.dig('geometry', 'surfaces').length
               end,
+              'material_count' => materials.length,
               'instance_count' => instances.length,
               'component_count' => components.length,
               'excluded_object_count' => excluded_objects.length,
@@ -275,7 +285,7 @@ module BOMEngine
       end
 
       def compact_component(occurrence, definition, label, category)
-        {
+        item = {
           'id' => stable_id('component', occurrence.uuid_path),
           'name' => display_name(label, category),
           'category' => category,
@@ -286,6 +296,8 @@ module BOMEngine
             'source_count' => definition.primitive_keys.length
           }
         }
+        assign_material_id!(item, 'material_id', occurrence.material_uuid)
+        item
       end
 
       def shared_occurrence?(occurrence)
@@ -311,6 +323,7 @@ module BOMEngine
           'transform' => occurrence.transform.map { |value| clean_number(value) },
           'transform_kind' => transform_kind(occurrence.transform)
         }
+        assign_material_id!(item, 'material_id', occurrence.material_uuid)
         parent_id = @emitted_instance_ids[path_key(occurrence.uuid_path[0...-1])]
         item['parent_instance_id'] = parent_id if parent_id
         if item.fetch('transform_kind') == 'non_uniform_scale'
@@ -356,11 +369,13 @@ module BOMEngine
           'analysis_boundary' : 'visual_architectural_detail'
         if retention == 'visual_architectural_detail'
           indexed_surfaces = indexed_surfaces.map do |surface|
-            {
+            compact = {
               'type' => surface.fetch('type'),
               'outer' => surface.fetch('outer'),
               'holes' => surface.fetch('holes')
             }
+            copy_material_ids!(compact, surface, %w[front_material_id back_material_id])
+            compact
           end
         end
         {
@@ -412,7 +427,7 @@ module BOMEngine
             project_loop_to_plane(loop.vertices, normal, plane_origin)
           ).map { |point| clean_point(point) }
         end.sort_by { |loop| loop_sort_key(loop) }
-        {
+        surface = {
           'id' => stable_id('definition-surface', primitive.key),
           'type' => 'polygon',
           'outer' => outer,
@@ -421,6 +436,9 @@ module BOMEngine
           'area_m2' => clean_number(loop_area(outer) - holes.inject(0.0) { |sum, hole| sum + loop_area(hole) }),
           'source_count' => 1
         }.merge('classification_hint' => geometric_surface_type(primitive.normal))
+        assign_material_id!(surface, 'front_material_id', primitive.front_material_uuid)
+        assign_material_id!(surface, 'back_material_id', primitive.back_material_uuid)
+        surface
       end
 
       def unresolved_surface(surface, definition_id: nil)
@@ -433,6 +451,11 @@ module BOMEngine
           'validation_issues' => SurfaceValidator.validate(surface)
         }
         item['definition_id'] = definition_id if definition_id
+        copy_material_ids!(
+          item,
+          surface,
+          %w[front_material_id back_material_id inherited_material_id]
+        )
         item
       end
 
@@ -483,6 +506,7 @@ module BOMEngine
           area_m2: loop_area(outer) - holes.inject(0.0) { |sum, hole| sum + loop_area(hole) },
           front_material_uuid: primitive.front_material_uuid,
           back_material_uuid: primitive.back_material_uuid,
+          inherited_material_uuid: occurrence.material_uuid,
           source_count: 1,
           classification: {
             'method' => classification_method,
@@ -595,6 +619,7 @@ module BOMEngine
           candidate.fetch(:type),
           candidate.fetch(:front_material_uuid),
           candidate.fetch(:back_material_uuid),
+          candidate.fetch(:inherited_material_uuid),
           candidate.fetch(:classification),
           normal.map { |value| quantize(value, NORMAL_TOLERANCE) },
           quantize(plane, POSITION_TOLERANCE_M)
@@ -774,8 +799,55 @@ module BOMEngine
           'orientation' => orientation(candidate.fetch(:normal)),
           'classification' => candidate.fetch(:classification)
         }
+        assign_material_id!(surface, 'front_material_id', candidate.fetch(:front_material_uuid))
+        assign_material_id!(surface, 'back_material_id', candidate.fetch(:back_material_uuid))
+        assign_material_id!(surface, 'inherited_material_id', candidate.fetch(:inherited_material_uuid))
         @profiler.record_surface(surface, candidate) if @profiler
         surface
+      end
+
+      def compiled_material(material)
+        rgba = material.rgba.map { |channel| clean_number(channel.to_f / 255.0) }
+        {
+          'id' => @material_ids.fetch(material.source_uuid),
+          'name' => material.name,
+          'base_color_rgba' => rgba,
+          'opacity' => rgba.fetch(3),
+          'color_space' => 'srgb',
+          'texture' => compiled_texture(material.texture)
+        }
+      end
+
+      def compiled_texture(texture)
+        return nil if texture.nil?
+
+        filename = texture_value(texture, :filename).to_s
+        reference = filename.empty? ? nil : File.basename(filename.tr('\\', '/'))
+        {
+          'reference' => reference,
+          'width_m' => optional_clean_number(texture_value(texture, :width_m)),
+          'height_m' => optional_clean_number(texture_value(texture, :height_m))
+        }.reject { |_key, value| value.nil? }
+      end
+
+      def texture_value(texture, key)
+        texture[key] || texture[key.to_s]
+      end
+
+      def optional_clean_number(value)
+        value.nil? ? nil : clean_number(value)
+      end
+
+      def assign_material_id!(target, key, source_uuid)
+        return target if source_uuid.nil?
+
+        target[key] = @material_ids.fetch(source_uuid)
+        target
+      end
+
+      def copy_material_ids!(target, source, keys)
+        keys.each { |key| target[key] = source[key] if source.key?(key) }
+        target
       end
 
       def orientation(normal)

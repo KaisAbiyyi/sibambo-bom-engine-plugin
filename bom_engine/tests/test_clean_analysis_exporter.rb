@@ -48,8 +48,15 @@ class CleanAnalysisExporterTest < Minitest::Test
 
         assert_equal 'bom_engine_clean_v1', payload.dig('format', 'identifier')
         assert_equal 0, payload.dig('diagnostics', 'counts', 'raw_triangle_indices_serialized')
+        assert_equal 2, payload.fetch('materials').length
+        assert payload.fetch('materials').all? { |material| material.fetch('id').match?(/\Amat-[0-9a-f]{16}\z/) }
+        assert payload.fetch('materials').all? { |material| material.fetch('base_color_rgba').length == 4 }
+        assert payload.fetch('surfaces').any? { |surface| surface.key?('front_material_id') }
         assert_operator payload.fetch('surfaces').length, :>=, 1
         assert_equal 1, payload.fetch('definitions').length
+        occurrence_records = payload.fetch('instances') + payload.fetch('components')
+        assert occurrence_records.any? { |instance| instance.key?('material_id') } ||
+               payload.fetch('surfaces').any? { |surface| surface.key?('inherited_material_id') }
         assert_equal %w[door door door], payload.fetch('instances').select { |item| item.fetch('category') == 'door' }.map { |item| item.fetch('category') }
         assert_equal [], fixture.model.operation_calls
         assert_equal [], fixture.model.writes

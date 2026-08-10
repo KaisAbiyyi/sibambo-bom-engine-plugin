@@ -6,7 +6,7 @@ require_relative '../semantic_v2'
 require_relative '../clean_analysis' if File.exist?(File.expand_path('../clean_analysis.rb', __dir__))
 
 class CleanAnalysisCompilerTest < Minitest::Test
-  UUIDS = (1..200).map { |index| format('00000000-0000-4000-8000-%012x', index) }.freeze
+  UUIDS = (1..500).map { |index| format('00000000-0000-4000-8000-%012x', index) }.freeze
 
   def test_merges_adjacent_coplanar_wall_fragments_without_triangle_data
     first_key = [uuid(1), uuid(10)].freeze
@@ -884,6 +884,157 @@ class CleanAnalysisCompilerTest < Minitest::Test
                  overrides.map { |item| item.dig('classification', 'label') }.sort
   end
 
+  def test_deduplicates_one_material_across_one_hundred_analytical_polygons
+    paint = material(uuid(190), 'Wall Paint', [184, 181, 173, 255])
+    faces = 100.times.map do |index|
+      x = index * 2
+      polygon(
+        definition_uuid: uuid(1),
+        source_uuid: uuid(201 + index),
+        points: [[x, 0, 0], [x + 1, 0, 0], [x + 1, 1, 0], [x, 1, 0]],
+        normal: [0, 0, 1],
+        front_material_uuid: paint.source_uuid
+      )
+    end
+
+    result = compile(document(root_primitives: faces, materials: [paint]))
+
+    assert_equal 1, result.fetch('materials').length
+    material_id = result.dig('materials', 0, 'id')
+    assert_equal 100, result.fetch('surfaces').length
+    assert_equal [material_id],
+                 result.fetch('surfaces').map { |surface| surface.fetch('front_material_id') }.uniq
+    assert_equal 1, result.dig('diagnostics', 'counts', 'material_count')
+  end
+
+  def test_preserves_front_back_color_opacity_and_compact_texture_metadata
+    front = material(
+      uuid(190),
+      'Glass Tint',
+      [64, 128, 192, 128],
+      texture: {
+        filename: 'C:\\materials\\facade.png',
+        width_m: 0.5,
+        height_m: 0.25
+      }
+    )
+    back = material(uuid(191), 'Back Paint', [240, 230, 220, 255])
+    face = polygon(
+      definition_uuid: uuid(1),
+      source_uuid: uuid(20),
+      points: [[0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0]],
+      normal: [0, 0, 1],
+      front_material_uuid: front.source_uuid,
+      back_material_uuid: back.source_uuid
+    )
+
+    result = compile(document(root_primitives: [face], materials: [back, front]))
+    materials_by_name = result.fetch('materials').each_with_object({}) do |item, by_name|
+      by_name[item.fetch('name')] = item
+    end
+    surface = result.fetch('surfaces').first
+
+    assert_equal materials_by_name.fetch('Glass Tint').fetch('id'), surface.fetch('front_material_id')
+    assert_equal materials_by_name.fetch('Back Paint').fetch('id'), surface.fetch('back_material_id')
+    assert_equal [0.250980392, 0.501960784, 0.752941176, 0.501960784],
+                 materials_by_name.fetch('Glass Tint').fetch('base_color_rgba')
+    assert_equal 0.501960784, materials_by_name.fetch('Glass Tint').fetch('opacity')
+    assert_equal 'srgb', materials_by_name.fetch('Glass Tint').fetch('color_space')
+    assert_equal({ 'reference' => 'facade.png', 'width_m' => 0.5, 'height_m' => 0.25 },
+                 materials_by_name.fetch('Glass Tint').fetch('texture'))
+    assert_nil materials_by_name.fetch('Back Paint').fetch('texture')
+    refute deep_key?(result, 'uv')
+    refute deep_key?(result, 'uvs')
+  end
+
+  def test_instance_material_inheritance_keeps_shared_definition_and_holes
+    explicit = material(uuid(190), 'Explicit Face', [220, 30, 30, 255])
+    inherited = material(uuid(191), 'Occurrence Paint', [30, 60, 220, 200])
+    explicit_face = polygon(
+      definition_uuid: uuid(12),
+      source_uuid: uuid(68),
+      points: [[0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0]],
+      normal: [0, 0, 1],
+      front_material_uuid: explicit.source_uuid
+    )
+    default_face = polygon_with_hole(
+      definition_uuid: uuid(12),
+      source_uuid: uuid(69),
+      outer: [[0, 0, 1], [4, 0, 1], [4, 4, 1], [0, 4, 1]],
+      hole: [[1, 1, 1], [1, 3, 1], [3, 3, 1], [3, 1, 1]],
+      normal: [0, 0, 1]
+    )
+    occurrences = 100.times.map do |index|
+      occurrence(
+        path: [uuid(301 + index)],
+        definition_uuid: uuid(12),
+        translation: [index * 5, 0, 0],
+        material_uuid: inherited.source_uuid
+      )
+    end
+
+    result = compile(document(
+      extra_definitions: [definition(uuid(12), 'component', [default_face, explicit_face])],
+      extra_primitives: [default_face, explicit_face],
+      extra_occurrences: occurrences,
+      materials: [inherited, explicit]
+    ))
+
+    assert_equal 1, result.fetch('definitions').length
+    assert_equal 2, result.dig('definitions', 0, 'geometry', 'surfaces').length
+    assert_equal 100, result.fetch('instances').length
+    assert_equal 1, result.fetch('instances').map { |instance| instance.fetch('material_id') }.uniq.length
+    definition_surfaces = result.dig('definitions', 0, 'geometry', 'surfaces')
+    assert_equal 1, definition_surfaces.count { |surface| surface.key?('front_material_id') }
+    assert_equal 1, definition_surfaces.count { |surface| !surface.key?('front_material_id') }
+    assert_equal 1, definition_surfaces.count { |surface| surface.fetch('holes').length == 1 }
+    assert_equal 2, result.dig('definitions', 0, 'geometry', 'source_count')
+  end
+
+  def test_material_order_polygon_order_and_instance_order_are_byte_deterministic
+    explicit = material(uuid(190), 'Explicit Face', [200, 100, 50, 255])
+    inherited = material(uuid(191), 'Occurrence Paint', [20, 40, 80, 180])
+    painted = polygon(
+      definition_uuid: uuid(12),
+      source_uuid: uuid(68),
+      points: [[0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0]],
+      normal: [0, 0, 1],
+      front_material_uuid: explicit.source_uuid
+    )
+    default = polygon_with_hole(
+      definition_uuid: uuid(12),
+      source_uuid: uuid(69),
+      outer: [[0, 0, 1], [2, 0, 1], [2, 2, 1], [0, 2, 1]],
+      hole: [[0.5, 0.5, 1], [0.5, 1.5, 1], [1.5, 1.5, 1], [1.5, 0.5, 1]],
+      normal: [0, 0, 1]
+    )
+    occurrences = 3.times.map do |index|
+      occurrence(
+        path: [uuid(401 + index)],
+        definition_uuid: uuid(12),
+        translation: [index * 3, 0, 0],
+        material_uuid: inherited.source_uuid
+      )
+    end
+    forward = document(
+      extra_definitions: [definition(uuid(12), 'component', [painted, default])],
+      extra_primitives: [painted, default],
+      extra_occurrences: occurrences,
+      materials: [explicit, inherited]
+    )
+    reversed = document(
+      extra_definitions: [definition(uuid(12), 'component', [default, painted])],
+      extra_primitives: [default, painted],
+      extra_occurrences: occurrences.reverse,
+      materials: [inherited, explicit]
+    )
+
+    first = BOMEngine::CleanAnalysis::Writer.generate(compile(forward))
+    second = BOMEngine::CleanAnalysis::Writer.generate(compile(reversed))
+
+    assert_equal first, second
+  end
+
   private
 
   def compile(snapshot_document)
@@ -901,7 +1052,7 @@ class CleanAnalysisCompilerTest < Minitest::Test
   end
 
   def document(root_primitives: [], extra_definitions: [], extra_primitives: [],
-               extra_occurrences: [], evidence: [])
+               extra_occurrences: [], evidence: [], materials: [])
     root_definition = definition(uuid(1), 'model', root_primitives)
     root_occurrence = occurrence(path: [].freeze, definition_uuid: uuid(1))
     snapshot::Document.new(
@@ -920,7 +1071,7 @@ class CleanAnalysisCompilerTest < Minitest::Test
       occurrences: ([root_occurrence] + extra_occurrences).freeze,
       definitions: ([root_definition] + extra_definitions).freeze,
       primitives: (root_primitives + extra_primitives).freeze,
-      materials: [].freeze,
+      materials: materials.freeze,
       evidence: evidence.freeze,
       foreign_source_provenance: [].freeze,
       diagnostics: [].freeze
@@ -935,7 +1086,8 @@ class CleanAnalysisCompilerTest < Minitest::Test
     )
   end
 
-  def occurrence(path:, definition_uuid:, translation: [0, 0, 0], transform: nil)
+  def occurrence(path:, definition_uuid:, translation: [0, 0, 0], transform: nil,
+                 material_uuid: nil)
     transform ||= identity_transform.dup.tap do |matrix|
       matrix[12] = translation[0].to_f
       matrix[13] = translation[1].to_f
@@ -944,11 +1096,13 @@ class CleanAnalysisCompilerTest < Minitest::Test
     snapshot::Occurrence.new(
       uuid_path: path.freeze,
       definition_uuid: definition_uuid,
-      transform: transform.map(&:to_f).freeze
+      transform: transform.map(&:to_f).freeze,
+      material_uuid: material_uuid
     )
   end
 
-  def polygon(definition_uuid:, source_uuid:, points:, normal:, adjacent_keys: [], area_m2: nil)
+  def polygon(definition_uuid:, source_uuid:, points:, normal:, adjacent_keys: [], area_m2: nil,
+              front_material_uuid: nil, back_material_uuid: nil)
     outer = snapshot::Loop.new(
       kind: 'outer',
       vertices: points.map { |point| point.map(&:to_f).freeze }.freeze,
@@ -960,15 +1114,16 @@ class CleanAnalysisCompilerTest < Minitest::Test
       definition_uuid: definition_uuid,
       source_uuid: source_uuid,
       loops: [outer].freeze,
-      front_material_uuid: nil,
-      back_material_uuid: nil,
+      front_material_uuid: front_material_uuid,
+      back_material_uuid: back_material_uuid,
       normal: normal.map(&:to_f).freeze,
       area_m2: area_m2 || polygon_area(points),
       construction_hints: [].freeze
     )
   end
 
-  def polygon_with_hole(definition_uuid:, source_uuid:, outer:, hole:, normal:)
+  def polygon_with_hole(definition_uuid:, source_uuid:, outer:, hole:, normal:,
+                        front_material_uuid: nil, back_material_uuid: nil)
     loops = [
       snapshot::Loop.new(
         kind: 'outer',
@@ -988,15 +1143,16 @@ class CleanAnalysisCompilerTest < Minitest::Test
       definition_uuid: definition_uuid,
       source_uuid: source_uuid,
       loops: loops,
-      front_material_uuid: nil,
-      back_material_uuid: nil,
+      front_material_uuid: front_material_uuid,
+      back_material_uuid: back_material_uuid,
       normal: normal.map(&:to_f).freeze,
       area_m2: 15.0,
       construction_hints: [].freeze
     )
   end
 
-  def polygon_with_holes(definition_uuid:, source_uuid:, outer:, holes:, normal:)
+  def polygon_with_holes(definition_uuid:, source_uuid:, outer:, holes:, normal:,
+                         front_material_uuid: nil, back_material_uuid: nil)
     loops = [
       snapshot::Loop.new(
         kind: 'outer',
@@ -1020,8 +1176,8 @@ class CleanAnalysisCompilerTest < Minitest::Test
       definition_uuid: definition_uuid,
       source_uuid: source_uuid,
       loops: loops.freeze,
-      front_material_uuid: nil,
-      back_material_uuid: nil,
+      front_material_uuid: front_material_uuid,
+      back_material_uuid: back_material_uuid,
       normal: normal.map(&:to_f).freeze,
       area_m2: 95.0,
       construction_hints: [].freeze
@@ -1039,6 +1195,15 @@ class CleanAnalysisCompilerTest < Minitest::Test
       aliases: [label].freeze,
       explicit: true,
       primary: true
+    )
+  end
+
+  def material(source_uuid, name, rgba, texture: nil)
+    snapshot::Material.new(
+      source_uuid: source_uuid,
+      name: name,
+      rgba: rgba.freeze,
+      texture: texture
     )
   end
 

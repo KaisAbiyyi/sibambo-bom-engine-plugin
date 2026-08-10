@@ -146,6 +146,7 @@ module BOMEngine
             'minified' => minified_bytes,
             'pretty_estimated' => pretty_bytes
           },
+          'appearance' => appearance_report(document, minified_bytes, progress),
           'surface_counts' => surface_counts,
           'geometry' => {
             'polygon_count' => document.fetch('surfaces').length + definition_polygon_count,
@@ -180,6 +181,58 @@ module BOMEngine
       end
 
       private
+
+      def appearance_report(document, with_appearance_bytes, progress)
+        without_appearance = without_appearance_data(document, true, progress)
+        without_appearance_bytes = Writer.measure(without_appearance, progress: progress)
+        materials = document.fetch('materials', [])
+        definition_surfaces = document.fetch('definitions', []).flat_map do |definition|
+          definition.dig('geometry', 'surfaces')
+        end
+        {
+          'without_appearance_bytes' => without_appearance_bytes,
+          'with_appearance_bytes' => with_appearance_bytes,
+          'total_overhead_bytes' => with_appearance_bytes - without_appearance_bytes,
+          'breakdown_bytes' => {
+            'material_table' => JSON.generate('materials' => materials).bytesize,
+            'analytical_surface_material_ids' => material_reference_bytes(document.fetch('surfaces', [])),
+            'definition_polygon_material_ids' => material_reference_bytes(definition_surfaces),
+            'instance_overrides' => material_reference_bytes(document.fetch('instances', [])),
+            'component_overrides' => material_reference_bytes(document.fetch('components', [])),
+            'fallback_material_ids' => material_reference_bytes(document.fetch('fallback_geometry', [])),
+            'texture_metadata' => materials.inject(0) do |sum, material|
+              texture = material['texture']
+              texture.nil? ? sum : sum + JSON.generate(texture).bytesize
+            end,
+            'uv_data' => 0
+          }
+        }
+      end
+
+      def without_appearance_data(value, top_level = false, progress = nil)
+        report_progress(progress)
+        case value
+        when Hash
+          value.each_with_object({}) do |(key, child), stripped|
+            next if top_level && key == 'materials'
+            next if Writer::MATERIAL_REFERENCE_KEYS.include?(key.to_s)
+            next if key == 'material_count'
+
+            stripped[key] = without_appearance_data(child, false, progress)
+          end
+        when Array
+          value.map { |child| without_appearance_data(child, false, progress) }
+        else
+          value
+        end
+      end
+
+      def material_reference_bytes(records)
+        records.inject(0) do |sum, record|
+          stripped = record.reject { |key, _value| Writer::MATERIAL_REFERENCE_KEYS.include?(key.to_s) }
+          sum + JSON.generate(record).bytesize - JSON.generate(stripped).bytesize
+        end
+      end
 
       def structure_report(definitions_by_id, instances, components, groups)
         root = @snapshot.occurrences.find { |occurrence| occurrence.uuid_path.empty? }
