@@ -11,6 +11,28 @@ module BOMEngine
 
       module_function
 
+      class ByteCounter
+        attr_reader :bytesize
+
+        def initialize
+          @bytesize = 0
+        end
+
+        def write(value)
+          size = value.to_s.bytesize
+          @bytesize += size
+          size
+        end
+      end
+
+      def measure(document, progress: nil, pretty_print: false)
+        validate_document!(document, progress)
+        output = ByteCounter.new
+        write_json(output, document, 0, progress, pretty_print)
+        output.write("\n") if pretty_print
+        output.bytesize
+      end
+
       def generate(document, progress: nil, pretty_print: false)
         validate_document!(document, progress)
         output = StringIO.new
@@ -48,6 +70,12 @@ module BOMEngine
         document.fetch('surfaces', []).each do |surface|
           report_progress(progress)
           SurfaceValidator.validate!(surface)
+        end
+        document.fetch('definitions', []).each do |definition|
+          definition.fetch('geometry').fetch('surfaces').each do |surface|
+            report_progress(progress)
+            SurfaceValidator.validate!(surface)
+          end
         end
       end
       private_class_method :validate_document!

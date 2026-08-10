@@ -49,7 +49,8 @@ class CleanAnalysisExporterTest < Minitest::Test
         assert_equal 'bom_engine_clean_v1', payload.dig('format', 'identifier')
         assert_equal 0, payload.dig('diagnostics', 'counts', 'raw_triangle_indices_serialized')
         assert_operator payload.fetch('surfaces').length, :>=, 1
-        assert_equal %w[door door door], payload.fetch('components').select { |item| item.fetch('category') == 'door' }.map { |item| item.fetch('category') }
+        assert_equal 1, payload.fetch('definitions').length
+        assert_equal %w[door door door], payload.fetch('instances').select { |item| item.fetch('category') == 'door' }.map { |item| item.fetch('category') }
         assert_equal [], fixture.model.operation_calls
         assert_equal [], fixture.model.writes
         assert_equal output_path, result.fetch(:path)
@@ -157,6 +158,28 @@ class CleanAnalysisExporterTest < Minitest::Test
       bytes = File.binread(output_path)
       assert_includes bytes, "\n  \"format\""
       assert_equal JSON.pretty_generate(JSON.parse(bytes)) + "\n", bytes
+    end
+  end
+
+  def test_profile_mode_returns_a_non_persisted_expansion_report
+    fixture = BOMEngine::Tests::SemanticV2Fixtures.complex_fixture
+
+    Dir.mktmpdir('clean-analysis-profile') do |directory|
+      output_path = File.join(directory, 'profiled_clean.json')
+      result = BOMEngine::CleanAnalysis::Exporter.export(
+        model: fixture.model,
+        roots: fixture.roots,
+        parent_transform: BOMEngine::Tests::SemanticV2Fixtures::FakeTransformation.identity,
+        output_path: output_path,
+        identity_plan: fixture.identity_plan,
+        settings: { include_hidden: false, scope_mode: 'model' },
+        profile: true
+      )
+
+      assert_equal File.size(output_path), result.dig(:profile, 'output_bytes', 'minified')
+      assert_equal 4, result.dig(:profile, 'geometry', 'polygon_count')
+      assert_equal 3, result.dig(:profile, 'geometry', 'analytical_polygon_count')
+      refute JSON.parse(File.binread(output_path)).key?('profile')
     end
   end
 

@@ -7,6 +7,7 @@ require_relative 'clean_analysis/batch_options'
 require_relative 'clean_analysis/conversion_job'
 require_relative 'clean_analysis/compiler'
 require_relative 'clean_analysis/writer'
+require_relative 'clean_analysis/profiler'
 require_relative 'clean_analysis/exporter'
 require_relative 'clean_analysis/sketchup_extension'
 

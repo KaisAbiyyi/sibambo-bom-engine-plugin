@@ -11,7 +11,7 @@ module BOMEngine
       module_function
 
       def export(model:, roots:, parent_transform:, output_path:, identity_plan: nil, settings: {},
-                 progress: nil, batch_size: 24, pretty_print: false)
+                 progress: nil, batch_size: 24, pretty_print: false, profile: false)
         root_items = Array(roots)
         batcher = ProgressBatcher.new(progress, batch_size)
         batcher.force('Preparing clean export')
@@ -34,7 +34,12 @@ module BOMEngine
           progress: batcher.method(:step)
         )
         batcher.force('Compiling architectural surfaces')
-        document = Compiler.compile(snapshot, progress: batcher.method(:step))
+        profiler = profile ? Profiler.new(snapshot) : nil
+        document = Compiler.compile(
+          snapshot,
+          progress: batcher.method(:step),
+          profiler: profiler
+        )
         batcher.force('Writing clean JSON')
         result = Writer.write(
           output_path,
@@ -42,6 +47,7 @@ module BOMEngine
           pretty_print: pretty_print,
           progress: batcher.method(:step)
         ).merge(document: document)
+        result[:profile] = profiler.report(document, progress: batcher.method(:step)) if profiler
         batcher.force('Clean export complete')
         result
       end

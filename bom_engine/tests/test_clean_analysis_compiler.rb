@@ -214,6 +214,269 @@ class CleanAnalysisCompilerTest < Minitest::Test
     assert_equal [], result.fetch('fallback_geometry')
   end
 
+  def test_serializes_repeated_component_definition_geometry_once_for_one_hundred_instances
+    faces = 3.times.map do |index|
+      polygon(
+        definition_uuid: uuid(5),
+        source_uuid: uuid(50 + index),
+        points: [[index, 0, 0], [index + 1, 0, 0], [index + 1, 0, 1], [index, 0, 1]],
+        normal: [0, -1, 0]
+      )
+    end
+    occurrences = 100.times.map do |index|
+      occurrence(
+        path: [uuid(80 + index)],
+        definition_uuid: uuid(5),
+        translation: [index * 2, 0, 0]
+      )
+    end
+
+    result = compile(
+      document(
+        extra_definitions: [definition(uuid(5), 'component', faces)],
+        extra_primitives: faces,
+        extra_occurrences: occurrences
+      )
+    )
+
+    assert_equal 1, result.fetch('definitions').length
+    retained = result.fetch('definitions').first
+    assert_equal 3, retained.dig('geometry', 'surfaces').length
+    assert_equal 100, result.fetch('instances').length
+    assert_equal (0...100).map { |index| index * 2.0 },
+                 result.fetch('instances').map { |item| item.fetch('transform')[12] }.sort
+    refute deep_key?(result.fetch('instances'), 'outer')
+    retained_geometry_bytes = JSON.generate(retained.fetch('geometry')).bytesize
+    assert_operator JSON.generate(result).bytesize, :<, retained_geometry_bytes * 100
+  end
+
+  def test_projects_shared_definition_vertices_onto_the_sketchup_face_plane
+    face = polygon(
+      definition_uuid: uuid(5),
+      source_uuid: uuid(50),
+      points: [[0, 0, 0], [1, 0.0000015, 0], [1, 0.0000026, 1], [0, 0, 1]],
+      normal: [0, -1, 0]
+    )
+    occurrences = 2.times.map do |index|
+      occurrence(path: [uuid(80 + index)], definition_uuid: uuid(5), translation: [index * 2, 0, 0])
+    end
+
+    result = compile(
+      document(
+        extra_definitions: [definition(uuid(5), 'component', [face])],
+        extra_primitives: [face],
+        extra_occurrences: occurrences
+      )
+    )
+
+    surface = result.dig('definitions', 0, 'geometry', 'surfaces', 0)
+    assert_empty BOMEngine::CleanAnalysis::SurfaceValidator.validate(surface)
+    assert_equal [0.0], surface.fetch('outer').map { |point| point[1] }.uniq
+  end
+
+  def test_routes_invalid_shared_definition_polygon_to_existing_fallback
+    face = polygon(
+      definition_uuid: uuid(5),
+      source_uuid: uuid(50),
+      points: [[0, 0, 0], [1, 0, 1], [0, 0, 1], [1, 0, 0]],
+      normal: [0, -1, 0]
+    )
+    occurrences = 2.times.map do |index|
+      occurrence(path: [uuid(80 + index)], definition_uuid: uuid(5), translation: [index * 2, 0, 0])
+    end
+
+    result = compile(
+      document(
+        extra_definitions: [definition(uuid(5), 'component', [face])],
+        extra_primitives: [face],
+        extra_occurrences: occurrences
+      )
+    )
+
+    assert_empty result.dig('definitions', 0, 'geometry', 'surfaces')
+    assert_equal 1, result.fetch('fallback_geometry').length
+    assert_equal result.dig('definitions', 0, 'id'), result.dig('fallback_geometry', 0, 'definition_id')
+    assert_includes result.dig('fallback_geometry', 0, 'validation_issues'), 'outer has zero polygon area'
+    BOMEngine::CleanAnalysis::Writer.generate(result)
+  end
+
+  def test_preserves_nested_shared_definitions_without_duplicating_child_geometry
+    child_face = polygon(
+      definition_uuid: uuid(6),
+      source_uuid: uuid(60),
+      points: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]],
+      normal: [0, -1, 0]
+    )
+    parent_occurrences = 10.times.map do |index|
+      occurrence(path: [uuid(100 + index)], definition_uuid: uuid(5), translation: [index * 3, 0, 0])
+    end
+    child_occurrences = 10.times.map do |index|
+      occurrence(
+        path: [uuid(100 + index), uuid(70)],
+        definition_uuid: uuid(6),
+        translation: [index * 3, 0, 0]
+      )
+    end
+
+    result = compile(
+      document(
+        extra_definitions: [
+          definition(uuid(5), 'component', []),
+          definition(uuid(6), 'component', [child_face])
+        ],
+        extra_primitives: [child_face],
+        extra_occurrences: parent_occurrences + child_occurrences
+      )
+    )
+
+    assert_equal 2, result.fetch('definitions').length
+    child_definition = result.fetch('definitions').find do |item|
+      item.dig('geometry', 'surfaces').length == 1
+    end
+    refute_nil child_definition
+    assert_equal 1, child_definition.dig('geometry', 'surfaces').length
+    assert_equal 20, result.fetch('instances').length
+    nested = result.fetch('instances').select { |item| item.key?('parent_instance_id') }
+    assert_equal 10, nested.length
+    parent_ids = result.fetch('instances').map { |item| item.fetch('id') }
+    assert nested.all? { |item| parent_ids.include?(item.fetch('parent_instance_id')) }
+  end
+
+  def test_repeated_window_detail_is_shared_instead_of_becoming_top_level_analysis_surfaces
+    frame_faces = 6.times.map do |index|
+      polygon(
+        definition_uuid: uuid(7),
+        source_uuid: uuid(40 + index),
+        points: [[index * 0.1, 0, 0], [(index + 1) * 0.1, 0, 0],
+                 [(index + 1) * 0.1, 0, 1], [index * 0.1, 0, 1]],
+        normal: [0, -1, 0]
+      )
+    end
+    occurrences = 20.times.map do |index|
+      occurrence(path: [uuid(120 + index)], definition_uuid: uuid(7), translation: [index, 0, 0])
+    end
+    labels = occurrences.map do |item|
+      label(
+        target_key: item.uuid_path,
+        target_kind: 'occurrence',
+        label: 'Repeated Window',
+        role: 'window'
+      )
+    end
+
+    result = compile(
+      document(
+        extra_definitions: [definition(uuid(7), 'component', frame_faces)],
+        extra_primitives: frame_faces,
+        extra_occurrences: occurrences,
+        evidence: labels
+      )
+    )
+
+    assert_empty result.fetch('surfaces')
+    assert_equal 1, result.fetch('definitions').length
+    assert_equal 'visual_architectural_detail', result.dig('definitions', 0, 'retention')
+    assert_equal 6, result.dig('definitions', 0, 'geometry', 'surfaces').length
+    assert_equal 20, result.fetch('instances').length
+    assert_equal ['window'], result.fetch('instances').map { |item| item.fetch('category') }.uniq
+  end
+
+  def test_shared_instances_preserve_translation_rotation_and_uniform_scale_without_baking_geometry
+    face = polygon(
+      definition_uuid: uuid(8),
+      source_uuid: uuid(65),
+      points: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]],
+      normal: [0, -1, 0]
+    )
+    translation = identity_transform.dup.tap { |matrix| matrix[12] = 4.0 }.freeze
+    rotation = [
+      0.0, 1.0, 0.0, 0.0,
+      -1.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 1.0, 0.0,
+      0.0, 0.0, 0.0, 1.0
+    ].freeze
+    scale = [
+      2.0, 0.0, 0.0, 0.0,
+      0.0, 2.0, 0.0, 0.0,
+      0.0, 0.0, 2.0, 0.0,
+      0.0, 0.0, 0.0, 1.0
+    ].freeze
+
+    result = compile(
+      document(
+        extra_definitions: [definition(uuid(8), 'component', [face])],
+        extra_primitives: [face],
+        extra_occurrences: [
+          occurrence(path: [uuid(140)], definition_uuid: uuid(8), transform: translation),
+          occurrence(path: [uuid(141)], definition_uuid: uuid(8), transform: rotation),
+          occurrence(path: [uuid(142)], definition_uuid: uuid(8), transform: scale)
+        ]
+      )
+    )
+
+    transforms = result.fetch('instances').map { |item| item.fetch('transform') }
+    assert_includes transforms, translation
+    assert_includes transforms, rotation
+    assert_includes transforms, scale
+    assert_equal 1, result.dig('definitions', 0, 'geometry', 'surfaces').length
+    assert_equal [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+                 result.dig('definitions', 0, 'geometry', 'surfaces', 0, 'outer')
+    assert_equal 'world', result.dig('coordinate_system', 'instance_transform_space')
+  end
+
+  def test_non_uniform_shared_instance_declares_inverse_transpose_normal_handling
+    face = polygon(
+      definition_uuid: uuid(10),
+      source_uuid: uuid(67),
+      points: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]],
+      normal: [0, -1, 0]
+    )
+    non_uniform = [
+      2.0, 0.0, 0.0, 0.0,
+      0.0, 1.0, 0.0, 0.0,
+      0.0, 0.0, 0.5, 0.0,
+      0.0, 0.0, 0.0, 1.0
+    ].freeze
+
+    result = compile(
+      document(
+        extra_definitions: [definition(uuid(10), 'component', [face])],
+        extra_primitives: [face],
+        extra_occurrences: [
+          occurrence(path: [uuid(170)], definition_uuid: uuid(10), transform: non_uniform),
+          occurrence(path: [uuid(171)], definition_uuid: uuid(10))
+        ]
+      )
+    )
+
+    transformed = result.fetch('instances').find do |item|
+      item.fetch('transform_kind') == 'non_uniform_scale'
+    end
+    refute_nil transformed
+    assert_equal 'inverse_transpose_required', transformed.fetch('normal_transform')
+  end
+
+  def test_repeated_nested_export_is_byte_deterministic
+    face = polygon(
+      definition_uuid: uuid(9),
+      source_uuid: uuid(66),
+      points: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]],
+      normal: [0, -1, 0]
+    )
+    fixture = document(
+      extra_definitions: [definition(uuid(9), 'component', [face])],
+      extra_primitives: [face],
+      extra_occurrences: 20.times.map do |index|
+        occurrence(path: [uuid(150 + index)], definition_uuid: uuid(9), translation: [index, 0, 0])
+      end
+    )
+
+    first = BOMEngine::CleanAnalysis::Writer.generate(compile(fixture))
+    second = BOMEngine::CleanAnalysis::Writer.generate(compile(fixture))
+
+    assert_equal first, second
+  end
+
   def test_contextual_geometry_hints_do_not_promote_slab_edges_and_secondary_horizontal_faces
     full_wall = polygon(
       definition_uuid: uuid(1), source_uuid: uuid(20),
@@ -371,8 +634,14 @@ class CleanAnalysisCompilerTest < Minitest::Test
       )
     )
 
-    assert_equal %w[roof wall], result.fetch('surfaces').map { |surface| surface.fetch('type') }.sort
-    assert_equal ['Atap Occurrence B', 'Dinding Occurrence A'], result.fetch('surfaces').map { |surface| surface.dig('classification', 'label') }.sort
+    assert_empty result.fetch('surfaces')
+    assert_equal 1, result.fetch('definitions').length
+    overrides = result.fetch('instances').flat_map do |instance|
+      instance.fetch('surface_classification_overrides')
+    end
+    assert_equal %w[roof wall], overrides.map { |item| item.fetch('type') }.sort
+    assert_equal ['Atap Occurrence B', 'Dinding Occurrence A'],
+                 overrides.map { |item| item.dig('classification', 'label') }.sort
   end
 
   private
@@ -426,15 +695,16 @@ class CleanAnalysisCompilerTest < Minitest::Test
     )
   end
 
-  def occurrence(path:, definition_uuid:, translation: [0, 0, 0])
-    transform = identity_transform.dup
-    transform[12] = translation[0].to_f
-    transform[13] = translation[1].to_f
-    transform[14] = translation[2].to_f
+  def occurrence(path:, definition_uuid:, translation: [0, 0, 0], transform: nil)
+    transform ||= identity_transform.dup.tap do |matrix|
+      matrix[12] = translation[0].to_f
+      matrix[13] = translation[1].to_f
+      matrix[14] = translation[2].to_f
+    end
     snapshot::Occurrence.new(
       uuid_path: path.freeze,
       definition_uuid: definition_uuid,
-      transform: transform.freeze
+      transform: transform.map(&:to_f).freeze
     )
   end
 

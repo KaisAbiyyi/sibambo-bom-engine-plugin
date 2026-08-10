@@ -43,6 +43,18 @@ class CleanAnalysisWriterTest < Minitest::Test
     assert_match(/redundant geometry key: triangles/, error.message)
   end
 
+  def test_measures_compact_and_pretty_bytes_without_changing_the_document
+    compact = BOMEngine::CleanAnalysis::Writer.measure(clean_document)
+    pretty = BOMEngine::CleanAnalysis::Writer.measure(
+      clean_document,
+      pretty_print: true
+    )
+
+    assert_equal JSON.generate(clean_document).bytesize, compact
+    assert_equal (JSON.pretty_generate(clean_document) + "\n").bytesize, pretty
+    assert_equal 'bom_engine_clean_v1', clean_document.dig('format', 'identifier')
+  end
+
   def test_minified_write_is_cooperative_and_reports_progress
     events = []
     error = nil
@@ -104,6 +116,27 @@ class CleanAnalysisWriterTest < Minitest::Test
       end
       assert_match(/invalid surface/, error.message, name)
     end
+  end
+
+  def test_validates_definition_local_retained_polygons_too
+    definition = {
+      'id' => 'definition-example',
+      'kind' => 'component',
+      'retention' => 'visual_architectural_detail',
+      'geometry' => {
+        'coordinate_space' => 'definition_local',
+        'source_count' => 1,
+        'surfaces' => [valid_surface.merge('id' => 'definition-surface-example', 'area_m2' => 9.0)]
+      }
+    }
+
+    error = assert_raises(ArgumentError) do
+      BOMEngine::CleanAnalysis::Writer.generate(
+        clean_document.merge('definitions' => [definition], 'instances' => [])
+      )
+    end
+
+    assert_match(/invalid surface definition-surface-example/, error.message)
   end
 
   private

@@ -35,18 +35,19 @@ module BOMEngine
       DECORATION_PATTERN = /\b(?:plant|tree|vegetation|decoration|decorative|ornament|presentation)\b/i.freeze
 
       class << self
-        def compile(snapshot_document, progress: nil)
-          new(snapshot_document, progress: progress).compile
+        def compile(snapshot_document, progress: nil, profiler: nil)
+          new(snapshot_document, progress: progress, profiler: profiler).compile
         end
       end
 
-      def initialize(snapshot_document, progress: nil)
+      def initialize(snapshot_document, progress: nil, profiler: nil)
         unless snapshot_document.is_a?(BOMEngine::SemanticV2::Snapshot::Document)
           raise ArgumentError, 'clean analysis compiler requires a neutral extraction snapshot'
         end
 
         @snapshot = snapshot_document
         @progress = progress
+        @profiler = profiler
         @definitions = snapshot_document.definitions.each_with_object({}) do |definition, index|
           checkpoint('Compiling definition index')
           index[definition.source_uuid] = definition
@@ -62,12 +63,20 @@ module BOMEngine
 
           @labels[[item.target_kind, item.target_key]] << item
         end
+        @definition_usage = Hash.new(0)
+        snapshot_document.occurrences.each do |occurrence|
+          @definition_usage[occurrence.definition_uuid] += 1 unless occurrence.uuid_path.empty?
+        end
+        @emitted_instance_ids = {}
         @excluded_primitive_count = 0
+        @definition_fallback_geometry = []
       end
 
       def compile
         candidates = []
         components = []
+        instances = []
+        retained_definition_categories = Hash.new { |hash, key| hash[key] = [] }
         excluded_objects = []
         excluded_paths = []
 
@@ -79,10 +88,19 @@ module BOMEngine
           label = primary_label('occurrence', occurrence.uuid_path)
           category = occurrence_category(occurrence, definition, label)
           if %w[entourage decoration].include?(category)
+            profile_occurrence(occurrence, definition, category, 'excluded')
             excluded_paths << occurrence.uuid_path
             @excluded_primitive_count += definition.primitive_keys.length
             excluded_objects << excluded_object(occurrence, label, category)
+          elsif shared_occurrence?(occurrence)
+            profile_occurrence(occurrence, definition, category, 'referenced')
+            instance = shared_instance(occurrence, definition, label, category)
+            retained_definition_categories[definition.source_uuid] << instance.fetch('retention')
+            instances << instance
+            @profiler.record_instance(instance, occurrence) if @profiler
+            @emitted_instance_ids[path_key(occurrence.uuid_path)] = instance.fetch('id')
           elsif surface_category?(category) || category == 'container'
+            profile_occurrence(occurrence, definition, category, 'expanded')
             definition.primitive_keys.each do |primitive_key|
               checkpoint('Compiling polygon candidates')
               candidates << surface_candidate(
@@ -93,7 +111,10 @@ module BOMEngine
               )
             end
           else
-            components << compact_component(occurrence, definition, label, category)
+            profile_occurrence(occurrence, definition, category, 'referenced')
+            component = compact_component(occurrence, definition, label, category)
+            components << component
+            @profiler.record_component(component, occurrence) if @profiler
           end
         end
 
@@ -106,19 +127,33 @@ module BOMEngine
         surfaces.sort_by! { |surface| surface.fetch('id') }
         fallback_geometry = invalid_surfaces.map do |surface|
           checkpoint('Recording unresolved surfaces')
-          {
-            'id' => stable_id('unresolved', surface.fetch('id')),
-            'status' => 'unresolved',
-            'reason' => 'invalid_surface',
-            'source_count' => surface.fetch('source_count'),
-            'area_m2' => surface.fetch('area_m2'),
-            'validation_issues' => SurfaceValidator.validate(surface)
-          }
+          unresolved_surface(surface)
         end.sort_by { |item| item.fetch('id') }
         components.sort_by! { |component| component.fetch('id') }
+        instances.sort_by! { |instance| instance.fetch('id') }
+        retained_definitions = retained_definition_categories.keys.sort.map do |definition_uuid|
+          checkpoint('Compiling shared definition geometry')
+          compiled = shared_definition(
+            @definitions.fetch(definition_uuid),
+            retained_definition_categories.fetch(definition_uuid)
+          )
+          @profiler.record_definition(compiled, definition_uuid) if @profiler
+          compiled
+        end
+        fallback_geometry.concat(@definition_fallback_geometry)
+        fallback_geometry.sort_by! { |item| item.fetch('id') }
         excluded_objects.sort_by! { |item| item.fetch('id') }
-        raw_vertices = surfaces.inject(0) do |total, surface|
+        top_level_vertices = surfaces.inject(0) do |total, surface|
           total + surface.fetch('outer').length + surface.fetch('holes').inject(0) { |sum, loop| sum + loop.length }
+        end
+        definition_vertices = retained_definitions.inject(0) do |definition_total, definition|
+          definition_total + definition.dig('geometry', 'surfaces').inject(0) do |surface_total, surface|
+            surface_total + surface.fetch('outer').length +
+              surface.fetch('holes').inject(0) { |sum, loop| sum + loop.length }
+          end
+        end
+        retained_definition_fragments = retained_definition_categories.keys.inject(0) do |sum, definition_uuid|
+          sum + @definitions.fetch(definition_uuid).primitive_keys.length
         end
 
         {
@@ -130,12 +165,15 @@ module BOMEngine
           'coordinate_system' => {
             'handedness' => 'right',
             'up_axis' => '+Z',
-            'true_north_xy' => @snapshot.model_context.true_north_xy.dup
+            'true_north_xy' => @snapshot.model_context.true_north_xy.dup,
+            'instance_transform_space' => 'world'
           },
           'model' => {
-            'bounds' => bounds(surfaces, components)
+            'bounds' => bounds(surfaces, components, instances)
           },
           'surfaces' => surfaces,
+          'definitions' => retained_definitions,
+          'instances' => instances,
           'components' => components,
           'excluded_objects' => excluded_objects,
           'fallback_geometry' => fallback_geometry,
@@ -145,8 +183,13 @@ module BOMEngine
               'source_polygon_fragments' => @excluded_primitive_count
             },
             'counts' => {
-              'source_polygon_fragments' => candidates.length,
+              'source_polygon_fragments' => candidates.length + retained_definition_fragments,
               'architectural_surface_count' => surfaces.length,
+              'retained_definition_count' => retained_definitions.length,
+              'retained_definition_polygon_count' => retained_definitions.inject(0) do |sum, definition|
+                sum + definition.dig('geometry', 'surfaces').length
+              end,
+              'instance_count' => instances.length,
               'component_count' => components.length,
               'excluded_object_count' => excluded_objects.length,
               'fallback_geometry_count' => fallback_geometry.length,
@@ -156,7 +199,7 @@ module BOMEngine
               'omitted_component_source_fragments' => components.inject(0) do |sum, component|
                 sum + component.fetch('geometry').fetch('source_count')
               end,
-              'raw_vertices_serialized' => raw_vertices,
+              'raw_vertices_serialized' => top_level_vertices + definition_vertices,
               'raw_triangle_indices_serialized' => 0
             },
             'area_m2' => {
@@ -240,6 +283,126 @@ module BOMEngine
         }
       end
 
+      def shared_occurrence?(occurrence)
+        !occurrence.uuid_path.empty? && @definition_usage[occurrence.definition_uuid] > 1
+      end
+
+      def shared_instance(occurrence, definition, label, category)
+        overrides = definition.primitive_keys.each_with_object([]) do |primitive_key, values|
+          override = shared_surface_override(occurrence, @primitives.fetch(primitive_key))
+          values << override if override
+        end
+        retention = if surface_category?(category) || !overrides.empty?
+                      'analysis_boundary'
+                    else
+                      'visual_architectural_detail'
+                    end
+        item = {
+          'id' => stable_id('instance', occurrence.uuid_path),
+          'definition_id' => stable_id('definition', definition.source_uuid),
+          'name' => display_name(label, category),
+          'category' => category,
+          'retention' => retention,
+          'transform' => occurrence.transform.map { |value| clean_number(value) },
+          'transform_kind' => transform_kind(occurrence.transform)
+        }
+        parent_id = @emitted_instance_ids[path_key(occurrence.uuid_path[0...-1])]
+        item['parent_instance_id'] = parent_id if parent_id
+        if item.fetch('transform_kind') == 'non_uniform_scale'
+          item['normal_transform'] = 'inverse_transpose_required'
+        end
+        item['surface_classification_overrides'] = overrides unless overrides.empty?
+        item
+      end
+
+      def shared_surface_override(occurrence, primitive)
+        label = primary_label('primitive', primitive.key, occurrence.uuid_path)
+        role = SURFACE_ROLES[role_for('primitive', primitive.key, occurrence.uuid_path)]
+        return nil if label.nil? && role.nil?
+
+        {
+          'surface_id' => stable_id('definition-surface', primitive.key),
+          'type' => role || geometric_surface_type(primitive.normal),
+          'classification' => {
+            'method' => role ? (label && label.explicit ? 'explicit_label' : 'semantic_role') : 'label_hint',
+            'label' => label && label.label,
+            'source' => label && label.source
+          }.reject { |_key, value| value.nil? }
+        }
+      end
+
+      def shared_definition(definition, categories)
+        compiled_surfaces = definition.primitive_keys.sort.map do |primitive_key|
+          checkpoint('Retaining definition-local polygons')
+          definition_surface(@primitives.fetch(primitive_key))
+        end
+        surfaces, invalid_surfaces = compiled_surfaces.partition do |surface|
+          SurfaceValidator.validate(surface).empty?
+        end
+        definition_id = stable_id('definition', definition.source_uuid)
+        invalid_surfaces.each do |surface|
+          @definition_fallback_geometry << unresolved_surface(
+            surface,
+            definition_id: definition_id
+          )
+        end
+        {
+          'id' => definition_id,
+          'kind' => definition.kind,
+          'retention' => categories.include?('analysis_boundary') ?
+            'analysis_boundary' : 'visual_architectural_detail',
+          'geometry' => {
+            'coordinate_space' => 'definition_local',
+            'source_count' => definition.primitive_keys.length,
+            'surfaces' => surfaces
+          }
+        }
+      end
+
+      def definition_surface(primitive)
+        outer_loop = primitive.loops.find { |loop| loop.kind == 'outer' }
+        hole_loops = primitive.loops.select { |loop| loop.kind == 'hole' }
+        normal = normalize(primitive.normal)
+        plane_origin = outer_loop.vertices.first
+        outer = normalize_loop_start(
+          project_loop_to_plane(outer_loop.vertices, normal, plane_origin)
+        ).map { |point| clean_point(point) }
+        holes = hole_loops.map do |loop|
+          normalize_loop_start(
+            project_loop_to_plane(loop.vertices, normal, plane_origin)
+          ).map { |point| clean_point(point) }
+        end
+        {
+          'id' => stable_id('definition-surface', primitive.key),
+          'type' => 'polygon',
+          'outer' => outer,
+          'holes' => holes,
+          'normal' => clean_point(normal),
+          'area_m2' => clean_number(loop_area(outer) - holes.inject(0.0) { |sum, hole| sum + loop_area(hole) }),
+          'source_count' => 1
+        }.merge('classification_hint' => geometric_surface_type(primitive.normal))
+      end
+
+      def unresolved_surface(surface, definition_id: nil)
+        item = {
+          'id' => stable_id('unresolved', surface.fetch('id')),
+          'status' => 'unresolved',
+          'reason' => 'invalid_surface',
+          'source_count' => surface.fetch('source_count'),
+          'area_m2' => surface.fetch('area_m2'),
+          'validation_issues' => SurfaceValidator.validate(surface)
+        }
+        item['definition_id'] = definition_id if definition_id
+        item
+      end
+
+      def project_loop_to_plane(points, normal, origin)
+        points.map do |point|
+          distance = dot(normal, subtract(point, origin))
+          3.times.map { |axis| point[axis] - normal[axis] * distance }
+        end
+      end
+
       def display_name(label, category)
         value = label && label.label.to_s.strip
         value.nil? || value.empty? ? category.capitalize : value
@@ -270,6 +433,7 @@ module BOMEngine
 
         {
           occurrence_path: occurrence.uuid_path,
+          definition_uuid: occurrence.definition_uuid,
           primitive_key: primitive.key,
           adjacent_keys: primitive.loops.flat_map(&:adjacent_primitive_keys).uniq,
           type: type,
@@ -554,7 +718,7 @@ module BOMEngine
         primitive_keys = [primitive_keys] unless primitive_keys.first.is_a?(Array)
         outer = normalize_loop_start(candidate.fetch(:outer)).map { |point| clean_point(point) }
         holes = candidate.fetch(:holes).map { |hole| normalize_loop_start(hole).map { |point| clean_point(point) } }
-        {
+        surface = {
           'id' => stable_id(
             'surface',
             candidate.fetch(:occurrence_path) + primitive_keys.flatten.sort + [candidate.fetch(:type)]
@@ -568,6 +732,8 @@ module BOMEngine
           'orientation' => orientation(candidate.fetch(:normal)),
           'classification' => candidate.fetch(:classification)
         }
+        @profiler.record_surface(surface, candidate) if @profiler
+        surface
       end
 
       def orientation(normal)
@@ -585,12 +751,16 @@ module BOMEngine
         end
       end
 
-      def bounds(surfaces, components)
+      def bounds(surfaces, components, instances)
         points = surfaces.flat_map do |surface|
           surface.fetch('outer') + surface.fetch('holes').flatten(1)
         end
         points.concat(components.map do |component|
           transform = component.fetch('transform')
+          [transform[12], transform[13], transform[14]]
+        end)
+        points.concat(instances.map do |instance|
+          transform = instance.fetch('transform')
           [transform[12], transform[13], transform[14]]
         end)
         return { 'min' => [0.0, 0.0, 0.0], 'max' => [0.0, 0.0, 0.0] } if points.empty?
@@ -604,6 +774,28 @@ module BOMEngine
       def stable_id(prefix, values)
         bytes = Array(values).flatten.map(&:to_s).join('|')
         "#{prefix}-#{Digest::SHA256.hexdigest(bytes)[0, 16]}"
+      end
+
+      def transform_kind(matrix)
+        axes = [
+          [matrix[0], matrix[1], matrix[2]],
+          [matrix[4], matrix[5], matrix[6]],
+          [matrix[8], matrix[9], matrix[10]]
+        ]
+        lengths = axes.map { |axis| vector_length(axis) }
+        orthogonal = dot(axes[0], axes[1]).abs <= NORMAL_TOLERANCE &&
+                     dot(axes[0], axes[2]).abs <= NORMAL_TOLERANCE &&
+                     dot(axes[1], axes[2]).abs <= NORMAL_TOLERANCE
+        equal_scale = lengths.max.to_f - lengths.min.to_f <= POSITION_TOLERANCE_M
+        unit_scale = lengths.all? { |length| (length - 1.0).abs <= POSITION_TOLERANCE_M }
+        return 'rigid' if unit_scale && orthogonal
+        return 'uniform_scale' if equal_scale && orthogonal
+
+        'non_uniform_scale'
+      end
+
+      def path_key(path)
+        path.join('/')
       end
 
       def transform_point(matrix, point)
@@ -680,6 +872,17 @@ module BOMEngine
 
       def checkpoint(stage)
         @progress.call(stage) if @progress
+      end
+
+      def profile_occurrence(occurrence, definition, category, disposition)
+        return unless @profiler
+
+        @profiler.record_occurrence(
+          occurrence,
+          definition,
+          category: category,
+          disposition: disposition
+        )
       end
     end
   end
