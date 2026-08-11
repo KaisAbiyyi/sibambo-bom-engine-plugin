@@ -122,6 +122,14 @@ class CleanAnalysisExporterTest < Minitest::Test
     assert_equal 'D:/models/clean-analysis-exports/scratch1_clean.json', path
   end
 
+  def test_default_binary_package_path_is_a_new_cleanpkg_export
+    path = BOMEngine::CleanAnalysis::SketchupExtension.default_package_output_path(
+      'D:/models/scratch1.skp'
+    )
+
+    assert_equal 'D:/models/clean-analysis-exports/scratch1.cleanpkg', path
+  end
+
   def test_exports_the_same_unchanged_fixture_to_byte_identical_clean_json
     fixture = BOMEngine::Tests::SemanticV2Fixtures.complex_fixture
 

@@ -4,8 +4,8 @@ require 'zlib'
 
 module BOMEngine
   module CleanAnalysis
-    # Minimal deterministic ZIP writer: text is raw-DEFLATE compressed while
-    # already-compressed image formats remain stored with a fixed timestamp.
+    # Minimal deterministic ZIP writer: text uses raw DEFLATE, binary buffers
+    # select the smaller of STORE/DEFLATE, and compressed images remain stored.
     module DeterministicZip
       STORE_EXTENSIONS = %w[.jpg .jpeg .png .webp].freeze
 
@@ -19,8 +19,9 @@ module BOMEngine
           entries.sort_by { |name, _bytes| name }.each do |name, bytes|
             entry_name = name.to_s.b
             payload = bytes.to_s.b
-            method = stored_entry?(entry_name) ? 0 : 8
-            encoded = method == 8 ? deflate(payload, compression_level) : payload
+            deflated = stored_entry?(entry_name) ? nil : deflate(payload, compression_level)
+            method = compression_method(entry_name, payload, deflated)
+            encoded = method == 8 ? deflated : payload
             crc = Zlib.crc32(payload)
             local = [0x04034b50, 20, 0, method, 0, 0, crc, encoded.bytesize,
                      payload.bytesize, entry_name.bytesize, 0].pack('VvvvvvVVVvv')
@@ -31,7 +32,9 @@ module BOMEngine
             statistics[entry_name] = {
               raw_bytes: payload.bytesize,
               archive_bytes: encoded.bytesize,
-              method: method == 8 ? 'DEFLATED' : 'STORED'
+              method: method == 8 ? 'DEFLATED' : 'STORED',
+              deflated_candidate_bytes: deflated&.bytesize,
+              stored_candidate_bytes: payload.bytesize
             }
             offset += local.bytesize + entry_name.bytesize + encoded.bytesize
           end
@@ -55,6 +58,14 @@ module BOMEngine
         STORE_EXTENSIONS.include?(File.extname(name.to_s).downcase)
       end
       private_class_method :stored_entry?
+
+      def compression_method(name, payload, deflated)
+        return 0 if stored_entry?(name)
+        return deflated.bytesize < payload.bytesize ? 8 : 0 if File.extname(name.to_s).downcase == '.bin'
+
+        8
+      end
+      private_class_method :compression_method
 
       def deflate(payload, level)
         compressor = Zlib::Deflate.new(Integer(level), -Zlib::MAX_WBITS)

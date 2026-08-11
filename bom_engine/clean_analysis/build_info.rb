@@ -17,6 +17,10 @@ module BOMEngine
         texture_extractor.rb
         deterministic_zip.rb
         visual_package.rb
+        binary/section_writer.rb
+        binary/position_codec.rb
+        binary/document_encoder.rb
+        clean_package.rb
         writer.rb
         exporter.rb
       ].freeze

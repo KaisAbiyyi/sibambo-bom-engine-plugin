@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Plugin', 'CleanRc', 'AppearanceRc', 'CompleteRc', 'TextureRc')]
+    [ValidateSet('Plugin', 'CleanRc', 'AppearanceRc', 'CompleteRc', 'TextureRc', 'BinaryRc')]
     [string]$Target = 'Plugin'
 )
 
@@ -76,6 +76,8 @@ function Assert-CleanPackage {
             'bom_engine_clean/clean_analysis.rb',
             'bom_engine_clean/clean_analysis/sketchup_entry.rb',
             'bom_engine_clean/clean_analysis/exporter.rb',
+            'bom_engine_clean/clean_analysis/clean_package.rb',
+            'bom_engine_clean/clean_analysis/binary/document_encoder.rb',
             'bom_engine_clean/semantic_labeler.rb',
             'bom_engine_clean/semantic_v2/identity_coordinator.rb',
             'bom_engine_clean/semantic_v2/extractor.rb'
@@ -163,6 +165,7 @@ try {
         'AppearanceRc' { "bom_engine_clean_v1-appearance-rc-$ShortSha" }
         'CompleteRc' { "bom_engine_clean_v1-complete-rc-$ShortSha" }
         'TextureRc' { "bom_engine_clean_v1-texture-rc-$ShortSha" }
+        'BinaryRc' { "bom_engine_clean_v1-binary-rc-$ShortSha" }
         default { "bom_engine_clean_v1-rc-$ShortSha" }
     }
     $DistRoot = Join-Path $PluginDir 'dist'
@@ -190,12 +193,14 @@ try {
         'AppearanceRc' { 'release\appearance\INSTALL.template.md' }
         'CompleteRc' { 'release\complete\INSTALL.template.md' }
         'TextureRc' { 'release\texture\INSTALL.template.md' }
+        'BinaryRc' { 'release\binary\INSTALL.template.md' }
         default { 'release\INSTALL.template.md' }
     }
     $AcceptanceTemplate = switch ($Target) {
         'AppearanceRc' { 'release\appearance\MANUAL_ACCEPTANCE.template.md' }
         'CompleteRc' { 'release\complete\MANUAL_ACCEPTANCE.template.md' }
         'TextureRc' { 'release\texture\MANUAL_ACCEPTANCE.template.md' }
+        'BinaryRc' { 'release\binary\MANUAL_ACCEPTANCE.template.md' }
         default { 'release\MANUAL_ACCEPTANCE.template.md' }
     }
     Expand-Template `
@@ -227,6 +232,11 @@ try {
             -TemplatePath (Join-Path $PluginDir 'release\texture\TEXTURE_CONTRACT.template.md') `
             -OutputPath (Join-Path $OutputDir 'TEXTURE_CONTRACT.md') `
             -Values $TemplateValues
+    }
+    if ($Target -eq 'BinaryRc') {
+        Copy-Item `
+            -LiteralPath (Join-Path $PluginDir 'CLEAN_PACKAGE_BINARY_CONTRACT.md') `
+            -Destination (Join-Path $OutputDir 'CLEAN_PACKAGE_BINARY_CONTRACT.md')
     }
 
     $VersionText = @"
@@ -269,6 +279,23 @@ base handoff commit:
             "base handoff commit:`r`n    c21b370e79a418cd913f81867323712e3dec250e"
         )
     }
+    if ($Target -eq 'BinaryRc') {
+        $VersionText = [regex]::Replace(
+            $VersionText,
+            'release status:\r?\n\s+[^\r\n]+',
+            "release status:`r`n    BINARY PACKAGE RELEASE CANDIDATE - REQUIRES USER SKETCHUP ACCEPTANCE"
+        )
+        $VersionText = [regex]::Replace(
+            $VersionText,
+            'base handoff commit:\r?\n\s+[0-9a-f]+',
+            "base handoff commit:`r`n    8adea847698ba5f3b5c35c638e31e0ff4392f9a5"
+        )
+        $VersionText = [regex]::Replace(
+            $VersionText,
+            'format:\r?\n\s+bom_engine_clean_v1',
+            "format:`r`n    bom_engine_clean_package 1.0.0 (logical bom_engine_clean_v1 1.0.0)"
+        )
+    }
     Write-Utf8NoBom -Path (Join-Path $OutputDir 'VERSION.txt') -Content $VersionText
 
     $ChecksumTargets = @(
@@ -286,6 +313,9 @@ base handoff commit:
     }
     if ($Target -eq 'TextureRc') {
         $ChecksumTargets += (Join-Path $OutputDir 'TEXTURE_CONTRACT.md')
+    }
+    if ($Target -eq 'BinaryRc') {
+        $ChecksumTargets += (Join-Path $OutputDir 'CLEAN_PACKAGE_BINARY_CONTRACT.md')
     }
     $ChecksumLines = $ChecksumTargets | ForEach-Object {
         $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash.ToLowerInvariant()
