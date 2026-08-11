@@ -7,6 +7,9 @@ require_relative 'clean_analysis/completeness_report'
 require_relative 'clean_analysis/surface_validator'
 require_relative 'clean_analysis/progress_batcher'
 require_relative 'clean_analysis/visual_edge_extractor'
+require_relative 'clean_analysis/texture_bundle'
+require_relative 'clean_analysis/texture_extractor'
+require_relative 'clean_analysis/visual_package'
 require_relative 'clean_analysis/batch_options'
 require_relative 'clean_analysis/conversion_job'
 require_relative 'clean_analysis/compiler'
@@ -19,12 +22,13 @@ module BOMEngine
   module CleanAnalysis
     module_function
 
-    def compile(snapshot_document, progress: nil, visual_edges: [], debug: false)
+    def compile(snapshot_document, progress: nil, visual_edges: [], debug: false, texture_data: nil)
       Compiler.compile(
         snapshot_document,
         progress: progress,
         visual_edges: visual_edges,
-        debug: debug
+        debug: debug,
+        texture_data: texture_data
       )
     end
   end

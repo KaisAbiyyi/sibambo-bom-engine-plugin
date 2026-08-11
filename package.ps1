@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Plugin', 'CleanRc', 'AppearanceRc', 'CompleteRc')]
+    [ValidateSet('Plugin', 'CleanRc', 'AppearanceRc', 'CompleteRc', 'TextureRc')]
     [string]$Target = 'Plugin'
 )
 
@@ -162,6 +162,7 @@ try {
     $PackageName = switch ($Target) {
         'AppearanceRc' { "bom_engine_clean_v1-appearance-rc-$ShortSha" }
         'CompleteRc' { "bom_engine_clean_v1-complete-rc-$ShortSha" }
+        'TextureRc' { "bom_engine_clean_v1-texture-rc-$ShortSha" }
         default { "bom_engine_clean_v1-rc-$ShortSha" }
     }
     $DistRoot = Join-Path $PluginDir 'dist'
@@ -188,11 +189,13 @@ try {
     $InstallTemplate = switch ($Target) {
         'AppearanceRc' { 'release\appearance\INSTALL.template.md' }
         'CompleteRc' { 'release\complete\INSTALL.template.md' }
+        'TextureRc' { 'release\texture\INSTALL.template.md' }
         default { 'release\INSTALL.template.md' }
     }
     $AcceptanceTemplate = switch ($Target) {
         'AppearanceRc' { 'release\appearance\MANUAL_ACCEPTANCE.template.md' }
         'CompleteRc' { 'release\complete\MANUAL_ACCEPTANCE.template.md' }
+        'TextureRc' { 'release\texture\MANUAL_ACCEPTANCE.template.md' }
         default { 'release\MANUAL_ACCEPTANCE.template.md' }
     }
     Expand-Template `
@@ -217,6 +220,12 @@ try {
         Expand-Template `
             -TemplatePath (Join-Path $PluginDir 'release\complete\COVERAGE_GUIDE.template.md') `
             -OutputPath (Join-Path $OutputDir 'COVERAGE_GUIDE.md') `
+            -Values $TemplateValues
+    }
+    if ($Target -eq 'TextureRc') {
+        Expand-Template `
+            -TemplatePath (Join-Path $PluginDir 'release\texture\TEXTURE_CONTRACT.template.md') `
+            -OutputPath (Join-Path $OutputDir 'TEXTURE_CONTRACT.md') `
             -Values $TemplateValues
     }
 
@@ -248,6 +257,18 @@ base handoff commit:
             "base handoff commit:`r`n    52f405c7b606700cc354247e29259549cfa57a28"
         )
     }
+    if ($Target -eq 'TextureRc') {
+        $VersionText = [regex]::Replace(
+            $VersionText,
+            'release status:\r?\n\s+[^\r\n]+',
+            "release status:`r`n    TEXTURE RELEASE CANDIDATE - REQUIRES USER SKETCHUP ACCEPTANCE"
+        )
+        $VersionText = [regex]::Replace(
+            $VersionText,
+            'base handoff commit:\r?\n\s+[0-9a-f]+',
+            "base handoff commit:`r`n    c21b370e79a418cd913f81867323712e3dec250e"
+        )
+    }
     Write-Utf8NoBom -Path (Join-Path $OutputDir 'VERSION.txt') -Content $VersionText
 
     $ChecksumTargets = @(
@@ -262,6 +283,9 @@ base handoff commit:
     if ($Target -eq 'CompleteRc') {
         $ChecksumTargets += (Join-Path $OutputDir 'CLEANV1_CONTRACT.md')
         $ChecksumTargets += (Join-Path $OutputDir 'COVERAGE_GUIDE.md')
+    }
+    if ($Target -eq 'TextureRc') {
+        $ChecksumTargets += (Join-Path $OutputDir 'TEXTURE_CONTRACT.md')
     }
     $ChecksumLines = $ChecksumTargets | ForEach-Object {
         $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash.ToLowerInvariant()

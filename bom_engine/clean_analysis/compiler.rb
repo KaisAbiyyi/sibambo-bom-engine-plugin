@@ -36,18 +36,21 @@ module BOMEngine
       DECORATION_PATTERN = /\b(?:plant|tree|vegetation|decoration|decorative|ornament|presentation)\b/i.freeze
 
       class << self
-        def compile(snapshot_document, progress: nil, profiler: nil, visual_edges: [], debug: false)
+        def compile(snapshot_document, progress: nil, profiler: nil, visual_edges: [], debug: false,
+                    texture_data: nil)
           new(
             snapshot_document,
             progress: progress,
             profiler: profiler,
             visual_edges: visual_edges,
-            debug: debug
+            debug: debug,
+            texture_data: texture_data
           ).compile
         end
       end
 
-      def initialize(snapshot_document, progress: nil, profiler: nil, visual_edges: [], debug: false)
+      def initialize(snapshot_document, progress: nil, profiler: nil, visual_edges: [], debug: false,
+                     texture_data: nil)
         unless snapshot_document.is_a?(BOMEngine::SemanticV2::Snapshot::Document)
           raise ArgumentError, 'clean analysis compiler requires a neutral extraction snapshot'
         end
@@ -56,6 +59,7 @@ module BOMEngine
         @progress = progress
         @profiler = profiler
         @debug = debug == true
+        @texture_data = texture_data
         @visual_edges = Array(visual_edges).map { |edge| normalized_visual_edge(edge) }
         @visual_edges_by_definition = @visual_edges.group_by { |edge| edge.fetch(:definition_uuid) }
         @coverage = CoverageLedger.new(snapshot_document.primitives, @visual_edges)
@@ -164,6 +168,7 @@ module BOMEngine
           SurfaceValidator.validate(surface).empty?
         end
         surfaces.sort_by! { |surface| surface.fetch('id') }
+        top_level_uvs = @texture_data ? pool_surface_uvs!(surfaces) : nil
         fallback_geometry = invalid_surfaces.map do |surface|
           checkpoint('Recording unresolved surfaces')
           unresolved_surface(surface)
@@ -215,7 +220,7 @@ module BOMEngine
           sum + @definitions.fetch(definition_uuid).primitive_keys.length
         end
 
-        {
+        result = {
           'format' => {
             'identifier' => FORMAT_IDENTIFIER,
             'version' => FORMAT_VERSION
@@ -288,6 +293,8 @@ module BOMEngine
             diagnostics['coverage_ledger'] = @coverage.entries if @debug
           end
         }
+        result['uvs'] = top_level_uvs if @texture_data
+        result
       end
 
       private
@@ -440,6 +447,7 @@ module BOMEngine
           edge.fetch(:source_uuid)
         end
         vertices, indexed_surfaces, indexed_edges = pool_definition_vertices(surfaces, definition_edges)
+        definition_uvs = @texture_data ? pool_surface_uvs!(indexed_surfaces) : nil
         definition_edges.each do |edge|
           @coverage.mark(edge_key(edge), 'visual_retained', reason: 'shared_definition_edge')
         end
@@ -453,6 +461,7 @@ module BOMEngine
               'holes' => surface.fetch('holes')
             }
             copy_material_ids!(compact, surface, %w[front_material_id back_material_id])
+            copy_uv_ids!(compact, surface)
             compact
           end
         end
@@ -467,7 +476,7 @@ module BOMEngine
             'vertices' => vertices,
             'surfaces' => indexed_surfaces,
             'edges' => indexed_edges
-          }
+          }.tap { |geometry| geometry['uvs'] = definition_uvs if @texture_data }
         }
       end
 
@@ -527,6 +536,7 @@ module BOMEngine
         }.merge('classification_hint' => geometric_surface_type(primitive.normal))
         assign_material_id!(surface, 'front_material_id', primitive.front_material_uuid)
         assign_material_id!(surface, 'back_material_id', primitive.back_material_uuid)
+        attach_uv_mapping!(surface, primitive.key)
         @surface_primitive_keys[surface.fetch('id')] = [primitive.key]
         surface
       end
@@ -586,7 +596,7 @@ module BOMEngine
                                   'geometry_hint'
                                 end
 
-        {
+        candidate = {
           occurrence_path: occurrence.uuid_path,
           definition_uuid: occurrence.definition_uuid,
           primitive_key: primitive.key,
@@ -606,6 +616,8 @@ module BOMEngine
             'source' => label && label.source
           }.reject { |_key, value| value.nil? }
         }
+        candidate[:uv] = @texture_data.uv_for(primitive.key) if @texture_data
+        candidate
       end
 
       def contextualize_geometry_hints!(candidates)
@@ -696,7 +708,8 @@ module BOMEngine
       end
 
       def merge_candidates(candidates)
-        candidates.group_by { |candidate| merge_group_key(candidate) }.values.flat_map do |group|
+        textured, plain = candidates.partition { |candidate| candidate[:uv] && !candidate[:uv].empty? }
+        textured.map { |candidate| surface_hash(candidate) } + plain.group_by { |candidate| merge_group_key(candidate) }.values.flat_map do |group|
           checkpoint('Merging coplanar surfaces')
           connected_components(group).flat_map do |component|
             checkpoint('Merging connected surface regions')
@@ -899,6 +912,7 @@ module BOMEngine
         assign_material_id!(surface, 'front_material_id', candidate.fetch(:front_material_uuid))
         assign_material_id!(surface, 'back_material_id', candidate.fetch(:back_material_uuid))
         assign_material_id!(surface, 'inherited_material_id', candidate.fetch(:inherited_material_uuid))
+        attach_candidate_uv!(surface, candidate)
         @profiler.record_surface(surface, candidate) if @profiler
         surface
       end
@@ -1034,11 +1048,17 @@ module BOMEngine
           'base_color_rgba' => rgba,
           'opacity' => rgba.fetch(3),
           'color_space' => 'srgb',
-          'texture' => compiled_texture(material.texture)
+          'texture' => compiled_texture(material)
         }
       end
 
-      def compiled_texture(texture)
+      def compiled_texture(material)
+        if @texture_data
+          extracted = @texture_data.texture_for(material.source_uuid)
+          return extracted.dup unless extracted.nil?
+        end
+
+        texture = material.texture
         return nil if texture.nil?
 
         filename = texture_value(texture, :filename).to_s
@@ -1067,6 +1087,87 @@ module BOMEngine
 
       def copy_material_ids!(target, source, keys)
         keys.each { |key| target[key] = source[key] if source.key?(key) }
+        target
+      end
+
+      def attach_uv_mapping!(surface, primitive_key)
+        return if @texture_data.nil?
+
+        primitive = @primitives.fetch(primitive_key)
+        mapping = @texture_data.uv_for(primitive_key)
+        return if mapping.nil? || mapping.empty?
+
+        outer = primitive.loops.find { |loop| loop.kind == 'outer' }.vertices
+        holes = primitive.loops.select { |loop| loop.kind == 'hole' }.map(&:vertices)
+        attach_uv_values!(surface, mapping, outer, holes)
+      end
+
+      def attach_candidate_uv!(surface, candidate)
+        mapping = candidate[:uv]
+        return if mapping.nil? || mapping.empty?
+
+        attach_uv_values!(surface, mapping, candidate.fetch(:outer), candidate.fetch(:holes))
+      end
+
+      def attach_uv_values!(surface, mapping, outer_points, hole_points)
+        %i[front back].each do |side|
+          values = mapping[side]
+          next if values.nil?
+
+          aligned = aligned_uv_mapping(values, outer_points, hole_points)
+          surface["_#{side}_uv_values"] = aligned unless aligned.nil?
+        end
+      end
+
+      def aligned_uv_mapping(mapping, outer_points, hole_points)
+        outer_uv = mapping[:outer] || mapping['outer'] || []
+        hole_uv = mapping[:holes] || mapping['holes'] || []
+        return nil unless outer_uv.length == outer_points.length && hole_uv.length == hole_points.length
+
+        outer = rotate_uv_with_points(outer_points, outer_uv)
+        holes = hole_points.each_with_index.map do |points, index|
+          values = hole_uv.fetch(index)
+          return nil unless values.length == points.length
+
+          [normalize_loop_start(points), rotate_uv_with_points(points, values)]
+        end.sort_by { |points, _values| loop_sort_key(points) }.map(&:last)
+        { 'outer' => outer, 'holes' => holes }
+      end
+
+      def rotate_uv_with_points(points, values)
+        start_index = points.each_index.min_by { |index| point_key(points[index]) }
+        values.rotate(start_index).map { |uv| uv.map { |value| clean_number(value) } }
+      end
+
+      def pool_surface_uvs!(surfaces)
+        pool = []
+        indices = {}
+        surfaces.each do |surface|
+          %w[front back].each do |side|
+            values = surface.delete("_#{side}_uv_values")
+            next if values.nil?
+
+            surface["#{side}_uv"] = {
+              'outer' => pool_uv_loop(values.fetch('outer'), pool, indices),
+              'holes' => values.fetch('holes').map { |loop| pool_uv_loop(loop, pool, indices) }
+            }
+          end
+        end
+        pool
+      end
+
+      def pool_uv_loop(values, pool, indices)
+        values.map do |uv|
+          key = uv.join(',')
+          indices[key] ||= begin
+            pool << uv
+            pool.length - 1
+          end
+        end
+      end
+
+      def copy_uv_ids!(target, source)
+        %w[front_uv back_uv].each { |key| target[key] = source[key] if source.key?(key) }
         target
       end
 

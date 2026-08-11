@@ -13,6 +13,10 @@ module BOMEngine
         completeness_report.rb
         compiler.rb
         visual_edge_extractor.rb
+        texture_bundle.rb
+        texture_extractor.rb
+        deterministic_zip.rb
+        visual_package.rb
         writer.rb
         exporter.rb
       ].freeze

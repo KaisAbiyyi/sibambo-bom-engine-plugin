@@ -79,14 +79,19 @@ module BOMEngine
           raise ArgumentError, "unreferenced serialized material: #{unused_material_ids.sort.first}"
         end
 
+        top_uvs = document['uvs']
+        validate_uv_pool!(top_uvs) unless top_uvs.nil?
         document.fetch('surfaces', []).each do |surface|
           report_progress(progress)
           SurfaceValidator.validate!(surface)
+          validate_surface_uvs!(surface, top_uvs, surface.fetch('outer'), surface.fetch('holes')) unless top_uvs.nil?
         end
         document.fetch('definitions', []).each do |definition|
           geometry = definition.fetch('geometry')
           vertices = geometry['vertices']
+          uvs = geometry['uvs']
           validate_vertex_pool!(vertices) unless vertices.nil?
+          validate_uv_pool!(uvs) unless uvs.nil?
           validate_indexed_edges!(geometry.fetch('edges', []), vertices || [])
           geometry.fetch('surfaces').each do |surface|
             report_progress(progress)
@@ -96,6 +101,7 @@ module BOMEngine
               candidate = visual_surface_validation_candidate(candidate)
             end
             SurfaceValidator.validate!(candidate)
+            validate_surface_uvs!(surface, uvs, surface.fetch('outer'), surface.fetch('holes')) unless uvs.nil?
           end
         end
         document.fetch('visual_edges', []).each do |edge|
@@ -149,6 +155,13 @@ module BOMEngine
           unless value.is_a?(Numeric) && value.finite? && value >= 0.0
             raise ArgumentError, "material #{material_id} texture #{key} must be finite and non-negative"
           end
+        end
+        asset = texture['asset']
+        if asset && !asset.match?(%r{\Aassets/tex-[0-9a-f]{64}\.[a-z0-9]+\z})
+          raise ArgumentError, "material #{material_id} texture asset must be a portable content-addressed path"
+        end
+        if texture['status'] && texture['status'] != 'missing'
+          raise ArgumentError, "material #{material_id} texture status must be missing"
         end
       end
       private_class_method :validate_texture!
@@ -222,6 +235,36 @@ module BOMEngine
         end
       end
       private_class_method :validate_indexed_edges!
+
+      def validate_uv_pool!(uvs)
+        unless uvs.is_a?(Array) && uvs.all? do |uv|
+                 uv.is_a?(Array) && uv.length == 2 && uv.all? { |value| value.is_a?(Numeric) && value.finite? }
+               end
+          raise ArgumentError, 'UV pool must contain finite [u, v] coordinates'
+        end
+      end
+      private_class_method :validate_uv_pool!
+
+      def validate_surface_uvs!(surface, uvs, outer, holes)
+        %w[front_uv back_uv].each do |key|
+          mapping = surface[key]
+          next if mapping.nil?
+          raise ArgumentError, "#{key} requires a UV pool" if uvs.nil?
+          unless mapping.is_a?(Hash) && mapping['outer'].is_a?(Array) && mapping['holes'].is_a?(Array)
+            raise ArgumentError, "#{key} must contain outer and holes index loops"
+          end
+          unless mapping['outer'].length == outer.length && mapping['holes'].length == holes.length &&
+                 mapping['holes'].each_with_index.all? { |loop, index| loop.length == holes.fetch(index).length }
+            raise ArgumentError, "#{key} loop lengths must match polygon geometry"
+          end
+          (mapping['outer'] + mapping['holes'].flatten).each do |index|
+            unless index.is_a?(Integer) && index >= 0 && index < uvs.length
+              raise ArgumentError, "#{key} contains an out-of-range UV index"
+            end
+          end
+        end
+      end
+      private_class_method :validate_surface_uvs!
 
       def validate_visual_edge!(edge)
         vertices = edge.is_a?(Hash) ? edge['vertices'] : nil
