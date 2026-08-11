@@ -4,6 +4,7 @@ require 'digest'
 require 'json'
 require 'minitest/autorun'
 require 'tmpdir'
+require 'zlib'
 
 require_relative '../semantic_v2'
 require_relative '../clean_analysis'
@@ -218,6 +219,32 @@ class CleanAnalysisTexturesTest < Minitest::Test
     end
   end
 
+  def test_visual_package_deflates_minified_model_and_stores_png_assets
+    material = textured_material(1, 'Compressed', [255, 255, 255, 255])
+    face = textured_face(uuid(1), uuid(170), material.source_uuid)
+    bundle = texture_bundle
+    bundle.register_texture(material_uuid: material.source_uuid, bytes: PNG_BYTES, extension: 'png', width_m: 1, height_m: 1)
+    result = compile_document([face], [material], bundle)
+    expected_json = BOMEngine::CleanAnalysis::Writer.generate(result)
+
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, 'compressed.clean.zip')
+      BOMEngine::CleanAnalysis::VisualPackage.write(path, result, bundle.assets)
+      entries = read_zip_entries(path)
+      model = entries.fetch('model.json')
+      asset_path = bundle.assets.keys.first
+
+      assert_equal 8, model.fetch(:method), 'model.json must use ZIP DEFLATE'
+      assert_equal expected_json, model.fetch(:bytes)
+      refute_includes model.fetch(:bytes), "\n"
+      assert_equal Digest::SHA256.hexdigest(expected_json), Digest::SHA256.hexdigest(model.fetch(:bytes))
+      assert_equal 0, entries.fetch(asset_path).fetch(:method), 'PNG assets should use ZIP STORE'
+      assert_equal PNG_BYTES, entries.fetch(asset_path).fetch(:bytes)
+      assert entries.keys.all? { |name| !name.start_with?('/', '\\') && !name.match?(/\A[A-Za-z]:/) }
+      assert result.fetch('materials').map { |item| item.dig('texture', 'asset') }.compact.all? { |name| entries.key?(name) }
+    end
+  end
+
   private
 
   def texture_bundle
@@ -256,5 +283,34 @@ class CleanAnalysisTexturesTest < Minitest::Test
       materials: materials, evidence: []
     )
     BOMEngine::CleanAnalysis.compile(snapshot_document, texture_data: bundle)
+  end
+
+  def read_zip_entries(path)
+    archive = File.binread(path)
+    entries = {}
+    offset = 0
+    while archive.byteslice(offset, 4)&.unpack('V')&.first == 0x04034b50
+      header = archive.byteslice(offset, 30).unpack('VvvvvvVVVvv')
+      method = header.fetch(3)
+      compressed_size = header.fetch(7)
+      name_size = header.fetch(9)
+      extra_size = header.fetch(10)
+      name = archive.byteslice(offset + 30, name_size)
+      payload_offset = offset + 30 + name_size + extra_size
+      payload = archive.byteslice(payload_offset, compressed_size)
+      bytes = if method == 8
+                inflater = Zlib::Inflate.new(-Zlib::MAX_WBITS)
+                begin
+                  inflater.inflate(payload) + inflater.finish
+                ensure
+                  inflater.close
+                end
+              else
+                payload
+              end
+      entries[name] = { method: method, bytes: bytes }
+      offset = payload_offset + compressed_size
+    end
+    entries
   end
 end

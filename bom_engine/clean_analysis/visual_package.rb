@@ -8,7 +8,7 @@ module BOMEngine
     module VisualPackage
       module_function
 
-      def write(path, document, assets, progress: nil)
+      def write(path, document, assets, progress: nil, compression_level: Zlib::BEST_COMPRESSION)
         output_path = File.expand_path(path.to_s)
         raise ArgumentError, 'visual package output path is required' if path.to_s.strip.empty?
 
@@ -25,13 +25,25 @@ module BOMEngine
           result[asset] = assets.fetch(asset) { raise ArgumentError, "missing texture asset: #{asset}" }
         end
         FileUtils.mkdir_p(File.dirname(output_path))
-        DeterministicZip.write(output_path, { 'model.json' => model_json }.merge(selected))
+        started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        entry_statistics = DeterministicZip.write(
+          output_path,
+          { 'model.json' => model_json }.merge(selected),
+          compression_level: compression_level
+        )
+        packaging_seconds = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
         asset_bytes = selected.values.inject(0) { |sum, bytes| sum + bytes.bytesize }
         {
           path: output_path,
           bytes: File.size(output_path),
           model_json_bytes: model_json.bytesize,
+          model_json_compressed_bytes: entry_statistics.fetch('model.json'.b).fetch(:archive_bytes),
           texture_asset_bytes: asset_bytes,
+          texture_archive_bytes: selected.keys.inject(0) do |sum, name|
+            sum + entry_statistics.fetch(name.to_s.b).fetch(:archive_bytes)
+          end,
+          packaging_seconds: packaging_seconds,
+          compression_level: compression_level,
           unique_texture_count: selected.length,
           original_texture_references: count_texture_references(document, material_assets),
           dedup_ratio: dedup_ratio(document, material_assets, selected.length),

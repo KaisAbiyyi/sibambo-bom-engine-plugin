@@ -4,30 +4,41 @@ require 'zlib'
 
 module BOMEngine
   module CleanAnalysis
-    # Minimal ZIP writer using stored entries and a fixed DOS timestamp.
+    # Minimal deterministic ZIP writer: text is raw-DEFLATE compressed while
+    # already-compressed image formats remain stored with a fixed timestamp.
     module DeterministicZip
+      STORE_EXTENSIONS = %w[.jpg .jpeg .png .webp].freeze
+
       module_function
 
-      def write(path, entries)
+      def write(path, entries, compression_level: Zlib::BEST_COMPRESSION)
         central = []
         offset = 0
+        statistics = {}
         File.open(path, 'wb') do |file|
           entries.sort_by { |name, _bytes| name }.each do |name, bytes|
             entry_name = name.to_s.b
             payload = bytes.to_s.b
+            method = stored_entry?(entry_name) ? 0 : 8
+            encoded = method == 8 ? deflate(payload, compression_level) : payload
             crc = Zlib.crc32(payload)
-            local = [0x04034b50, 20, 0, 0, 0, 0, crc, payload.bytesize,
+            local = [0x04034b50, 20, 0, method, 0, 0, crc, encoded.bytesize,
                      payload.bytesize, entry_name.bytesize, 0].pack('VvvvvvVVVvv')
             file.write(local)
             file.write(entry_name)
-            file.write(payload)
-            central << [entry_name, payload, crc, offset]
-            offset += local.bytesize + entry_name.bytesize + payload.bytesize
+            file.write(encoded)
+            central << [entry_name, payload.bytesize, encoded.bytesize, crc, method, offset]
+            statistics[entry_name] = {
+              raw_bytes: payload.bytesize,
+              archive_bytes: encoded.bytesize,
+              method: method == 8 ? 'DEFLATED' : 'STORED'
+            }
+            offset += local.bytesize + entry_name.bytesize + encoded.bytesize
           end
           central_offset = offset
-          central.each do |name, payload, crc, local_offset|
-            header = [0x02014b50, 20, 20, 0, 0, 0, 0, crc, payload.bytesize,
-                      payload.bytesize, name.bytesize, 0, 0, 0, 0, 0,
+          central.each do |name, raw_size, encoded_size, crc, method, local_offset|
+            header = [0x02014b50, 20, 20, 0, method, 0, 0, crc, encoded_size,
+                      raw_size, name.bytesize, 0, 0, 0, 0, 0,
                       local_offset].pack('VvvvvvvVVVvvvvvVV')
             file.write(header)
             file.write(name)
@@ -37,7 +48,23 @@ module BOMEngine
           file.write([0x06054b50, 0, 0, central.length, central.length,
                       central_size, central_offset, 0].pack('VvvvvVVv'))
         end
+        statistics
       end
+
+      def stored_entry?(name)
+        STORE_EXTENSIONS.include?(File.extname(name.to_s).downcase)
+      end
+      private_class_method :stored_entry?
+
+      def deflate(payload, level)
+        compressor = Zlib::Deflate.new(Integer(level), -Zlib::MAX_WBITS)
+        begin
+          compressor.deflate(payload, Zlib::FINISH)
+        ensure
+          compressor.close
+        end
+      end
+      private_class_method :deflate
     end
   end
 end
