@@ -51,14 +51,23 @@ module BOMEngine
 
         def extract_materials
           dimensions = @snapshot.materials.each_with_object({}) { |item, out| out[item.source_uuid] = item.texture }
-          collection_items(@model.materials).sort_by { |material| source_uuid(material) }.each do |material|
+          planned_materials.each do |material_uuid, material|
             checkpoint('Extracting texture assets')
-            material_uuid = source_uuid(material)
             metadata = dimensions[material_uuid]
             next if metadata.nil? || !material.respond_to?(:texture) || material.texture.nil?
 
             write_texture(material, material_uuid, metadata)
           end
+        end
+
+        def planned_materials
+          collection_items(@model.materials).each_with_object([]) do |material, result|
+            begin
+              result << [source_uuid(material), material]
+            rescue KeyError
+              next
+            end
+          end.sort_by(&:first)
         end
 
         def write_texture(material, material_uuid, metadata)
