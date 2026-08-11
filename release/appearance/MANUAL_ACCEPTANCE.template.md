@@ -2,11 +2,26 @@
 
 Source commit: `{{GIT_COMMIT}}`
 
-Record SketchUp/Windows versions, model names, output sizes, SHA-256 hashes, material counts, and any visual mismatch. This package was built on a computer without SketchUp; acceptance is pending.
+Record SketchUp/Windows versions, model names, output sizes, SHA-256 hashes, material counts, and any visual mismatch. Automated real-host fixture support is included in the source tree, but final acceptance must use the packaged RC.
 
 ## A. Install and simple fixture
 
 Install using `INSTALL.md`. Export a painted simple fixture through **Plugins > BOM Engine Clean Analysis (Experimental) > Export Clean Analysis JSON...**. Confirm format `bom_engine_clean_v1` version `1.0.0`, a top-level `materials` array, normalized RGBA/opacity, and front/back references where explicitly painted. Confirm an unpainted face remains without a material reference.
+
+Before exporting, choose **Development Build Info** and confirm the Ruby Console reports the installed `bom_engine_clean` source directory and the expected fingerprint. If it reports `bom_engine`, stop: a stale/mixed installation is active.
+
+For the automated tiny fixture, open a new, unsaved, unmodified SketchUp window, then run the following in Ruby Console after replacing the source/output paths. The harness refuses to run against a saved or modified model because it clears the active model to construct the fixture.
+
+```ruby
+load 'D:/path/to/bom_engine_plugin/bom_engine/tests/sketchup_appearance_acceptance.rb'
+BOMEngine::Tests::SketchupAppearanceAcceptance.run(
+  fixture_path: 'D:/temp/CleanV1_appearance_fixture.skp',
+  output_path: 'D:/temp/CleanV1_appearance_fixture.json',
+  report_path: 'D:/temp/CleanV1_appearance_report.json'
+)
+```
+
+PASS requires every value under `assertions` to be `true` and `first_loss` to be `none`. With that generated fixture still open, also export once through the actual **Export Clean Analysis JSON...** menu command and compare its material/reference assertions.
 
 ## B. RUMAH L structure and size
 

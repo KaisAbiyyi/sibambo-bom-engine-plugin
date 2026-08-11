@@ -9,9 +9,12 @@ $PluginDir = $PSScriptRoot
 $StagingDir = Join-Path ([System.IO.Path]::GetTempPath()) "bom-engine-rbz-$([guid]::NewGuid())"
 
 function Remove-TestsFromStaging {
-    param([string]$Root)
+    param(
+        [string]$Root,
+        [string]$RuntimeFolder
+    )
 
-    $TestsPath = Join-Path $Root 'bom_engine\tests'
+    $TestsPath = Join-Path $Root "$RuntimeFolder\tests"
     if (Test-Path -LiteralPath $TestsPath) {
         Remove-Item -LiteralPath $TestsPath -Recurse -Force
     }
@@ -70,12 +73,12 @@ function Assert-CleanPackage {
         $Entries = @($Archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
         $Required = @(
             'bom_engine_clean_loader.rb',
-            'bom_engine/clean_analysis.rb',
-            'bom_engine/clean_analysis/sketchup_entry.rb',
-            'bom_engine/clean_analysis/exporter.rb',
-            'bom_engine/semantic_labeler.rb',
-            'bom_engine/semantic_v2/identity_coordinator.rb',
-            'bom_engine/semantic_v2/extractor.rb'
+            'bom_engine_clean/clean_analysis.rb',
+            'bom_engine_clean/clean_analysis/sketchup_entry.rb',
+            'bom_engine_clean/clean_analysis/exporter.rb',
+            'bom_engine_clean/semantic_labeler.rb',
+            'bom_engine_clean/semantic_v2/identity_coordinator.rb',
+            'bom_engine_clean/semantic_v2/extractor.rb'
         )
         $Missing = @($Required | Where-Object { $Entries -notcontains $_ })
         if ($Missing.Count -gt 0) {
@@ -134,8 +137,12 @@ function Assert-CleanPackage {
 
 try {
     New-Item -ItemType Directory -Path $StagingDir | Out-Null
-    Copy-Item -LiteralPath (Join-Path $PluginDir 'bom_engine') -Destination $StagingDir -Recurse
-    Remove-TestsFromStaging -Root $StagingDir
+    $RuntimeFolder = if ($Target -eq 'Plugin') { 'bom_engine' } else { 'bom_engine_clean' }
+    Copy-Item `
+        -LiteralPath (Join-Path $PluginDir 'bom_engine') `
+        -Destination (Join-Path $StagingDir $RuntimeFolder) `
+        -Recurse
+    Remove-TestsFromStaging -Root $StagingDir -RuntimeFolder $RuntimeFolder
 
     if ($Target -eq 'Plugin') {
         $Version = '3.0.0'

@@ -77,6 +77,8 @@ module BOMEngine
 
         menu = UI.menu('Plugins').add_submenu(DISPLAY_NAME)
         menu.add_item('Export Clean Analysis JSON...') { prompt_and_export }
+        menu.add_item('Development Build Info') { puts BuildInfo.diagnostic }
+        puts BuildInfo.diagnostic
         @registered = true
       end
     end

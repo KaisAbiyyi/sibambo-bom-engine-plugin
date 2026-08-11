@@ -12,13 +12,15 @@ This build has passed standalone Ruby tests. Real SketchUp material/color accept
 
 1. Close extra SketchUp windows.
 2. In **Window > Extension Manager**, uninstall or disable the previous **BOM Engine Clean Analysis (Experimental)** development build.
-3. Back up and remove stale duplicate `bom_engine_clean_loader.rb` files or alternate `bom_engine/` runtime copies from SketchUp's Plugins directories. Keep exactly one active loader/runtime pair.
+3. Back up and remove stale duplicate `bom_engine_clean_loader.rb` files. This RC uses the isolated `bom_engine_clean/` runtime folder and does not load the generic `bom_engine/` folder. Keep exactly one active clean loader/runtime pair.
 4. In Extension Manager choose **Install Extension**, select `{{PACKAGE_NAME}}.rbz`, and accept the prompt.
 5. Restart SketchUp so no older Ruby modules remain loaded in memory.
 
+At startup, the Ruby Console prints `CleanV1 exporter build: <fingerprint>` and the active source directory. The same diagnostic is available under **BOM Engine Clean Analysis (Experimental) > Development Build Info**. Confirm the source ends in `Plugins/bom_engine_clean` before testing.
+
 The extension registers under SketchUp's **Plugins** menu. Choose **BOM Engine Clean Analysis (Experimental) > Export Clean Analysis JSON...**, select an output path, and choose the batch options.
 
-A successful output identifies itself as `bom_engine_clean_v1`, version `1.0.0`, and includes a top-level `materials` array. Existing geometry-only CleanV1 consumers may ignore the additive appearance fields.
+A successful output identifies itself as `bom_engine_clean_v1`, version `1.0.0`, and includes a non-empty top-level `materials` array for painted models. Existing geometry-only CleanV1 consumers may ignore the additive appearance fields.
 
 ## Replace or remove
 
