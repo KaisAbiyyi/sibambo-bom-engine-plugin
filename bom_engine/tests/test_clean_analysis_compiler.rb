@@ -169,7 +169,7 @@ class CleanAnalysisCompilerTest < Minitest::Test
     assert_equal 1, result.dig('diagnostics', 'counts', 'excluded_object_count')
   end
 
-  def test_keeps_explicit_openings_and_unknown_objects_as_compact_components
+  def test_keeps_single_use_openings_and_unknown_objects_as_renderable_definitions
     door_face = polygon(
       definition_uuid: uuid(3),
       source_uuid: uuid(16),
@@ -206,10 +206,11 @@ class CleanAnalysisCompilerTest < Minitest::Test
     )
 
     refute_nil result
-    assert_equal %w[door unknown], result.fetch('components').map { |component| component.fetch('category') }.sort
-    assert_equal %w[omitted omitted], result.fetch('components').map { |component| component.dig('geometry', 'status') }.sort
-    assert_equal %w[clean_analysis_profile clean_analysis_profile], result.fetch('components').map { |component| component.dig('geometry', 'reason') }.sort
-    assert_equal [1, 1], result.fetch('components').map { |component| component.dig('geometry', 'source_count') }.sort
+    assert_empty result.fetch('components')
+    assert_equal %w[door unknown], result.fetch('instances').map { |instance| instance.fetch('category') }.sort
+    assert_equal 2, result.fetch('definitions').length
+    assert_equal [1, 1], result.fetch('definitions').map { |item| item.dig('geometry', 'source_count') }.sort
+    assert result.fetch('definitions').all? { |item| item.dig('geometry', 'surfaces').length == 1 }
     assert_equal [], result.fetch('surfaces')
     assert_equal [], result.fetch('fallback_geometry')
   end
@@ -766,8 +767,9 @@ class CleanAnalysisCompilerTest < Minitest::Test
     }, counts)
     reasons = result.fetch('surfaces').map { |surface| surface.dig('classification', 'reason') }
     assert_includes reasons, 'thin_or_fragmentary_vertical_region'
-    assert_includes reasons, 'secondary_upward_region'
-    assert_includes reasons, 'secondary_downward_region'
+    assert_includes reasons, 'intermediate_horizontal_region'
+    assert_includes reasons, 'primary_lowest_horizontal_region'
+    assert_includes reasons, 'primary_highest_horizontal_region'
   end
 
   def test_merges_coplanar_fragments_when_shared_edge_segmentation_differs
@@ -1040,7 +1042,7 @@ class CleanAnalysisCompilerTest < Minitest::Test
   def compile(snapshot_document)
     return nil unless defined?(BOMEngine::CleanAnalysis)
 
-    BOMEngine::CleanAnalysis.compile(snapshot_document)
+    BOMEngine::CleanAnalysis.compile(snapshot_document, debug: true)
   end
 
   def snapshot

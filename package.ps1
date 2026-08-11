@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Plugin', 'CleanRc', 'AppearanceRc')]
+    [ValidateSet('Plugin', 'CleanRc', 'AppearanceRc', 'CompleteRc')]
     [string]$Target = 'Plugin'
 )
 
@@ -159,10 +159,10 @@ try {
         throw 'A valid source Git commit is required for a clean release candidate.'
     }
     $ShortSha = $Commit.Substring(0, 7)
-    $PackageName = if ($Target -eq 'AppearanceRc') {
-        "bom_engine_clean_v1-appearance-rc-$ShortSha"
-    } else {
-        "bom_engine_clean_v1-rc-$ShortSha"
+    $PackageName = switch ($Target) {
+        'AppearanceRc' { "bom_engine_clean_v1-appearance-rc-$ShortSha" }
+        'CompleteRc' { "bom_engine_clean_v1-complete-rc-$ShortSha" }
+        default { "bom_engine_clean_v1-rc-$ShortSha" }
     }
     $DistRoot = Join-Path $PluginDir 'dist'
     $OutputDir = Join-Path $DistRoot $PackageName
@@ -185,15 +185,15 @@ try {
         PACKAGE_NAME = $PackageName
         GIT_COMMIT = $Commit
     }
-    $InstallTemplate = if ($Target -eq 'AppearanceRc') {
-        'release\appearance\INSTALL.template.md'
-    } else {
-        'release\INSTALL.template.md'
+    $InstallTemplate = switch ($Target) {
+        'AppearanceRc' { 'release\appearance\INSTALL.template.md' }
+        'CompleteRc' { 'release\complete\INSTALL.template.md' }
+        default { 'release\INSTALL.template.md' }
     }
-    $AcceptanceTemplate = if ($Target -eq 'AppearanceRc') {
-        'release\appearance\MANUAL_ACCEPTANCE.template.md'
-    } else {
-        'release\MANUAL_ACCEPTANCE.template.md'
+    $AcceptanceTemplate = switch ($Target) {
+        'AppearanceRc' { 'release\appearance\MANUAL_ACCEPTANCE.template.md' }
+        'CompleteRc' { 'release\complete\MANUAL_ACCEPTANCE.template.md' }
+        default { 'release\MANUAL_ACCEPTANCE.template.md' }
     }
     Expand-Template `
         -TemplatePath (Join-Path $PluginDir $InstallTemplate) `
@@ -207,6 +207,16 @@ try {
         Expand-Template `
             -TemplatePath (Join-Path $PluginDir 'release\appearance\APPEARANCE_CONTRACT.template.md') `
             -OutputPath (Join-Path $OutputDir 'APPEARANCE_CONTRACT.md') `
+            -Values $TemplateValues
+    }
+    if ($Target -eq 'CompleteRc') {
+        Expand-Template `
+            -TemplatePath (Join-Path $PluginDir 'release\complete\CLEANV1_CONTRACT.template.md') `
+            -OutputPath (Join-Path $OutputDir 'CLEANV1_CONTRACT.md') `
+            -Values $TemplateValues
+        Expand-Template `
+            -TemplatePath (Join-Path $PluginDir 'release\complete\COVERAGE_GUIDE.template.md') `
+            -OutputPath (Join-Path $OutputDir 'COVERAGE_GUIDE.md') `
             -Values $TemplateValues
     }
 
@@ -226,6 +236,18 @@ git commit:
 base handoff commit:
     $(if ($Target -eq 'AppearanceRc') { 'd611d59b4ac9fdb7c4b785cfd4ae072e418e67a9' } else { '72af3c2ef4b47bdbda8e8504a84e9ef3b651df76' })
 "@
+    if ($Target -eq 'CompleteRc') {
+        $VersionText = [regex]::Replace(
+            $VersionText,
+            'release status:\r?\n\s+[^\r\n]+',
+            "release status:`r`n    COMPLETENESS RELEASE CANDIDATE - REQUIRES USER SKETCHUP ACCEPTANCE"
+        )
+        $VersionText = [regex]::Replace(
+            $VersionText,
+            'base handoff commit:\r?\n\s+[0-9a-f]+',
+            "base handoff commit:`r`n    52f405c7b606700cc354247e29259549cfa57a28"
+        )
+    }
     Write-Utf8NoBom -Path (Join-Path $OutputDir 'VERSION.txt') -Content $VersionText
 
     $ChecksumTargets = @(
@@ -236,6 +258,10 @@ base handoff commit:
     )
     if ($Target -eq 'AppearanceRc') {
         $ChecksumTargets += (Join-Path $OutputDir 'APPEARANCE_CONTRACT.md')
+    }
+    if ($Target -eq 'CompleteRc') {
+        $ChecksumTargets += (Join-Path $OutputDir 'CLEANV1_CONTRACT.md')
+        $ChecksumTargets += (Join-Path $OutputDir 'COVERAGE_GUIDE.md')
     }
     $ChecksumLines = $ChecksumTargets | ForEach-Object {
         $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash.ToLowerInvariant()

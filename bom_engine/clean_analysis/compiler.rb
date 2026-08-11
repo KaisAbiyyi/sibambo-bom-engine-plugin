@@ -36,12 +36,18 @@ module BOMEngine
       DECORATION_PATTERN = /\b(?:plant|tree|vegetation|decoration|decorative|ornament|presentation)\b/i.freeze
 
       class << self
-        def compile(snapshot_document, progress: nil, profiler: nil)
-          new(snapshot_document, progress: progress, profiler: profiler).compile
+        def compile(snapshot_document, progress: nil, profiler: nil, visual_edges: [], debug: false)
+          new(
+            snapshot_document,
+            progress: progress,
+            profiler: profiler,
+            visual_edges: visual_edges,
+            debug: debug
+          ).compile
         end
       end
 
-      def initialize(snapshot_document, progress: nil, profiler: nil)
+      def initialize(snapshot_document, progress: nil, profiler: nil, visual_edges: [], debug: false)
         unless snapshot_document.is_a?(BOMEngine::SemanticV2::Snapshot::Document)
           raise ArgumentError, 'clean analysis compiler requires a neutral extraction snapshot'
         end
@@ -49,6 +55,11 @@ module BOMEngine
         @snapshot = snapshot_document
         @progress = progress
         @profiler = profiler
+        @debug = debug == true
+        @visual_edges = Array(visual_edges).map { |edge| normalized_visual_edge(edge) }
+        @visual_edges_by_definition = @visual_edges.group_by { |edge| edge.fetch(:definition_uuid) }
+        @coverage = CoverageLedger.new(snapshot_document.primitives, @visual_edges)
+        @surface_primitive_keys = {}
         @definitions = snapshot_document.definitions.each_with_object({}) do |definition, index|
           checkpoint('Compiling definition index')
           index[definition.source_uuid] = definition
@@ -84,10 +95,21 @@ module BOMEngine
         retained_definition_categories = Hash.new { |hash, key| hash[key] = [] }
         excluded_objects = []
         excluded_paths = []
+        visual_edges = []
 
         @snapshot.occurrences.sort_by { |occurrence| [occurrence.uuid_path.length, occurrence.uuid_path] }.each do |occurrence|
           checkpoint('Compiling model occurrences')
-          next if path_below_any?(occurrence.uuid_path, excluded_paths)
+          if path_below_any?(occurrence.uuid_path, excluded_paths)
+            excluded_definition = @definitions.fetch(occurrence.definition_uuid)
+            @excluded_primitive_count += excluded_definition.primitive_keys.length
+            mark_definition_coverage(
+              excluded_definition,
+              'explicitly_excluded',
+              reason: 'ancestor_analysis_irrelevant',
+              occurrence_path: occurrence.uuid_path
+            )
+            next
+          end
 
           definition = @definitions.fetch(occurrence.definition_uuid)
           label = primary_label('occurrence', occurrence.uuid_path)
@@ -96,8 +118,14 @@ module BOMEngine
             profile_occurrence(occurrence, definition, category, 'excluded')
             excluded_paths << occurrence.uuid_path
             @excluded_primitive_count += definition.primitive_keys.length
+            mark_definition_coverage(
+              definition,
+              'explicitly_excluded',
+              reason: 'analysis_irrelevant',
+              occurrence_path: occurrence.uuid_path
+            )
             excluded_objects << excluded_object(occurrence, label, category)
-          elsif shared_occurrence?(occurrence)
+          elsif retained_occurrence?(occurrence, definition, category)
             profile_occurrence(occurrence, definition, category, 'referenced')
             instance = shared_instance(occurrence, definition, label, category)
             retained_definition_categories[definition.source_uuid] << instance.fetch('retention')
@@ -115,11 +143,17 @@ module BOMEngine
                 occurrence_label: label
               )
             end
+            @visual_edges_by_definition.fetch(definition.source_uuid, []).each do |edge|
+              visual_edges << expanded_visual_edge(edge, occurrence)
+              @coverage.mark(
+                edge_key(edge),
+                'visual_retained',
+                reason: 'standalone_visual_edge',
+                occurrence_ancestry: occurrence.uuid_path
+              )
+            end
           else
-            profile_occurrence(occurrence, definition, category, 'referenced')
-            component = compact_component(occurrence, definition, label, category)
-            components << component
-            @profiler.record_component(component, occurrence) if @profiler
+            raise "unhandled eligible CleanV1 occurrence category: #{category}"
           end
         end
 
@@ -134,6 +168,8 @@ module BOMEngine
           checkpoint('Recording unresolved surfaces')
           unresolved_surface(surface)
         end.sort_by { |item| item.fetch('id') }
+        surfaces.each { |surface| mark_surface_coverage(surface, 'analytical', 'architectural_surface') }
+        invalid_surfaces.each { |surface| mark_surface_coverage(surface, 'fallback', 'invalid_surface') }
         components.sort_by! { |component| component.fetch('id') }
         instances.sort_by! { |instance| instance.fetch('id') }
         retained_definitions = retained_definition_categories.keys.sort.map do |definition_uuid|
@@ -147,8 +183,19 @@ module BOMEngine
         end
         fallback_geometry.concat(@definition_fallback_geometry)
         fallback_geometry.sort_by! { |item| item.fetch('id') }
+        visual_edges.sort_by! { |edge| edge.fetch('id') }
         excluded_objects.sort_by! { |item| item.fetch('id') }
-        materials = @snapshot.materials.sort_by(&:source_uuid).map do |material|
+        referenced_material_ids = material_references(
+          surfaces,
+          retained_definitions,
+          instances,
+          components,
+          fallback_geometry,
+          visual_edges
+        )
+        materials = @snapshot.materials.sort_by(&:source_uuid).select do |material|
+          referenced_material_ids.key?(@material_ids.fetch(material.source_uuid))
+        end.map do |material|
           checkpoint('Compiling material appearance')
           compiled_material(material)
         end
@@ -188,6 +235,7 @@ module BOMEngine
           'definitions' => retained_definitions,
           'instances' => instances,
           'components' => components,
+          'visual_edges' => visual_edges,
           'excluded_objects' => excluded_objects,
           'fallback_geometry' => fallback_geometry,
           'diagnostics' => {
@@ -203,6 +251,9 @@ module BOMEngine
                 sum + definition.dig('geometry', 'surfaces').length
               end,
               'material_count' => materials.length,
+              'standalone_edge_count' => visual_edges.length + retained_definitions.inject(0) do |sum, definition|
+                sum + definition.dig('geometry', 'edges').length
+              end,
               'instance_count' => instances.length,
               'component_count' => components.length,
               'excluded_object_count' => excluded_objects.length,
@@ -217,12 +268,25 @@ module BOMEngine
               'polygon_vertex_references' => top_level_vertices + definition_vertex_references,
               'raw_triangle_indices_serialized' => 0
             },
+            'coverage' => @coverage.counts,
+            'materials' => {
+              'source' => @snapshot.materials.length,
+              'referenced' => referenced_material_ids.length,
+              'emitted' => materials.length,
+              'unused_emitted' => materials.count do |material|
+                !referenced_material_ids.key?(material.fetch('id'))
+              end
+            },
+            'topology' => topology_diagnostics(surfaces, retained_definitions, visual_edges),
+            'definitions' => definition_diagnostics(retained_definitions),
             'area_m2' => {
               'source' => clean_number(candidates.inject(0.0) { |sum, item| sum + item.fetch(:area_m2) }),
               'resolved' => clean_number(surfaces.inject(0.0) { |sum, item| sum + item.fetch('area_m2') }),
               'unresolved' => clean_number(fallback_geometry.inject(0.0) { |sum, item| sum + item.fetch('area_m2') })
             }
-          }
+          }.tap do |diagnostics|
+            diagnostics['coverage_ledger'] = @coverage.entries if @debug
+          end
         }
       end
 
@@ -300,8 +364,13 @@ module BOMEngine
         item
       end
 
-      def shared_occurrence?(occurrence)
-        !occurrence.uuid_path.empty? && @definition_usage[occurrence.definition_uuid] > 1
+      def retained_occurrence?(occurrence, definition, category)
+        return false if occurrence.uuid_path.empty?
+        return true if @definition_usage[occurrence.definition_uuid] > 1
+        return true unless surface_category?(category) || category == 'container'
+        return true unless @visual_edges_by_definition.fetch(definition.source_uuid, []).empty?
+
+        category == 'container' && definition.primitive_keys.empty?
       end
 
       def shared_instance(occurrence, definition, label, category)
@@ -338,14 +407,15 @@ module BOMEngine
         role = SURFACE_ROLES[role_for('primitive', primitive.key, occurrence.uuid_path)]
         return nil if label.nil? && role.nil?
 
+        classification = {
+          'method' => role ? (label && label.explicit ? 'explicit_label' : 'semantic_role') : 'label_hint',
+          'label' => label && label.label,
+          'source' => label && label.source
+        }.reject { |_key, value| value.nil? }
         {
           'surface_id' => stable_id('definition-surface', primitive.key),
           'type' => role || geometric_surface_type(primitive.normal),
-          'classification' => {
-            'method' => role ? (label && label.explicit ? 'explicit_label' : 'semantic_role') : 'label_hint',
-            'label' => label && label.label,
-            'source' => label && label.source
-          }.reject { |_key, value| value.nil? }
+          'classification' => compact_classification(classification)
         }
       end
 
@@ -364,7 +434,15 @@ module BOMEngine
             definition_id: definition_id
           )
         end
-        vertices, indexed_surfaces = pool_definition_vertices(surfaces)
+        surfaces.each { |surface| mark_surface_coverage(surface, 'visual_retained', 'shared_definition_polygon') }
+        invalid_surfaces.each { |surface| mark_surface_coverage(surface, 'fallback', 'invalid_definition_polygon') }
+        definition_edges = @visual_edges_by_definition.fetch(definition.source_uuid, []).sort_by do |edge|
+          edge.fetch(:source_uuid)
+        end
+        vertices, indexed_surfaces, indexed_edges = pool_definition_vertices(surfaces, definition_edges)
+        definition_edges.each do |edge|
+          @coverage.mark(edge_key(edge), 'visual_retained', reason: 'shared_definition_edge')
+        end
         retention = categories.include?('analysis_boundary') ?
           'analysis_boundary' : 'visual_architectural_detail'
         if retention == 'visual_architectural_detail'
@@ -385,13 +463,15 @@ module BOMEngine
           'geometry' => {
             'coordinate_space' => 'definition_local',
             'source_count' => definition.primitive_keys.length,
+            'edge_source_count' => definition_edges.length,
             'vertices' => vertices,
-            'surfaces' => indexed_surfaces
+            'surfaces' => indexed_surfaces,
+            'edges' => indexed_edges
           }
         }
       end
 
-      def pool_definition_vertices(surfaces)
+      def pool_definition_vertices(surfaces, edges = [])
         vertices = []
         indices_by_point = {}
         indexed_surfaces = surfaces.map do |surface|
@@ -402,15 +482,24 @@ module BOMEngine
             end
           )
         end
-        [vertices, indexed_surfaces]
+        indexed_edges = edges.map do |edge|
+          edge.fetch(:vertices).map do |point|
+            pooled_point(point, vertices, indices_by_point)
+          end
+        end
+        [vertices, indexed_surfaces, indexed_edges]
       end
 
       def pooled_loop(points, vertices, indices_by_point)
         points.map do |point|
-          indices_by_point[point] ||= begin
-            vertices << point
-            vertices.length - 1
-          end
+          pooled_point(point, vertices, indices_by_point)
+        end
+      end
+
+      def pooled_point(point, vertices, indices_by_point)
+        indices_by_point[point] ||= begin
+          vertices << point
+          vertices.length - 1
         end
       end
 
@@ -438,6 +527,7 @@ module BOMEngine
         }.merge('classification_hint' => geometric_surface_type(primitive.normal))
         assign_material_id!(surface, 'front_material_id', primitive.front_material_uuid)
         assign_material_id!(surface, 'back_material_id', primitive.back_material_uuid)
+        @surface_primitive_keys[surface.fetch('id')] = [primitive.key]
         surface
       end
 
@@ -448,6 +538,8 @@ module BOMEngine
           'reason' => 'invalid_surface',
           'source_count' => surface.fetch('source_count'),
           'area_m2' => surface.fetch('area_m2'),
+          'outer' => surface.fetch('outer'),
+          'holes' => surface.fetch('holes'),
           'validation_issues' => SurfaceValidator.validate(surface)
         }
         item['definition_id'] = definition_id if definition_id
@@ -528,10 +620,11 @@ module BOMEngine
         minimum_z = all_points.map { |point| point[2] }.min
         maximum_z = all_points.map { |point| point[2] }.max
         model_height = maximum_z.to_f - minimum_z.to_f
-        upward = geometric.select { |candidate| candidate.fetch(:type) == 'floor' }
-        downward = geometric.select { |candidate| candidate.fetch(:type) == 'ceiling' }
-        primary_floor_z = upward.map { |candidate| mean_z(candidate.fetch(:outer)) }.min
-        primary_ceiling_z = downward.map { |candidate| mean_z(candidate.fetch(:outer)) }.max
+        horizontal = geometric.select do |candidate|
+          candidate.fetch(:normal)[2].abs >= HORIZONTAL_NORMAL_Z_MIN
+        end
+        primary_floor_z = horizontal.map { |candidate| mean_z(candidate.fetch(:outer)) }.min
+        primary_ceiling_z = horizontal.map { |candidate| mean_z(candidate.fetch(:outer)) }.max
 
         geometric.each do |candidate|
           type = candidate.fetch(:type)
@@ -547,19 +640,21 @@ module BOMEngine
               candidate[:type] = 'other_architectural_surface'
               reason = 'thin_or_fragmentary_vertical_region'
             end
-          when 'floor'
-            if primary_floor_z && (mean_z(candidate.fetch(:outer)) - primary_floor_z).abs <= POSITION_TOLERANCE_M
-              reason = 'primary_lowest_upward_region'
+          when 'floor', 'ceiling'
+            elevation = mean_z(candidate.fetch(:outer))
+            if primary_floor_z && primary_ceiling_z &&
+               (primary_ceiling_z - primary_floor_z).abs <= POSITION_TOLERANCE_M
+              candidate[:type] = candidate.fetch(:normal)[2].negative? ? 'ceiling' : 'floor'
+              reason = 'single_horizontal_level_normal_hint'
+            elsif primary_floor_z && (elevation - primary_floor_z).abs <= POSITION_TOLERANCE_M
+              candidate[:type] = 'floor'
+              reason = 'primary_lowest_horizontal_region'
+            elsif primary_ceiling_z && (elevation - primary_ceiling_z).abs <= POSITION_TOLERANCE_M
+              candidate[:type] = 'ceiling'
+              reason = 'primary_highest_horizontal_region'
             else
               candidate[:type] = 'other_architectural_surface'
-              reason = 'secondary_upward_region'
-            end
-          when 'ceiling'
-            if primary_ceiling_z && (mean_z(candidate.fetch(:outer)) - primary_ceiling_z).abs <= POSITION_TOLERANCE_M
-              reason = 'primary_highest_downward_region'
-            else
-              candidate[:type] = 'other_architectural_surface'
-              reason = 'secondary_downward_region'
+              reason = 'intermediate_horizontal_region'
             end
           else
             reason = 'sloped_geometry_region'
@@ -785,11 +880,12 @@ module BOMEngine
         holes = candidate.fetch(:holes).map do |hole|
           normalize_loop_start(hole).map { |point| clean_point(point) }
         end.sort_by { |hole| loop_sort_key(hole) }
-        surface = {
-          'id' => stable_id(
+        surface_id = stable_id(
             'surface',
             candidate.fetch(:occurrence_path) + primitive_keys.flatten.sort + [candidate.fetch(:type)]
-          ),
+          )
+        surface = {
+          'id' => surface_id,
           'type' => candidate.fetch(:type),
           'outer' => outer,
           'holes' => holes,
@@ -797,13 +893,137 @@ module BOMEngine
           'area_m2' => clean_number(candidate.fetch(:area_m2)),
           'source_count' => candidate.fetch(:source_count),
           'orientation' => orientation(candidate.fetch(:normal)),
-          'classification' => candidate.fetch(:classification)
+          'classification' => compact_classification(candidate.fetch(:classification))
         }
+        @surface_primitive_keys[surface_id] = primitive_keys
         assign_material_id!(surface, 'front_material_id', candidate.fetch(:front_material_uuid))
         assign_material_id!(surface, 'back_material_id', candidate.fetch(:back_material_uuid))
         assign_material_id!(surface, 'inherited_material_id', candidate.fetch(:inherited_material_uuid))
         @profiler.record_surface(surface, candidate) if @profiler
         surface
+      end
+
+      def normalized_visual_edge(edge)
+        definition_uuid = edge_value(edge, :definition_uuid).to_s
+        source_uuid = edge_value(edge, :source_uuid).to_s
+        vertices = Array(edge_value(edge, :vertices))
+        unless vertices.length == 2 && vertices.all? do |point|
+                 point.is_a?(Array) && point.length == 3 && point.all? { |value| value.is_a?(Numeric) && value.finite? }
+               end
+          raise ArgumentError, 'standalone visual edge must contain two finite XYZ vertices'
+        end
+
+        {
+          definition_uuid: definition_uuid,
+          source_uuid: source_uuid,
+          vertices: vertices.map { |point| clean_point(point) }
+        }.freeze
+      end
+
+      def edge_value(edge, key)
+        edge.fetch(key) { edge.fetch(key.to_s) }
+      end
+
+      def edge_key(edge)
+        [edge.fetch(:definition_uuid), edge.fetch(:source_uuid)]
+      end
+
+      def expanded_visual_edge(edge, occurrence)
+        {
+          'id' => stable_id('edge', occurrence.uuid_path + edge_key(edge)),
+          'vertices' => edge.fetch(:vertices).map do |point|
+            clean_point(transform_point(occurrence.transform, point))
+          end,
+          'source_count' => 1
+        }
+      end
+
+      def mark_definition_coverage(definition, disposition, reason:, occurrence_path: nil)
+        definition.primitive_keys.each do |primitive_key|
+          @coverage.mark(
+            primitive_key,
+            disposition,
+            reason: reason,
+            occurrence_ancestry: occurrence_path
+          )
+        end
+        @visual_edges_by_definition.fetch(definition.source_uuid, []).each do |edge|
+          @coverage.mark(
+            edge_key(edge),
+            disposition,
+            reason: reason,
+            occurrence_ancestry: occurrence_path
+          )
+        end
+      end
+
+      def mark_surface_coverage(surface, disposition, reason)
+        @surface_primitive_keys.fetch(surface.fetch('id'), []).each do |primitive_key|
+          @coverage.mark(primitive_key, disposition, reason: reason)
+        end
+      end
+
+      def compact_classification(classification)
+        return classification.dup if @debug
+
+        { 'method' => classification.fetch('method') }
+      end
+
+      def material_references(*values)
+        result = {}
+        pending = values
+        until pending.empty?
+          value = pending.pop
+          case value
+          when Hash
+            value.each do |key, child|
+              if Writer::MATERIAL_REFERENCE_KEYS.include?(key.to_s) && !child.nil?
+                result[child] = true
+              else
+                pending << child
+              end
+            end
+          when Array
+            pending.concat(value)
+          end
+        end
+        result
+      end
+
+      def topology_diagnostics(surfaces, definitions, visual_edges)
+        top_level_points = surfaces.flat_map do |surface|
+          surface.fetch('outer') + surface.fetch('holes').flatten(1)
+        end
+        top_level_points.concat(visual_edges.flat_map { |edge| edge.fetch('vertices') })
+        unique = top_level_points.each_with_object({}) { |point, values| values[point] = true }
+        {
+          'top_level_vertex_occurrences' => top_level_points.length,
+          'top_level_unique_vertices' => unique.length,
+          'definition_pooled_vertices' => definitions.inject(0) do |sum, definition|
+            sum + definition.dig('geometry', 'vertices').length
+          end,
+          'standalone_edges' => visual_edges.length + definitions.inject(0) do |sum, definition|
+            sum + definition.dig('geometry', 'edges').length
+          end
+        }
+      end
+
+      def definition_diagnostics(retained_definitions)
+        root_uuid = @snapshot.scope.root_definition_uuid
+        renderable = @definitions.values.reject { |definition| definition.source_uuid == root_uuid }.count do |definition|
+          !definition.primitive_keys.empty? ||
+            !@visual_edges_by_definition.fetch(definition.source_uuid, []).empty?
+        end
+        retained_renderable = retained_definitions.count do |definition|
+          geometry = definition.fetch('geometry')
+          !geometry.fetch('surfaces').empty? || !geometry.fetch('edges').empty?
+        end
+        {
+          'source_renderable' => renderable,
+          'retained' => retained_definitions.length,
+          'retained_renderable' => retained_renderable,
+          'dropped' => [renderable - retained_renderable, 0].max
+        }
       end
 
       def compiled_material(material)

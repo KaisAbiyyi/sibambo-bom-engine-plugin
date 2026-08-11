@@ -34,12 +34,21 @@ module BOMEngine
           settings: extraction_settings,
           progress: batcher.method(:step)
         )
+        visual_edges = VisualEdgeExtractor.extract(
+          roots: root_items,
+          identity_plan: plan,
+          snapshot: snapshot,
+          include_hidden: extraction_settings.fetch(:include_hidden, false),
+          progress: batcher.method(:step)
+        )
         batcher.force('Compiling architectural surfaces')
         profiler = profile ? Profiler.new(snapshot) : nil
         document = Compiler.compile(
           snapshot,
           progress: batcher.method(:step),
-          profiler: profiler
+          profiler: profiler,
+          visual_edges: visual_edges,
+          debug: extraction_settings.fetch(:debug, false) == true
         )
         batcher.force('Writing clean JSON')
         result = Writer.write(

@@ -73,6 +73,11 @@ module BOMEngine
 
         material_ids = validate_materials!(document.fetch('materials', []), progress)
         validate_material_references!(document, material_ids, progress)
+        referenced_material_ids = collect_material_references(document)
+        unused_material_ids = material_ids.keys.reject { |id| referenced_material_ids.key?(id) }
+        unless unused_material_ids.empty?
+          raise ArgumentError, "unreferenced serialized material: #{unused_material_ids.sort.first}"
+        end
 
         document.fetch('surfaces', []).each do |surface|
           report_progress(progress)
@@ -82,6 +87,7 @@ module BOMEngine
           geometry = definition.fetch('geometry')
           vertices = geometry['vertices']
           validate_vertex_pool!(vertices) unless vertices.nil?
+          validate_indexed_edges!(geometry.fetch('edges', []), vertices || [])
           geometry.fetch('surfaces').each do |surface|
             report_progress(progress)
             candidate = vertices.nil? ? surface : resolve_indexed_surface(surface, vertices)
@@ -91,6 +97,9 @@ module BOMEngine
             end
             SurfaceValidator.validate!(candidate)
           end
+        end
+        document.fetch('visual_edges', []).each do |edge|
+          validate_visual_edge!(edge)
         end
       end
       private_class_method :validate_document!
@@ -160,6 +169,23 @@ module BOMEngine
       end
       private_class_method :validate_material_references!
 
+      def collect_material_references(value, result = {})
+        case value
+        when Hash
+          value.each do |key, child|
+            if MATERIAL_REFERENCE_KEYS.include?(key.to_s) && !child.nil?
+              result[child] = true
+            else
+              collect_material_references(child, result)
+            end
+          end
+        when Array
+          value.each { |child| collect_material_references(child, result) }
+        end
+        result
+      end
+      private_class_method :collect_material_references
+
       def unit_number?(value)
         value.is_a?(Numeric) && value.finite? && value.between?(0.0, 1.0)
       end
@@ -185,6 +211,26 @@ module BOMEngine
         end
       end
       private_class_method :validate_vertex_pool!
+
+      def validate_indexed_edges!(edges, vertices)
+        unless edges.is_a?(Array) && edges.all? do |edge|
+                 edge.is_a?(Array) && edge.length == 2 && edge.all? do |index|
+                   index.is_a?(Integer) && index >= 0 && index < vertices.length
+                 end
+               end
+          raise ArgumentError, 'definition standalone edges must contain two valid vertex indices'
+        end
+      end
+      private_class_method :validate_indexed_edges!
+
+      def validate_visual_edge!(edge)
+        vertices = edge.is_a?(Hash) ? edge['vertices'] : nil
+        unless vertices.is_a?(Array) && vertices.length == 2 &&
+               vertices.all? { |point| SurfaceValidator.valid_point?(point) }
+          raise ArgumentError, 'standalone visual edge must contain two finite XYZ vertices'
+        end
+      end
+      private_class_method :validate_visual_edge!
 
       def resolve_indexed_surface(surface, vertices)
         surface.merge(

@@ -9,7 +9,10 @@ module BOMEngine
     module BuildInfo
       TRACKED_FILES = %w[
         ../semantic_v2/extractor.rb
+        coverage_ledger.rb
+        completeness_report.rb
         compiler.rb
+        visual_edge_extractor.rb
         writer.rb
         exporter.rb
       ].freeze
