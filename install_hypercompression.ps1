@@ -73,7 +73,7 @@ try {
         }
     }
 
-    Expand-Archive -LiteralPath $RbzPath -DestinationPath $StagingPath
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($RbzPath, $StagingPath)
     $StagedLoader = Join-Path $StagingPath 'bom_engine_loader.rb'
     $StagedRuntime = Join-Path $StagingPath 'bom_engine'
     if (-not (Select-String -LiteralPath $StagedLoader -Pattern "PLUGIN_VERSION = '3.3.0-rc.1'" -Quiet)) {
