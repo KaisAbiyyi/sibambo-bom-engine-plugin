@@ -66,6 +66,7 @@ try {
         'bom_engine/bomc_processing.rb',
         'bom_engine/bomc_size_gate.rb',
         'bom_engine/bomc_export_job.rb',
+        'bom_engine/bomc_texture_optimizer.rb',
         'bom_engine/ui/conversion_dialog.html'
     )) {
         if ($EntryNames -notcontains $Required) {

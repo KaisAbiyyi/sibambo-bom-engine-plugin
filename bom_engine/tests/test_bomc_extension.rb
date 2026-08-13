@@ -51,6 +51,29 @@ module BOMEngine
           selected = graph[:materials][0][:texture]
           assert(selected[:source_path] == source_path && selected[:filename] == 'original.jpg', 'readable native JPEG source is preserved instead of forced PNG staging')
           assert(selected.dig(:encoding_evidence, :selected) == :source && selected.dig(:encoding_evidence, :source_bytes) < selected.dig(:encoding_evidence, :staged_bytes), 'texture selection records source/staged byte evidence')
+
+          missing_source = File.join(texture_dir, 'embedded', 'wood.jpg')
+          staged_jpeg_path = File.join(texture_dir, 'wood.jpg')
+          File.open(staged_jpeg_path, 'wb') { |file| file.write("\xff\xd8optimized-jpeg".b) }
+          graph = { materials: [{ name: 'Embedded Wood', texture: {} }] }
+          extracted = [{
+            name: 'Embedded Wood',
+            texture: {
+              filename: 'wood.jpg',
+              source_path: missing_source,
+              staging_evidence: {
+                selected: :jpeg_candidate,
+                staged_bytes: 10_000,
+                candidate_bytes: File.size(staged_jpeg_path),
+                quality: { psnr_db: 42.5 },
+                reason: :native_jpeg_restored
+              }
+            }
+          }]
+          BOMCExtension.send(:attach_staged_textures, graph, extracted, texture_dir)
+          selected = graph[:materials][0][:texture]
+          assert(selected[:source_path] == staged_jpeg_path && selected[:filename] == 'wood.jpg', 'unavailable embedded source uses the evidence-gated staged JPEG')
+          assert(selected.dig(:encoding_evidence, :staging, :quality, :psnr_db) == 42.5, 'compiled texture metrics retain staging quality evidence')
         ensure
           FileUtils.remove_entry(texture_dir) if texture_dir && Dir.exist?(texture_dir)
         end

@@ -151,7 +151,8 @@ module BOMEngine
         model,
         texture_writer,
         texture_directory,
-        checkpoint: checkpoint
+        checkpoint: checkpoint,
+        optimize_textures: true
       )
       entity_total = model.entities.respond_to?(:length) ? model.entities.length : 0
       graph = CanonicalGraphBuilder.build(
@@ -213,7 +214,8 @@ module BOMEngine
           source_bytes: File.file?(source_path) ? File.size(source_path) : nil,
           staged_path: File.file?(staged_path) ? staged_path : nil,
           staged_bytes: File.file?(staged_path) ? File.size(staged_path) : nil,
-          reason: source_supported ? :native_source_preserved : :source_unavailable_or_unsupported
+          reason: source_supported ? :native_source_preserved : :source_unavailable_or_unsupported,
+          staging: extracted[:texture][:staging_evidence]
         }
       end
       graph
