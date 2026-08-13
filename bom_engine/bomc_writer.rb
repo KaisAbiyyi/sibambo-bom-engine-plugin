@@ -1,4 +1,4 @@
-# BOMC 1.0 compiled building writer.
+# BOMC 1.1 compiled building writer.
 
 require 'digest'
 require 'fileutils'
@@ -9,7 +9,7 @@ require_relative 'bomc_model_adapter'
 module BOMEngine
   module BOMCWriter
     FORMAT_NAME = 'BOMC'.freeze
-    FORMAT_VERSION = '1.0'.freeze
+    FORMAT_VERSION = '1.1'.freeze
 
     SECTION_NAMES = {
       BOMC::SECTION_MODEL => :model,
@@ -33,12 +33,30 @@ module BOMEngine
       BOMC::SECTION_DEBUG => :debug
     }.freeze
 
-    def self.pack(graph, profile: :production, base_path: nil)
-      Builder.new(graph, profile: profile, base_path: base_path).build
+    def self.pack(graph, profile: :production, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil)
+      Builder.new(
+        graph,
+        profile: profile,
+        base_path: base_path,
+        sparse: sparse,
+        compact_directory: compact_directory,
+        compression_level: compression_level,
+        minimal_metadata: minimal_metadata,
+        checkpoint: checkpoint
+      ).build
     end
 
-    def self.write(path, graph, profile: :production, base_path: nil)
-      result = pack(graph, profile: profile, base_path: base_path)
+    def self.write(path, graph, profile: :production, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil)
+      result = pack(
+        graph,
+        profile: profile,
+        base_path: base_path,
+        sparse: sparse,
+        compact_directory: compact_directory,
+        compression_level: compression_level,
+        minimal_metadata: minimal_metadata,
+        checkpoint: checkpoint
+      )
       temporary_path = "#{path}.#{Process.pid}.part"
       begin
         File.open(temporary_path, 'wb') { |file| file.write(result[:bytes]) }
@@ -54,10 +72,15 @@ module BOMEngine
     end
 
     class Builder
-      def initialize(graph, profile:, base_path:)
+      def initialize(graph, profile:, base_path:, sparse:, compact_directory:, compression_level:, minimal_metadata:, checkpoint:)
         @profile = profile.to_sym
         raise ArgumentError, "Unknown BOMC profile #{@profile}." unless [:production, :debug].include?(@profile)
-        @model = BOMC::ModelAdapter.normalize(graph, base_path: base_path)
+        @sparse = !!sparse
+        @compact_directory = !!compact_directory
+        @compression_level = Integer(compression_level)
+        @minimal_metadata = !!minimal_metadata
+        @checkpoint = checkpoint
+        @model = BOMC::ModelAdapter.normalize(graph, base_path: base_path, checkpoint: @checkpoint)
         @adaptive_actual = 0
         @adaptive_u32 = 0
         @position_metrics = []
@@ -69,10 +92,13 @@ module BOMEngine
       end
 
       def build
+        notify(:compile_metadata, 0, 1)
         geometry = build_geometry
         normal_block = BOMC::NormalCodec.encode(geometry[:normals])
-        transform_block = BOMC::TransformCodec.encode(@model[:transforms])
-        sections = [
+        notify(:encode_normals, geometry[:normals].length / 3, geometry[:normals].length / 3)
+        transform_block = BOMC::TransformCodec.encode(@model[:transforms], checkpoint: @checkpoint)
+        notify(:encode_transforms, @model[:transforms].length, @model[:transforms].length)
+        all_sections = [
           section(BOMC::SECTION_MODEL, 1, build_model_section(geometry), true),
           section(BOMC::SECTION_STRINGS, @strings.length, build_strings_section, true),
           section(BOMC::SECTION_MATERIALS, @model[:materials].length, build_materials_section, true),
@@ -92,9 +118,25 @@ module BOMEngine
           section(BOMC::SECTION_COVERAGE, 1, build_coverage_section, true),
           section(BOMC::SECTION_FALLBACK, fallback_records.length, build_fallback_section, true)
         ]
-        sections << section(BOMC::SECTION_DEBUG, debug_records.length, build_debug_section, true) if @profile == :debug
+        all_sections << section(BOMC::SECTION_DEBUG, debug_records.length, build_debug_section, true) if @profile == :debug
+        required = [
+          BOMC::SECTION_MODEL, BOMC::SECTION_STRINGS, BOMC::SECTION_DEFINITIONS,
+          BOMC::SECTION_INSTANCES, BOMC::SECTION_TRANSFORMS, BOMC::SECTION_COVERAGE
+        ]
+        sections = if @sparse
+                     all_sections.select { |entry| required.include?(entry[:type]) || entry[:count] > 0 }
+                   else
+                     all_sections
+                   end
         flags = @profile == :debug ? BOMC::PROFILE_DEBUG : BOMC::PROFILE_PRODUCTION
-        bytes = BOMC::Container.pack(sections, flags: flags)
+        bytes = BOMC::Container.pack(
+          sections,
+          flags: flags,
+          compact_directory: @compact_directory,
+          version_minor: @compact_directory ? 1 : 0,
+          compression_level: @compression_level,
+          checkpoint: @checkpoint
+        )
         parsed = BOMC::Container.parse(bytes)
         section_sizes = {}
         parsed[:sections].each do |descriptor|
@@ -112,7 +154,9 @@ module BOMEngine
           format: FORMAT_VERSION,
           profile: @profile,
           metrics: {
-            header_directory_bytes: BOMC::HEADER_BYTES + parsed[:sections].length * BOMC::DIRECTORY_ENTRY_BYTES,
+            header_directory_bytes: BOMC::HEADER_BYTES + parsed[:sections].length * parsed[:header][:directory_entry_bytes],
+            directory_entry_bytes: parsed[:header][:directory_entry_bytes],
+            omitted_empty_sections: all_sections.length - sections.length,
             sections: section_sizes,
             positions: @position_metrics,
             normals: normal_block.reject { |key, _value| key == :bytes },
@@ -132,7 +176,9 @@ module BOMEngine
               source_references: @texture_reference_count,
               unique: @textures.length,
               deduplicated: @texture_reference_count - @textures.length,
-              bytes: @texture_blob_bytes.bytesize
+              bytes: @texture_blob_bytes.bytesize,
+              encodings: texture_encoding_metrics,
+              evidence: @textures.map { |texture| texture[:encoding_evidence] }.compact
             },
             coverage: @model[:coverage]
           }
@@ -143,6 +189,24 @@ module BOMEngine
 
       def section(type, count, bytes, compress)
         { type: type, count: count, bytes: bytes.b, compress: compress }
+      end
+
+      def notify(stage, processed, total, candidate_bytes = nil)
+        return unless @checkpoint
+        @checkpoint.call(
+          stage: stage,
+          processed: processed,
+          total: total,
+          candidate_bytes: candidate_bytes
+        )
+      end
+
+      def texture_encoding_metrics
+        @textures.each_with_object(Hash.new { |hash, key| hash[key] = { count: 0, bytes: 0 } }) do |texture, result|
+          media = texture[:media_type] || :binary
+          result[media][:count] += 1
+          result[media][:bytes] += texture[:bytes].bytesize
+        end
       end
 
       def build_texture_registry
@@ -179,25 +243,29 @@ module BOMEngine
           fallback[:texture_index] = fallback[:texture] ? texture_index[fallback[:texture][:sha256]] : nil if fallback
         end
         @texture_blob_bytes = +''.b
-        @textures.each do |texture|
+        @textures.each_with_index do |texture, index|
           texture[:blob_offset] = @texture_blob_bytes.bytesize
           @texture_blob_bytes << texture[:bytes]
           texture[:blob_length] = texture[:bytes].bytesize
+          notify(:encode_textures, index + 1, @textures.length, @texture_blob_bytes.bytesize)
         end
       end
 
       def build_string_dictionary
         candidates = []
         source = @model[:source] || {}
-        candidates << source[:file_name]
-        candidates << source[:model_name]
+        unless @minimal_metadata
+          candidates << source[:file_name]
+          candidates << source[:model_name]
+        end
         @model[:materials].each do |material|
           candidates << material[:name]
           candidates << material[:display_name]
         end
         @model[:tags].each { |tag| candidates << tag[:name] }
         @model[:definitions].each { |definition| candidates << definition[:name] }
-        @model[:instances].each do |instance|
+        @model[:instances].each_with_index do |instance, index|
+          notify(:compile_metadata, index + 1, @model[:instances].length)
           candidates << instance[:name]
           candidates << instance[:semantic_label]
         end
@@ -240,9 +308,12 @@ module BOMEngine
         ]
         bounds = Array(@model.dig(:bounds, :min)) + Array(@model.dig(:bounds, :max))
         header = [1, @profile == :debug ? 2 : 1, string_width, axis_flags, @model[:root_node]].pack('CCCCV')
-        header + bounds.map(&:to_f).pack('E*') + counts.pack('V*') + pack_indices([
-          string_reference(source[:file_name]), string_reference(source[:model_name])
-        ], string_width)
+        source_references = if @minimal_metadata
+                              [nil, nil]
+                            else
+                              [string_reference(source[:file_name]), string_reference(source[:model_name])]
+                            end
+        header + bounds.map(&:to_f).pack('E*') + counts.pack('V*') + pack_indices(source_references, string_width)
       end
 
       def build_materials_section
@@ -289,6 +360,7 @@ module BOMEngine
           position = BOMC::PositionCodec.encode(mesh[:positions], loops: loops_for_gate)
           position_offset, position_length = append_aligned(position_stream, pack_position_block(position))
           @position_metrics << position.reject { |key, _value| key == :bytes }
+          notify(:encode_positions, mesh_index + 1, @model[:meshes].length)
 
           loop_indices = []
           triangle_indices = []
@@ -332,6 +404,7 @@ module BOMEngine
           topology_offset, topology_length = append_aligned(topology_stream, topology_block)
           @topology_absolute_bytes += (loop_indices.length + triangle_indices.length) * 4
           @topology_encoded_bytes += topology_block.bytesize
+          notify(:encode_topology, mesh_index + 1, @model[:meshes].length)
 
           uv_offset = 0
           uv_length = 0
@@ -341,6 +414,7 @@ module BOMEngine
             @uv_metrics << uv.reject { |key, _value| key == :bytes }
             uv_block_count += 1
           end
+          notify(:encode_uv, mesh_index + 1, @model[:meshes].length)
 
           mesh[:edges].each do |edge|
             edges << edge.merge(mesh: mesh_index)
@@ -427,17 +501,24 @@ module BOMEngine
         tag_width = BOMC::Binary.index_width(@model[:tags].length)
         instances = @model[:instances]
         bytes = [1, string_width, definition_width, transform_width, material_width, tag_width, 0, 0, instances.length].pack('CCCCCCCCV')
-        bytes << pack_indices(instances.map { |instance| string_reference(instance[:name]) }, string_width)
-        bytes << instances.map { |instance| BOMC::NODE_TYPES.fetch(instance[:kind], 0) }.pack('C*')
-        bytes << pack_indices(instances.map { |instance| instance[:owner_definition] }, definition_width)
-        bytes << pack_indices(instances.map { |instance| instance[:definition] }, definition_width)
-        bytes << pack_indices(instances.map { |instance| instance[:transform] }, transform_width)
-        bytes << pack_indices(instances.map { |instance| instance[:material] }, material_width)
-        bytes << pack_indices(instances.map { |instance| instance[:tag] }, tag_width)
-        bytes << instances.map { |instance| instance_flags(instance) }.pack('C*')
-        bytes << instances.map { |instance| role_enum(instance[:semantic_role]) }.pack('C*')
-        bytes << pack_indices(instances.map { |instance| string_reference(instance[:semantic_label]) }, string_width)
+        bytes << pack_indices(checkpoint_map(instances, :compile_metadata) { |instance| string_reference(instance[:name]) }, string_width)
+        bytes << checkpoint_map(instances, :compile_metadata) { |instance| BOMC::NODE_TYPES.fetch(instance[:kind], 0) }.pack('C*')
+        bytes << pack_indices(checkpoint_map(instances, :compile_metadata) { |instance| instance[:owner_definition] }, definition_width)
+        bytes << pack_indices(checkpoint_map(instances, :compile_metadata) { |instance| instance[:definition] }, definition_width)
+        bytes << pack_indices(checkpoint_map(instances, :compile_metadata) { |instance| instance[:transform] }, transform_width)
+        bytes << pack_indices(checkpoint_map(instances, :compile_metadata) { |instance| instance[:material] }, material_width)
+        bytes << pack_indices(checkpoint_map(instances, :compile_metadata) { |instance| instance[:tag] }, tag_width)
+        bytes << checkpoint_map(instances, :compile_metadata) { |instance| instance_flags(instance) }.pack('C*')
+        bytes << checkpoint_map(instances, :compile_metadata) { |instance| role_enum(instance[:semantic_role]) }.pack('C*')
+        bytes << pack_indices(checkpoint_map(instances, :compile_metadata) { |instance| string_reference(instance[:semantic_label]) }, string_width)
         bytes
+      end
+
+      def checkpoint_map(values, stage)
+        values.each_with_index.map do |value, index|
+          notify(stage, index + 1, values.length)
+          yield(value)
+        end
       end
 
       def build_edges_section(edges)

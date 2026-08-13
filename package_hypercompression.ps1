@@ -17,7 +17,7 @@ if ($CommitSha -notmatch '^[0-9a-fA-F]{40}$') {
 }
 $CommitSha = $CommitSha.ToLowerInvariant()
 $ShortSha = $CommitSha.Substring(0, 12)
-$ReleaseName = "bom_engine-hypercompression-rc-$ShortSha"
+$ReleaseName = "bom_engine-cooperative-rc-$ShortSha"
 $DistRoot = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot 'dist'))
 $HandoffDirectory = [System.IO.Path]::GetFullPath((Join-Path $DistRoot $ReleaseName))
 $OuterZip = [System.IO.Path]::GetFullPath((Join-Path $DistRoot "$ReleaseName.zip"))
@@ -91,6 +91,7 @@ try {
         'bom_engine_hypercompression_loader.rb',
         'BOM_COMPILED_FORMAT.md',
         'BENCHMARK_REPORT.md',
+        'BOMC_COOPERATIVE_BENCHMARK.md',
         'MANUAL_ACCEPTANCE.md'
     )
     & git -C $ProjectRoot archive --format=zip --output=$SourceArchive $CommitSha -- $ArchivePaths
@@ -111,7 +112,7 @@ try {
     Move-Item -LiteralPath $LoaderSource -Destination $LoaderDestination
 
     New-Item -ItemType Directory -Path $HandoffDirectory | Out-Null
-    foreach ($Document in @('BOM_COMPILED_FORMAT.md', 'BENCHMARK_REPORT.md', 'MANUAL_ACCEPTANCE.md')) {
+    foreach ($Document in @('BOM_COMPILED_FORMAT.md', 'BENCHMARK_REPORT.md', 'BOMC_COOPERATIVE_BENCHMARK.md', 'MANUAL_ACCEPTANCE.md')) {
         $SourceDocument = Join-Path $StagingDirectory $Document
         Copy-Item -LiteralPath $SourceDocument -Destination $HandoffDirectory
         Remove-Item -LiteralPath $SourceDocument -Force
@@ -122,8 +123,8 @@ try {
     New-DeterministicZip -SourceDirectory $StagingDirectory -DestinationPath $RbzPath
 
     $VersionLines = @(
-        'plugin_version=3.2.0-rc.1',
-        'compiled_format=BOMC 1.0',
+        'plugin_version=3.3.0-rc.1',
+        'compiled_format=BOMC 1.1',
         "commit_sha=$CommitSha",
         'profile_default=production'
     )
@@ -151,7 +152,12 @@ try {
         'bom_engine/bomc_codecs.rb',
         'bom_engine/bomc_model_adapter.rb',
         'bom_engine/bomc_writer.rb',
-        'bom_engine/bomc_decoder.rb'
+        'bom_engine/bomc_decoder.rb',
+        'bom_engine/bomc_processing.rb',
+        'bom_engine/bomc_size_gate.rb',
+        'bom_engine/bomc_export_job.rb',
+        'bom_engine/conversion_job.rb',
+        'bom_engine/ui/conversion_dialog.html'
     )) {
         if ($Names -notcontains $Required) {
             throw "RBZ validation failed: missing $Required."

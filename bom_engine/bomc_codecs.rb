@@ -555,33 +555,34 @@ module BOMEngine
 
       module_function
 
-      def encode(values, max_error: MAX_ERROR)
-        transforms = normalize_transforms(values)
+      def encode(values, max_error: MAX_ERROR, checkpoint: nil)
+        transforms = normalize_transforms(values, checkpoint)
         CodecMath.finite_values!(transforms.flatten, 'Transform buffer')
         candidates = []
 
-        float64_bytes = transforms.map { |matrix| affine(matrix).pack('E*') }.join.b
-        candidates << transform_candidate('float64_3x4', FLOAT64_3X4, float64_bytes, transforms, decode_mode(FLOAT64_3X4, float64_bytes, transforms.length), max_error, 0)
+        float64_bytes = checkpoint_map(transforms, checkpoint) { |matrix| affine(matrix).pack('E*') }.join.b
+        candidates << transform_candidate('float64_3x4', FLOAT64_3X4, float64_bytes, transforms, decode_mode(FLOAT64_3X4, float64_bytes, transforms.length, checkpoint), max_error, 0, checkpoint)
 
-        float32_bytes = transforms.map { |matrix| affine(matrix).pack('e*') }.join.b
-        candidates << transform_candidate('float32_3x4', FLOAT32_3X4, float32_bytes, transforms, decode_mode(FLOAT32_3X4, float32_bytes, transforms.length), max_error, 1)
+        float32_bytes = checkpoint_map(transforms, checkpoint) { |matrix| affine(matrix).pack('e*') }.join.b
+        candidates << transform_candidate('float32_3x4', FLOAT32_3X4, float32_bytes, transforms, decode_mode(FLOAT32_3X4, float32_bytes, transforms.length, checkpoint), max_error, 1, checkpoint)
 
-        decomposed = transforms.map { |matrix| decompose(matrix) }
+        decomposed = checkpoint_map(transforms, checkpoint) { |matrix| decompose(matrix) }
         if decomposed.all?
-          decomposed_float_bytes = decomposed.map { |parts| (parts[:translation] + parts[:quaternion] + parts[:scale]).pack('e*') }.join.b
-          decomposed_float_decoded = decode_mode(DECOMPOSED_FLOAT32, decomposed_float_bytes, transforms.length)
-          candidates << transform_candidate('decomposed_float32', DECOMPOSED_FLOAT32, decomposed_float_bytes, transforms, decomposed_float_decoded, max_error, 3)
+          decomposed_float_bytes = checkpoint_map(decomposed, checkpoint) { |parts| (parts[:translation] + parts[:quaternion] + parts[:scale]).pack('e*') }.join.b
+          decomposed_float_decoded = decode_mode(DECOMPOSED_FLOAT32, decomposed_float_bytes, transforms.length, checkpoint)
+          candidates << transform_candidate('decomposed_float32', DECOMPOSED_FLOAT32, decomposed_float_bytes, transforms, decomposed_float_decoded, max_error, 3, checkpoint)
 
-          quantized_bytes = decomposed.map { |parts| pack_quantized_parts(parts) }.join.b
-          quantized_decoded = decode_mode(DECOMPOSED_QUANTIZED, quantized_bytes, transforms.length)
-          candidates << transform_candidate('decomposed_quantized', DECOMPOSED_QUANTIZED, quantized_bytes, transforms, quantized_decoded, max_error, 2)
+          quantized_bytes = checkpoint_map(decomposed, checkpoint) { |parts| pack_quantized_parts(parts) }.join.b
+          quantized_decoded = decode_mode(DECOMPOSED_QUANTIZED, quantized_bytes, transforms.length, checkpoint)
+          candidates << transform_candidate('decomposed_quantized', DECOMPOSED_QUANTIZED, quantized_bytes, transforms, quantized_decoded, max_error, 2, checkpoint)
         else
           candidates << failed_transform_candidate('decomposed_float32', DECOMPOSED_FLOAT32)
           candidates << failed_transform_candidate('decomposed_quantized', DECOMPOSED_QUANTIZED)
         end
 
         hybrid_bytes = +''.b
-        transforms.each do |matrix|
+        transforms.each_with_index do |matrix, index|
+          notify_checkpoint(checkpoint, index + 1, transforms.length)
           if identity?(matrix)
             hybrid_bytes << 0
             next
@@ -606,8 +607,8 @@ module BOMEngine
             hybrid_bytes << affine(matrix).pack('E*')
           end
         end
-        hybrid_decoded = decode_mode(HYBRID, hybrid_bytes, transforms.length)
-        candidates << transform_candidate('hybrid', HYBRID, hybrid_bytes, transforms, hybrid_decoded, max_error, 4)
+        hybrid_decoded = decode_mode(HYBRID, hybrid_bytes, transforms.length, checkpoint)
+        candidates << transform_candidate('hybrid', HYBRID, hybrid_bytes, transforms, hybrid_decoded, max_error, 4, checkpoint)
 
         passing = candidates.select { |item| item[:passed] }
         raise 'No transform codec passed the error gate.' if passing.empty?
@@ -624,12 +625,13 @@ module BOMEngine
         decode_mode(Integer(block[:codec]), block[:bytes], Integer(block[:count]))
       end
 
-      def normalize_transforms(values)
+      def normalize_transforms(values, checkpoint = nil)
         source = Array(values)
         if source.empty?
           []
         elsif source[0].is_a?(Array)
-          source.map do |matrix|
+          source.each_with_index.map do |matrix, index|
+            notify_checkpoint(checkpoint, index + 1, source.length)
             raise ArgumentError, 'Each transform must contain 16 values.' unless matrix.length == 16
             matrix.map(&:to_f)
           end
@@ -639,6 +641,19 @@ module BOMEngine
         end
       end
       private_class_method :normalize_transforms
+
+      def checkpoint_map(values, checkpoint)
+        values.each_with_index.map do |value, index|
+          notify_checkpoint(checkpoint, index + 1, values.length)
+          yield(value)
+        end
+      end
+      private_class_method :checkpoint_map
+
+      def notify_checkpoint(checkpoint, processed, total)
+        checkpoint.call(stage: :encode_transforms, processed: processed, total: total) if checkpoint
+      end
+      private_class_method :notify_checkpoint
 
       def affine(matrix)
         AFFINE_INDICES.map { |index| matrix[index].to_f }
@@ -652,28 +667,39 @@ module BOMEngine
       end
       private_class_method :restore_affine
 
-      def decode_mode(mode, bytes, count)
+      def decode_mode(mode, bytes, count, checkpoint = nil)
         case mode
         when FLOAT64_3X4
           values = bytes.unpack('E*')
           raise 'BOMC invalid: Float64 transform count mismatch.' unless values.length == count * 12
-          values.each_slice(12).map { |affine_values| restore_affine(affine_values) }
+          values.each_slice(12).each_with_index.map do |affine_values, index|
+            notify_checkpoint(checkpoint, index + 1, count)
+            restore_affine(affine_values)
+          end
         when FLOAT32_3X4
           values = bytes.unpack('e*')
           raise 'BOMC invalid: Float32 transform count mismatch.' unless values.length == count * 12
-          values.each_slice(12).map { |affine_values| restore_affine(affine_values) }
+          values.each_slice(12).each_with_index.map do |affine_values, index|
+            notify_checkpoint(checkpoint, index + 1, count)
+            restore_affine(affine_values)
+          end
         when DECOMPOSED_FLOAT32
           values = bytes.unpack('e*')
           raise 'BOMC invalid: decomposed transform count mismatch.' unless values.length == count * 10
-          values.each_slice(10).map do |parts|
+          values.each_slice(10).each_with_index.map do |parts, index|
+            notify_checkpoint(checkpoint, index + 1, count)
             compose(parts[0, 3], parts[3, 4], parts[7, 3])
           end
         when DECOMPOSED_QUANTIZED
           raise 'BOMC invalid: quantized transform count mismatch.' unless bytes.bytesize == count * 32
-          count.times.map { |index| unpack_quantized_parts(bytes.byteslice(index * 32, 32)) }
+          count.times.map do |index|
+            notify_checkpoint(checkpoint, index + 1, count)
+            unpack_quantized_parts(bytes.byteslice(index * 32, 32))
+          end
         when HYBRID
           cursor = 0
-          transforms = count.times.map do
+          transforms = count.times.map do |index|
+            notify_checkpoint(checkpoint, index + 1, count)
             raise 'BOMC invalid: truncated hybrid transform.' if cursor >= bytes.bytesize
             subtype = bytes.getbyte(cursor)
             cursor += 1
@@ -796,8 +822,11 @@ module BOMEngine
       end
       private_class_method :unpack_quantized_parts
 
-      def transform_candidate(name, codec, bytes, source, decoded, max_error, complexity)
-        errors = source.each_with_index.map { |matrix, index| matrix_error(matrix, decoded[index]) }
+      def transform_candidate(name, codec, bytes, source, decoded, max_error, complexity, checkpoint = nil)
+        errors = source.each_with_index.map do |matrix, index|
+          notify_checkpoint(checkpoint, index + 1, source.length)
+          matrix_error(matrix, decoded[index])
+        end
         summary = CodecMath.error_summary(errors)
         {
           name: name, codec: codec, bytes: bytes, errors: summary,

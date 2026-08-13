@@ -9,17 +9,19 @@ module BOMEngine
     FORMAT_VERSION = '3.0.0'.freeze
     SCHEMA_URI = 'https://sibambo.dev/schemas/bom-engine/3.0.0/schema.json'.freeze
 
-    def self.build(model:, entities:, parent_transform:, settings:, spatial:, texture_writer: nil)
+    def self.build(model:, entities:, parent_transform:, settings:, spatial:, texture_writer: nil, progress: nil, batch_size: 24)
       Builder.new(
         model: model,
         settings: settings,
         spatial: spatial,
-        texture_writer: texture_writer
+        texture_writer: texture_writer,
+        progress: progress,
+        batch_size: batch_size
       ).build(entities, parent_transform)
     end
 
     class Builder
-      def initialize(model:, settings:, spatial:, texture_writer:)
+      def initialize(model:, settings:, spatial:, texture_writer:, progress: nil, batch_size: 24)
         @model = model
         @settings = settings || {}
         @spatial = spatial || {}
@@ -35,6 +37,9 @@ module BOMEngine
         @tags = []
         @tag_ids = {}
         @skipped = Hash.new(0)
+        @progress = progress
+        @batch_size = [batch_size.to_i, 1].max
+        @work_count = 0
       end
 
       def build(entities, parent_transform)
@@ -208,10 +213,14 @@ module BOMEngine
 
       def build_face(face, positions, position_index)
         outer = face.outer_loop.vertices.map do |vertex|
+          checkpoint('Reading face vertices')
           intern_position(vertex.position, positions, position_index)
         end
         holes = face.loops.reject(&:outer?).map do |loop|
-          loop.vertices.map { |vertex| intern_position(vertex.position, positions, position_index) }
+          loop.vertices.map do |vertex|
+            checkpoint('Reading face vertices')
+            intern_position(vertex.position, positions, position_index)
+          end
         end
         result = {
           id: "face:#{safe_persistent_id(face)}",
@@ -239,6 +248,7 @@ module BOMEngine
         return [] unless mesh && mesh.respond_to?(:polygons)
 
         mesh.polygons.each_with_object([]) do |polygon, triangles|
+          checkpoint('Triangulating faces')
           indices = polygon.map do |point_index|
             point = mesh.point_at(point_index.abs)
             point ? intern_position(point, positions, position_index) : nil
@@ -282,6 +292,7 @@ module BOMEngine
 
       def uv_loop(loop, helper, side)
         loop.vertices.map do |vertex|
+          checkpoint('Reading texture coordinates')
           uvq = side == :front ? helper.get_front_UVQ(vertex.position) : helper.get_back_UVQ(vertex.position)
           uvq.z.to_f.zero? ? [0.0, 0.0] : [(uvq.x / uvq.z).round(9), (uvq.y / uvq.z).round(9)]
         end
@@ -342,6 +353,7 @@ module BOMEngine
 
       def build_tags
         @model.layers.each do |layer|
+          checkpoint('Reading model tags')
           id = "tag:#{safe_persistent_id(layer)}"
           @tag_ids[layer.object_id] = id
           color = begin
@@ -361,6 +373,7 @@ module BOMEngine
 
       def build_materials
         @model.materials.each do |material|
+          checkpoint('Reading model materials')
           id = "material:#{safe_persistent_id(material)}"
           @material_ids[material.object_id] = id
           color = material.color
@@ -416,6 +429,7 @@ module BOMEngine
 
       def build_scenes
         @model.pages.map do |page|
+          checkpoint('Reading model scenes')
           camera = page.camera
           {
             id: "scene:#{page.name}",
@@ -498,6 +512,7 @@ module BOMEngine
 
       def each_entity(entities)
         entities.each do |entity|
+          checkpoint('Converting model entities')
           unless Traversal.exportable_entity?(entity)
             @skipped['hidden_or_invalid_entity'] += 1
             next
@@ -512,6 +527,7 @@ module BOMEngine
 
         points = []
         entities.each do |entity|
+          checkpoint('Calculating definition bounds')
           next unless entity.respond_to?(:bounds)
           bounds = entity.bounds
           points << bounds.min << bounds.max
@@ -556,6 +572,7 @@ module BOMEngine
         min = [Float::INFINITY, Float::INFINITY, Float::INFINITY]
         max = [-Float::INFINITY, -Float::INFINITY, -Float::INFINITY]
         vectors.each do |vector|
+          checkpoint('Calculating mesh bounds')
           3.times do |axis|
             min[axis] = vector[axis] if vector[axis] < min[axis]
             max[axis] = vector[axis] if vector[axis] > max[axis]
@@ -674,6 +691,15 @@ module BOMEngine
 
       def plugin_version
         defined?(BOMEngine::PLUGIN_VERSION) ? BOMEngine::PLUGIN_VERSION : 'development'
+      end
+
+      def checkpoint(stage, force: false)
+        return if @progress.nil?
+
+        @work_count += 1
+        return unless force || (@work_count % @batch_size).zero?
+
+        @progress.call(stage: stage, processed: @work_count)
       end
 
       UNIT_NAMES = %w[Inches Feet Millimeters Centimeters Meters Kilometers].freeze

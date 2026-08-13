@@ -1,4 +1,4 @@
-# Standalone pure-Ruby BOMC 1.0 reference decoder.
+# Standalone pure-Ruby BOMC 1.0/1.1 reference decoder.
 
 require 'digest'
 require_relative 'bomc_format'
@@ -7,14 +7,8 @@ require_relative 'bomc_codecs'
 module BOMEngine
   module BOMCDecoder
     REQUIRED_SECTIONS = [
-      BOMC::SECTION_MODEL, BOMC::SECTION_STRINGS, BOMC::SECTION_MATERIALS,
-      BOMC::SECTION_TAGS, BOMC::SECTION_MESHES, BOMC::SECTION_FACES,
-      BOMC::SECTION_POSITIONS, BOMC::SECTION_TOPOLOGY, BOMC::SECTION_NORMALS,
-      BOMC::SECTION_UVS, BOMC::SECTION_DEFINITIONS, BOMC::SECTION_INSTANCES,
-      BOMC::SECTION_TRANSFORMS, BOMC::SECTION_VISUAL_EDGES,
-      BOMC::SECTION_TEXTURE_TABLE, BOMC::SECTION_TEXTURE_BLOBS,
-      BOMC::SECTION_COVERAGE,
-      BOMC::SECTION_FALLBACK
+      BOMC::SECTION_MODEL, BOMC::SECTION_STRINGS, BOMC::SECTION_DEFINITIONS,
+      BOMC::SECTION_INSTANCES, BOMC::SECTION_TRANSFORMS, BOMC::SECTION_COVERAGE
     ].freeze
 
     def self.read(path)
@@ -59,8 +53,9 @@ module BOMEngine
         measure(timings, :metadata_ms) do
           strings = decode_strings(section_bytes(BOMC::SECTION_STRINGS))
           model = decode_model(section_bytes(BOMC::SECTION_MODEL), strings)
-          materials = decode_materials(section_bytes(BOMC::SECTION_MATERIALS), strings)
-          tags = decode_tags(section_bytes(BOMC::SECTION_TAGS), strings)
+          validate_counted_sections!(model[:counts])
+          materials = optional_decode(BOMC::SECTION_MATERIALS, []) { |bytes| decode_materials(bytes, strings) }
+          tags = optional_decode(BOMC::SECTION_TAGS, []) { |bytes| decode_tags(bytes, strings) }
           definitions = decode_definitions(section_bytes(BOMC::SECTION_DEFINITIONS), strings)
           instances = decode_instances(section_bytes(BOMC::SECTION_INSTANCES), strings)
           transforms = decode_codec_section(section_bytes(BOMC::SECTION_TRANSFORMS), BOMC::TransformCodec)
@@ -75,37 +70,43 @@ module BOMEngine
 
         mesh_rows = face_rows = normals = coverage = nil
         measure(timings, :analytical_ms) do
-          mesh_rows = decode_meshes(section_bytes(BOMC::SECTION_MESHES))
-          face_rows = decode_faces(section_bytes(BOMC::SECTION_FACES), strings)
-          normals = decode_codec_section(section_bytes(BOMC::SECTION_NORMALS), BOMC::NormalCodec)
+          mesh_rows = optional_decode(BOMC::SECTION_MESHES, []) { |bytes| decode_meshes(bytes) }
+          face_rows = optional_decode(BOMC::SECTION_FACES, []) { |bytes| decode_faces(bytes, strings) }
+          normals = optional_decode(BOMC::SECTION_NORMALS, []) { |bytes| decode_codec_section(bytes, BOMC::NormalCodec) }
           coverage = decode_coverage(section_bytes(BOMC::SECTION_COVERAGE))
         end
 
         textures = nil
         measure(timings, :texture_ms) do
-          textures = decode_textures(
-            section_bytes(BOMC::SECTION_TEXTURE_TABLE),
-            section_bytes(BOMC::SECTION_TEXTURE_BLOBS)
-          )
+          textures = if @sections[BOMC::SECTION_TEXTURE_TABLE]
+                       decode_textures(
+                         section_bytes(BOMC::SECTION_TEXTURE_TABLE),
+                         section_bytes(BOMC::SECTION_TEXTURE_BLOBS)
+                       )
+                     else
+                       []
+                     end
         end
 
         meshes = fallback = nil
         measure(timings, :visual_ms) do
           meshes = decode_geometry(
             mesh_rows, face_rows, normals,
-            section_bytes(BOMC::SECTION_POSITIONS),
-            section_bytes(BOMC::SECTION_TOPOLOGY),
-            section_bytes(BOMC::SECTION_UVS)
+            optional_section_bytes(BOMC::SECTION_POSITIONS),
+            optional_section_bytes(BOMC::SECTION_TOPOLOGY),
+            optional_section_bytes(BOMC::SECTION_UVS)
           )
-          decode_edges(section_bytes(BOMC::SECTION_VISUAL_EDGES), mesh_rows, meshes)
-          fallback = decode_fallback(section_bytes(BOMC::SECTION_FALLBACK), strings)
+          if @sections[BOMC::SECTION_VISUAL_EDGES]
+            decode_edges(section_bytes(BOMC::SECTION_VISUAL_EDGES), mesh_rows, meshes)
+          end
+          fallback = optional_decode(BOMC::SECTION_FALLBACK, []) { |bytes| decode_fallback(bytes, strings) }
         end
 
         measure(timings, :validation_ms) do
           validate_references!(model, materials, tags, meshes, definitions, instances, transforms, textures, coverage, fallback)
         end
         {
-          format: { name: 'BOMC', version: '1.0', profile: model[:profile] },
+          format: { name: 'BOMC', version: "#{@container[:header][:major]}.#{@container[:header][:minor]}", profile: model[:profile] },
           source: model[:source],
           coordinate_system: model[:coordinate_system],
           bounds: model[:bounds],
@@ -137,6 +138,38 @@ module BOMEngine
 
       def section_bytes(type)
         @sections.fetch(type)[:bytes]
+      end
+
+      def optional_section_bytes(type)
+        section = @sections[type]
+        section ? section[:bytes] : ''.b
+      end
+
+      def optional_decode(type, default)
+        section = @sections[type]
+        section ? yield(section[:bytes]) : default
+      end
+
+      def validate_counted_sections!(counts)
+        mapping = {
+          materials: [BOMC::SECTION_MATERIALS],
+          tags: [BOMC::SECTION_TAGS],
+          meshes: [BOMC::SECTION_MESHES, BOMC::SECTION_POSITIONS, BOMC::SECTION_TOPOLOGY],
+          faces: [BOMC::SECTION_FACES, BOMC::SECTION_NORMALS],
+          textures: [BOMC::SECTION_TEXTURE_TABLE, BOMC::SECTION_TEXTURE_BLOBS],
+          edges: [BOMC::SECTION_VISUAL_EDGES]
+        }
+        mapping.each do |count_name, section_types|
+          next if counts[count_name].zero?
+          missing = section_types.reject { |type| @sections.key?(type) }
+          unless missing.empty?
+            raise "BOMC invalid: missing sections #{missing.join(', ')} for #{count_name}."
+          end
+        end
+        texture_pair = [BOMC::SECTION_TEXTURE_TABLE, BOMC::SECTION_TEXTURE_BLOBS]
+        if texture_pair.count { |type| @sections.key?(type) } == 1
+          raise 'BOMC invalid: texture table/blob sections must appear together.'
+        end
       end
 
       def decode_strings(bytes)

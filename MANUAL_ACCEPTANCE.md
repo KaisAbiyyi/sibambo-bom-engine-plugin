@@ -1,16 +1,32 @@
-# BOMC 1.0 Manual Acceptance
+# BOMC 1.1 Cooperative Export Manual Acceptance
 
 This acceptance pass belongs to the user because automated development must not open or automate SketchUp.
 
-## Install
+## Static installation completed by development
 
-1. In SketchUp, open Extension Manager.
-2. Install the supplied RC `.rbz`.
-3. Restart SketchUp if Extension Manager requests it.
-4. Confirm legacy Canonical JSON, BOME2, and Model-Eval JSON commands remain available.
-5. Confirm `BOM Engine: Export Compiled BOMC...` is available.
+The RC is copied into the SketchUp 2026 user Plugins directory without opening SketchUp. On the next user-owned launch, confirm `BOM Engine: Export Compiled BOMC...` appears. Do not install a second loader through Extension Manager over the development copy.
 
-## Known complex model export
+## Test A: known small SKP (~3 MB)
+
+Export the unchanged saved model with **Light / Stable** first, then Balanced. Record:
+
+| Measurement | Light | Balanced |
+|---|---:|---:|
+| Source SKP bytes | | |
+| Final BOMC bytes | | |
+| Export seconds | | |
+| SHA256 | | |
+| Size gate | | |
+
+Hard pass (no exception):
+
+```text
+BOMC bytes < SKP bytes
+```
+
+Equality is a failure. A larger BOMC is a failure. Confirm geometry, materials, texture scale/orientation, definitions, instances, and semantic content are intact.
+
+## Test B: known complex model
 
 Open the known complex model, preferably `RUMAH L.skp`, and export production BOMC. The command must publish one `.bomc` file with no required adjacent manifest, buffer, or assets folder.
 
@@ -36,19 +52,30 @@ Record exact values:
 | Textures referenced | |
 | Unique texture blobs | |
 
-Hard acceptance requirement:
+Hard acceptance requirements:
 
 ```text
+BOMC bytes < SKP bytes
 unaccounted = 0
 ```
 
 If `unaccounted` is nonzero, keep the `.bomc`, record the model/exporter log, and treat the RC as failed even if the file is small.
 
-## One-file and determinism checks
+## Test C: responsiveness and cancellation
+
+With `RUMAH L.skp` or the known complex fixture:
+
+1. Start a Light / Stable export.
+2. Confirm stage, processed/total, overall percentage, mode, elapsed time, source SKP bytes, and current candidate bytes update.
+3. Pan or interact with normal SketchUp UI between progress updates; it must remain responsive and must not report `Not Responding` for sustained work.
+4. Cancel once. The current atomic step may finish, then future batches must stop. Confirm no `.part`/`.tmp` output and no temporary texture directory remains.
+5. Repeat using Balanced and allow it to complete.
+
+## Test D: one-file and determinism checks
 
 - Move the `.bomc` by itself to a different folder. It must remain the only required file.
 - Export the unchanged model twice with the same production profile.
-- Compute SHA256 for both outputs. They must match.
+- Compute SHA256 for both outputs. They must match exactly.
 - Confirm there is no `.part` file after a successful export.
 - Confirm no temporary texture folder remains beside the output.
 
@@ -56,7 +83,7 @@ If `unaccounted` is nonzero, keep the `.bomc`, record the model/exporter log, an
 
 When the BOMC TypeScript loader is connected, record:
 
-- header/version accepted as BOMC 1.0;
+- header/version accepted as BOMC 1.1 with its compact directory flag;
 - directory parsed without loading all sections;
 - analytical core load time;
 - visual geometry load time;
@@ -94,4 +121,6 @@ Record one:
 - `PASS`: one-file load, visual/analytical fidelity accepted, counts reconcile, and `unaccounted = 0`.
 - `FAIL`: attach exact discrepancy, object/material name, camera/view, counts, output SHA256, and exporter log.
 
-REAL SKETCHUP COMPILED-FORMAT ACCEPTANCE: PENDING USER TEST
+REAL SMALL-SKP SIZE ACCEPTANCE: PENDING USER TEST
+
+REAL LARGE-SKP RESPONSIVENESS ACCEPTANCE: PENDING USER TEST

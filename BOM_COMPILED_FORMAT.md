@@ -1,4 +1,4 @@
-# BOMC 1.0 Compiled Building Format
+# BOMC 1.1 Compiled Building Format
 
 Status: release candidate contract for Model-Eval implementers.
 
@@ -22,7 +22,7 @@ BOMC is a deterministic, little-endian, single-file compiled representation of a
 |---:|---:|---|---|
 | 0 | 8 | bytes | Magic `42 4f 4d 43 0d 0a 1a 0a` (`BOMC\r\n\x1a\n`) |
 | 8 | 2 | uint16 | Container major version, `1` |
-| 10 | 2 | uint16 | Container minor version, `0` |
+| 10 | 2 | uint16 | Container minor version, `1` (`0` remains readable) |
 | 12 | 4 | uint32 | Endianness marker, `0x01020304` |
 | 16 | 4 | uint32 | Profile flags |
 | 20 | 4 | uint32 | Section count |
@@ -34,10 +34,28 @@ Profile flags:
 |---:|---:|---|
 | 0 | `0x00000001` | Production profile |
 | 1 | `0x00000002` | Debug profile |
+| 4 | `0x00000010` | Compact 24-byte section directory |
 
 Exactly one of production/debug is emitted by this implementation.
 
-## 3. Section directory (40 bytes per entry)
+## 3. Section directory
+
+BOMC 1.1 production uses compact 24-byte entries. Offsets and sizes are uint32, which supports containers up to 4 GiB; the encoder refuses compact output outside that range. BOMC 1.0's fixed 40-byte entries remain decoder-compatible for existing files.
+
+### BOMC 1.1 compact entry (24 bytes)
+
+| Entry offset | Bytes | Type | Meaning |
+|---:|---:|---|---|
+| 0 | 2 | uint16 | Section type |
+| 2 | 1 | uint8 | Compression codec |
+| 3 | 1 | uint8 | Section flags |
+| 4 | 4 | uint32 | Stored payload offset |
+| 8 | 4 | uint32 | Stored byte length |
+| 12 | 4 | uint32 | Raw byte length after decompression |
+| 16 | 4 | uint32 | Logical record/block count |
+| 20 | 4 | uint32 | CRC32 of stored bytes |
+
+### BOMC 1.0 legacy entry (40 bytes)
 
 Entries are sorted by numeric section type. A reader must use recorded offsets and must not assume payloads are contiguous.
 
@@ -55,7 +73,7 @@ Entries are sorted by numeric section type. A reader must use recorded offsets a
 
 Compression codecs:
 
-| Value | Name | BOMC 1.0 status |
+| Value | Name | BOMC 1.1 status |
 |---:|---|---|
 | 0 | STORE | Implemented |
 | 1 | DEFLATE (zlib wrapper) | Implemented |
@@ -88,7 +106,9 @@ A production reader must reject an unsupported codec on a section it needs. It m
 | 18 | FALLBACK | Image/text placement and resource records |
 | 240 | DEBUG | Optional stable-ID/provenance mappings |
 
-FACES and COVERAGE form the analytical core. POSITIONS, TOPOLOGY, NORMALS, UVS, VISUAL_EDGES, and FALLBACK are independently addressable visual/geometry streams. TEXTURE_TABLE and TEXTURE_BLOBS are independently addressable resources.
+MODEL, STRINGS, DEFINITIONS, INSTANCES, TRANSFORMS, and COVERAGE are always present. Zero-count optional tables/streams are absent in BOMC 1.1. A reader treats absent optional sections as empty only when MODEL declares a corresponding zero count; otherwise absence is invalid. TEXTURE_TABLE and TEXTURE_BLOBS must appear together.
+
+FACES and COVERAGE form the analytical core when faces exist. POSITIONS, TOPOLOGY, NORMALS, UVS, VISUAL_EDGES, and FALLBACK are independently addressable visual/geometry streams. TEXTURE_TABLE and TEXTURE_BLOBS are independently addressable resources.
 
 ## 5. Adaptive references and sentinels
 
@@ -132,7 +152,7 @@ The compiler sorts unique strings lexicographically before assigning indices, re
 | 36 | uint32[9] | Material, tag, mesh, face, definition, instance, transform, texture, visual-edge counts |
 | `2*stringWidth` | adaptive[] | Source filename and model name |
 
-Units are metres in BOMC 1.0.
+Units are metres in BOMC 1.1.
 
 ## 8. Material and tag tables
 
@@ -439,7 +459,8 @@ assert bytes[0..7] == BOMC_MAGIC
 assert view.getUint32(12, true) == 0x01020304
 
 for i in 0..<sectionCount:
-  d = readDirectoryEntry(directoryOffset + i*40, littleEndian=true)
+  entryBytes = compactDirectoryFlag ? 24 : 40
+  d = readDirectoryEntry(directoryOffset + i*entryBytes, littleEndian=true)
   validate d.offset, d.storedLength, alignment, overlap
   remember d by numeric type            # unknown type: remember or skip
 
@@ -477,7 +498,7 @@ assert coverage.unaccounted == 0
 - Positions should normally decode to `Float32Array` for Three.js `BufferAttribute`, unless a Model-Eval analysis path explicitly requires Float64.
 - Topology decodes to `Uint32Array`; a renderer may downcast a mesh to `Uint16Array` only after verifying its vertex count.
 - Analytical FACES/MODEL/COVERAGE can load before UV, visual edges, and texture blobs.
-- BOMC 1.0 DEFLATE uses the zlib wrapper. A TypeScript decoder may use `DecompressionStream('deflate')` when available or a library fallback. WASM is not mandatory.
+- BOMC 1.1 DEFLATE uses the zlib wrapper. A TypeScript decoder may use `DecompressionStream('deflate')` when available or a library fallback. WASM is not mandatory.
 
 ## 26. Forward compatibility
 
@@ -492,7 +513,7 @@ assert coverage.unaccounted == 0
 - Canonical v3 remains the human-readable/debug source graph.
 - BOME2 remains a legacy sectioned runtime format with a JSON manifest.
 - Model-Eval JSON v1 remains a legacy compact JSON interchange.
-- BOMC 1.0 is an independent compiled container version, not a renamed BOME2 contract.
+- BOMC 1.1 is an independent compiled container version, not a renamed BOME2 contract. BOMC 1.0 fixed-directory files remain readable.
 - The reference adapter accepts Canonical v3 and existing Model-Eval JSON v1.0/v1.1 fixtures, then emits the same BOMC tables.
 - Production runtime IDs are numeric. Consumers that persist selections by stable external ID must compile/use the debug mapping during migration, establish their own durable mapping, or retain the Canonical/JSON sidecar in their migration pipeline. Production BOMC does not silently promise persistent stable strings that the existing compact runtime does not require.
 

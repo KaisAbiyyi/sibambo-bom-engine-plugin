@@ -10,17 +10,17 @@ module BOMEngine
 
       module_function
 
-      def normalize(graph, base_path: nil)
-        payload = symbolize(graph)
+      def normalize(graph, base_path: nil, checkpoint: nil)
+        payload = symbolize_if_needed(graph)
         if payload.dig(:format, :identifier).to_s == 'model_eval_json_v1'
-          from_model_eval(payload, base_path: base_path)
+          from_model_eval(payload, base_path: base_path, checkpoint: checkpoint)
         else
-          from_canonical(payload, base_path: base_path)
+          from_canonical(payload, base_path: base_path, checkpoint: checkpoint)
         end
       end
 
-      def from_canonical(graph, base_path: nil)
-        payload = symbolize(graph)
+      def from_canonical(graph, base_path: nil, checkpoint: nil)
+        payload = symbolize_if_needed(graph)
         raw_materials = Array(payload[:materials])
         raw_tags = Array(payload[:tags])
         raw_definitions = Array(payload[:definitions])
@@ -32,21 +32,31 @@ module BOMEngine
         mesh_index = index_ids(raw_meshes)
         node_index = index_ids(raw_nodes)
 
-        materials = raw_materials.map { |material| canonical_material(material, base_path) }
-        tags = raw_tags.map do |tag|
+        materials = raw_materials.each_with_index.map do |material, index|
+          notify(checkpoint, :compile_metadata, index + 1, raw_materials.length)
+          canonical_material(material, base_path)
+        end
+        tags = raw_tags.each_with_index.map do |tag, index|
+          notify(checkpoint, :compile_metadata, index + 1, raw_tags.length)
           { stable_id: tag[:id].to_s, name: tag[:name].to_s, visible: tag[:visible] != false }
         end
-        meshes = raw_meshes.map do |mesh|
+        meshes = raw_meshes.each_with_index.map do |mesh, mesh_index_value|
+          notify(checkpoint, :encode_positions, mesh_index_value + 1, raw_meshes.length)
           positions = Array(mesh[:positions_m]).map(&:to_f)
+          raw_faces = Array(mesh[:faces])
           {
             stable_id: mesh[:id].to_s,
             definition: fetch_reference(definition_index, mesh[:definition_id], 'mesh definition'),
             positions: positions,
-            faces: Array(mesh[:faces]).map { |face| canonical_face(face, positions, material_index, tag_index) },
+            faces: raw_faces.each_with_index.map do |face, face_index|
+              notify(checkpoint, :encode_topology, face_index + 1, raw_faces.length)
+              canonical_face(face, positions, material_index, tag_index)
+            end,
             edges: Array(mesh[:edges]).map { |edge| canonical_edge(edge, tag_index) }
           }
         end
-        definitions = raw_definitions.map do |definition|
+        definitions = raw_definitions.each_with_index.map do |definition, index|
+          notify(checkpoint, :build_definitions, index + 1, raw_definitions.length)
           {
             stable_id: definition[:id].to_s,
             name: definition[:name].to_s,
@@ -55,7 +65,8 @@ module BOMEngine
             nodes: Array(definition[:node_ids]).map { |id| node_index[id] }.compact
           }
         end
-        instances = raw_nodes.map do |node|
+        instances = raw_nodes.each_with_index.map do |node, index|
+          notify(checkpoint, :build_instances, index + 1, raw_nodes.length)
           semantic = node[:semantic] || {}
           {
             stable_id: node[:id].to_s,
@@ -83,7 +94,7 @@ module BOMEngine
           coordinate_system: payload[:coordinate_system] || {},
           materials: materials,
           tags: tags,
-          transforms: normalize_transforms(payload[:transforms]),
+          transforms: normalize_transforms(payload[:transforms], checkpoint),
           meshes: meshes,
           definitions: definitions,
           instances: instances,
@@ -91,10 +102,12 @@ module BOMEngine
         )
       end
 
-      def from_model_eval(graph, base_path: nil)
-        payload = symbolize(graph)
+      def from_model_eval(graph, base_path: nil, checkpoint: nil)
+        payload = symbolize_if_needed(graph)
         strings = Array(payload[:strings])
-        materials = Array(payload[:materials]).map do |row|
+        raw_materials = Array(payload[:materials])
+        materials = raw_materials.each_with_index.map do |row, index|
+          notify(checkpoint, :compile_metadata, index + 1, raw_materials.length)
           color = parse_hex(string_at(strings, row[2]))
           {
             stable_id: string_at(strings, row[0]).to_s,
@@ -106,10 +119,14 @@ module BOMEngine
             texture: nil
           }
         end
-        tags = Array(payload[:tags]).map do |row|
+        raw_tags = Array(payload[:tags])
+        tags = raw_tags.each_with_index.map do |row, index|
+          notify(checkpoint, :compile_metadata, index + 1, raw_tags.length)
           { stable_id: string_at(strings, row[0]).to_s, name: string_at(strings, row[1]).to_s, visible: row[2] != false }
         end
-        definitions = Array(payload[:definitions]).map do |row|
+        raw_definitions = Array(payload[:definitions])
+        definitions = raw_definitions.each_with_index.map do |row, index|
+          notify(checkpoint, :build_definitions, index + 1, raw_definitions.length)
           {
             stable_id: string_at(strings, row[0]).to_s,
             name: string_at(strings, row[1]).to_s,
@@ -124,6 +141,7 @@ module BOMEngine
         end
         raw_nodes = Array(payload[:nodes])
         instances = raw_nodes.each_with_index.map do |row, index|
+          notify(checkpoint, :build_instances, index + 1, raw_nodes.length)
           {
             stable_id: string_at(strings, row[0]).to_s,
             persistent_id: string_at(strings, row[8]),
@@ -141,11 +159,15 @@ module BOMEngine
             classification_policy: string_at(strings, row[12])
           }
         end
-        meshes = Array(payload[:meshes]).map do |mesh|
+        raw_meshes = Array(payload[:meshes])
+        meshes = raw_meshes.each_with_index.map do |mesh, mesh_index_value|
+          notify(checkpoint, :encode_positions, mesh_index_value + 1, raw_meshes.length)
           positions = decode_model_eval_positions(mesh)
           loops = Array(mesh[:loops])
           triangles = Array(mesh[:triangles])
-          faces = Array(mesh[:faces]).map do |row|
+          raw_faces = Array(mesh[:faces])
+          faces = raw_faces.each_with_index.map do |row, face_index|
+            notify(checkpoint, :encode_topology, face_index + 1, raw_faces.length)
             outer = loops[row[2].to_i, row[3].to_i] || []
             holes = Array(row[4]).map { |range| loops[range[0].to_i, range[1].to_i] || [] }
             face_triangles = triangles[row[5].to_i, row[6].to_i] || []
@@ -190,7 +212,7 @@ module BOMEngine
           coordinate_system: payload[:coordinate_system] || {},
           materials: materials,
           tags: tags,
-          transforms: normalize_transforms(payload[:transforms]),
+          transforms: normalize_transforms(payload[:transforms], checkpoint),
           meshes: meshes,
           definitions: definitions,
           instances: instances,
@@ -237,7 +259,8 @@ module BOMEngine
           image_width_px: Integer(texture[:image_width_px] || 0),
           image_height_px: Integer(texture[:image_height_px] || 0),
           width_m: (texture[:width_m] || 0.0).to_f,
-          height_m: (texture[:height_m] || 0.0).to_f
+          height_m: (texture[:height_m] || 0.0).to_f,
+          encoding_evidence: texture[:encoding_evidence]
         }
       end
       private_class_method :normalize_texture
@@ -334,17 +357,25 @@ module BOMEngine
       end
       private_class_method :normalize_uv
 
-      def normalize_transforms(transforms)
+      def normalize_transforms(transforms, checkpoint = nil)
         values = Array(transforms)
         return [IDENTITY.dup] if values.empty?
         if values[0].is_a?(Array)
-          values.map { |matrix| Array(matrix).map(&:to_f) }
+          values.each_with_index.map do |matrix, index|
+            notify(checkpoint, :encode_transforms, index + 1, values.length)
+            Array(matrix).map(&:to_f)
+          end
         else
           raise 'BOMC source invalid: transform table is not divisible by 16.' unless (values.length % 16).zero?
           values.each_slice(16).map { |matrix| matrix.map(&:to_f) }
         end
       end
       private_class_method :normalize_transforms
+
+      def notify(checkpoint, stage, processed, total)
+        checkpoint.call(stage: stage, processed: processed, total: total) if checkpoint
+      end
+      private_class_method :notify
 
       def decode_model_eval_positions(mesh)
         quantization = mesh[:quantization] || {}
@@ -473,6 +504,15 @@ module BOMEngine
         end
       end
       private_class_method :symbolize
+
+      def symbolize_if_needed(value)
+        if value.is_a?(Hash) && value.keys.all? { |key| key.is_a?(Symbol) }
+          value
+        else
+          symbolize(value)
+        end
+      end
+      private_class_method :symbolize_if_needed
     end
   end
 end

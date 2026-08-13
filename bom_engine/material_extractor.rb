@@ -9,11 +9,14 @@ module BOMEngine
     # @param tw          [Sketchup::TextureWriter]
     # @param texture_dir [String, nil] output directory; nil means skip texture export
     # @return            [Array<Hash>] material descriptors
-    def self.extract(model, tw, texture_dir)
+    def self.extract(model, tw, texture_dir, checkpoint: nil)
       Dir.mkdir(texture_dir) if texture_dir && !Dir.exist?(texture_dir)
       written = 0
+      materials = model.materials
+      total = materials.length
 
-      model.materials.map do |mat|
+      materials.each_with_index.map do |mat, index|
+        checkpoint.call(stage: :snapshot_materials, processed: index, total: total) if checkpoint
         c = mat.color
         entry = {
           id:            mat.object_id.to_s,
@@ -43,7 +46,9 @@ module BOMEngine
           # Register texture for writing — actual write happens in TextureExporter
           begin
             out_path = File.join(texture_dir, tex_filename)
+            checkpoint.call(stage: :snapshot_textures, processed: index, total: total, force: true) if checkpoint
             written += 1 if tex.write(out_path, true)
+            checkpoint.call(stage: :snapshot_textures, processed: index + 1, total: total, force: true) if checkpoint
           rescue => e
             Logger.warn("Could not write texture for '#{mat.name}': #{e.message}")
           end
@@ -51,6 +56,7 @@ module BOMEngine
 
         entry
       end.tap do
+        checkpoint.call(stage: :snapshot_materials, processed: total, total: total) if checkpoint
         Logger.info("Wrote #{written} texture(s) to #{texture_dir}") if texture_dir
       end
     end

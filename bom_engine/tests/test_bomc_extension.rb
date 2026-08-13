@@ -39,6 +39,22 @@ module BOMEngine
         BOMCExtension.register_menu(menu)
         assert(menu.labels == ['BOM Engine: Export Compiled BOMC...'], 'compiled export command registers without replacing legacy menus')
 
+        texture_dir = Dir.mktmpdir('bomc-texture-choice')
+        begin
+          source_path = File.join(texture_dir, 'original.jpg')
+          staged_path = File.join(texture_dir, 'material.png')
+          File.open(source_path, 'wb') { |file| file.write("\xff\xd8source-jpeg".b) }
+          File.open(staged_path, 'wb') { |file| file.write("\x89PNG\r\n\x1a\nstaged-png-payload".b) }
+          graph = { materials: [{ name: 'Material', texture: {} }] }
+          extracted = [{ name: 'Material', texture: { filename: 'material.png', source_path: source_path } }]
+          BOMCExtension.send(:attach_staged_textures, graph, extracted, texture_dir)
+          selected = graph[:materials][0][:texture]
+          assert(selected[:source_path] == source_path && selected[:filename] == 'original.jpg', 'readable native JPEG source is preserved instead of forced PNG staging')
+          assert(selected.dig(:encoding_evidence, :selected) == :source && selected.dig(:encoding_evidence, :source_bytes) < selected.dig(:encoding_evidence, :staged_bytes), 'texture selection records source/staged byte evidence')
+        ensure
+          FileUtils.remove_entry(texture_dir) if texture_dir && Dir.exist?(texture_dir)
+        end
+
         output_dir = Dir.mktmpdir('bomc-extension-test')
         begin
           path = File.join(output_dir, 'nested', 'fixture.bomc')

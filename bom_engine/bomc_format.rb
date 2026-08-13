@@ -1,4 +1,4 @@
-# Deterministic BOMC 1.0 container primitives.
+# Deterministic BOMC 1.0/1.1 container primitives.
 
 require 'zlib'
 
@@ -6,14 +6,18 @@ module BOMEngine
   module BOMC
     MAGIC = "BOMC\r\n\x1a\n".b.freeze
     VERSION_MAJOR = 1
-    VERSION_MINOR = 0
+    VERSION_MINOR = 1
     HEADER_BYTES = 32
+    # BOMC 1.0 descriptor size. Kept as the compatibility constant for callers
+    # that need to inspect or construct a legacy directory.
     DIRECTORY_ENTRY_BYTES = 40
+    COMPACT_DIRECTORY_ENTRY_BYTES = 24
     ENDIAN_MARKER = 0x0102_0304
     ALIGNMENT = 8
 
     PROFILE_PRODUCTION = 0x0000_0001
     PROFILE_DEBUG = 0x0000_0002
+    FLAG_COMPACT_DIRECTORY = 0x0000_0010
 
     CODEC_STORE = 0
     CODEC_DEFLATE = 1
@@ -70,6 +74,7 @@ module BOMEngine
 
     HEADER_PACK = 'a8vvVVVQ<'.freeze
     DIRECTORY_PACK = 'vCCQ<Q<Q<VVV'.freeze
+    COMPACT_DIRECTORY_PACK = 'vCCVVVVV'.freeze
 
     module Binary
       module_function
@@ -179,13 +184,35 @@ module BOMEngine
     module Container
       module_function
 
-      def pack(sections, flags: PROFILE_PRODUCTION)
+      def pack(sections, flags: PROFILE_PRODUCTION, compact_directory: true, version_minor: nil, compression_level: Zlib::BEST_COMPRESSION, checkpoint: nil)
+        compact = !!compact_directory
+        minor = version_minor.nil? ? (compact ? VERSION_MINOR : 0) : Integer(version_minor)
+        if compact && minor < 1
+          raise ArgumentError, 'compact directory requires BOMC 1.1 or newer.'
+        end
+        if !compact && minor != 0
+          raise ArgumentError, 'fixed directory is only defined for BOMC 1.0.'
+        end
+        directory_entry_bytes = compact ? COMPACT_DIRECTORY_ENTRY_BYTES : DIRECTORY_ENTRY_BYTES
+        header_flags = Integer(flags)
+        header_flags |= FLAG_COMPACT_DIRECTORY if compact
         ordered = Array(sections).each_with_index.sort_by do |section, index|
           [Integer(section.fetch(:type)), index]
         end.map(&:first)
-        prepared = ordered.map { |section| prepare_section(section) }
+        prepared = ordered.each_with_index.map do |section, index|
+          prepared_section = prepare_section(section, compression_level)
+          if checkpoint
+            checkpoint.call(
+              stage: :compress_sections,
+              processed: index + 1,
+              total: ordered.length,
+              candidate_bytes: prepared_section[:stored_bytes].bytesize
+            )
+          end
+          prepared_section
+        end
         directory_offset = HEADER_BYTES
-        cursor = Binary.align(directory_offset + prepared.length * DIRECTORY_ENTRY_BYTES)
+        cursor = Binary.align(directory_offset + prepared.length * directory_entry_bytes)
         prepared.each do |section|
           cursor = Binary.align(cursor)
           section[:offset] = cursor
@@ -195,9 +222,9 @@ module BOMEngine
         header = [
           MAGIC,
           VERSION_MAJOR,
-          VERSION_MINOR,
+          minor,
           ENDIAN_MARKER,
-          Integer(flags),
+          header_flags,
           prepared.length,
           directory_offset
         ].pack(HEADER_PACK)
@@ -205,19 +232,23 @@ module BOMEngine
 
         directory = +''.b
         prepared.each do |section|
-          directory << [
-            section[:type],
-            section[:codec],
-            section[:flags],
-            section[:offset],
-            section[:stored_bytes].bytesize,
-            section[:raw_bytes].bytesize,
-            section[:count],
-            Zlib.crc32(section[:stored_bytes]),
-            0
-          ].pack(DIRECTORY_PACK)
+          values = [
+            section[:type], section[:codec], section[:flags], section[:offset],
+            section[:stored_bytes].bytesize, section[:raw_bytes].bytesize,
+            section[:count], Zlib.crc32(section[:stored_bytes])
+          ]
+          if compact
+            if values[3, 4].any? { |value| value > 0xffff_ffff }
+              raise ArgumentError, 'compact BOMC directory exceeds its uint32 range.'
+            end
+            directory << values.pack(COMPACT_DIRECTORY_PACK)
+          else
+            directory << (values + [0]).pack(DIRECTORY_PACK)
+          end
         end
-        raise 'BOMC internal: directory byte count mismatch.' unless directory.bytesize == prepared.length * DIRECTORY_ENTRY_BYTES
+        unless directory.bytesize == prepared.length * directory_entry_bytes
+          raise 'BOMC internal: directory byte count mismatch.'
+        end
 
         output = header + directory
         output << ("\0" * (Binary.align(output.bytesize) - output.bytesize)).b
@@ -253,19 +284,30 @@ module BOMEngine
 
         magic, major, minor, endian, flags, section_count, directory_offset = content.byteslice(0, HEADER_BYTES).unpack(HEADER_PACK)
         raise 'BOMC invalid: magic mismatch.' unless magic == MAGIC
-        raise "BOMC invalid: unsupported version #{major}.#{minor}." unless major == VERSION_MAJOR
+        unless major == VERSION_MAJOR && minor >= 0 && minor <= VERSION_MINOR
+          raise "BOMC invalid: unsupported version #{major}.#{minor}."
+        end
         raise 'BOMC invalid: unsupported byte order.' unless endian == ENDIAN_MARKER
         raise 'BOMC invalid: directory precedes fixed header.' if directory_offset < HEADER_BYTES
 
-        directory_size = section_count * DIRECTORY_ENTRY_BYTES
+        compact = (flags & FLAG_COMPACT_DIRECTORY) != 0
+        if compact && minor < 1
+          raise 'BOMC invalid: compact directory flag requires BOMC 1.1.'
+        end
+        directory_entry_bytes = compact ? COMPACT_DIRECTORY_ENTRY_BYTES : DIRECTORY_ENTRY_BYTES
+        directory_pack = compact ? COMPACT_DIRECTORY_PACK : DIRECTORY_PACK
+        directory_size = section_count * directory_entry_bytes
         directory_end = directory_offset + directory_size
         raise 'BOMC invalid: directory outside file.' if directory_end > content.bytesize
 
         descriptors = section_count.times.map do |index|
-          entry_offset = directory_offset + index * DIRECTORY_ENTRY_BYTES
-          values = content.byteslice(entry_offset, DIRECTORY_ENTRY_BYTES).unpack(DIRECTORY_PACK)
-          type, codec, section_flags, offset, stored_size, raw_size, count, crc32, reserved = values
-          raise "BOMC invalid: section #{index} reserved field." unless reserved.zero?
+          entry_offset = directory_offset + index * directory_entry_bytes
+          values = content.byteslice(entry_offset, directory_entry_bytes).unpack(directory_pack)
+          type, codec, section_flags, offset, stored_size, raw_size, count, crc32 = values[0, 8]
+          reserved = values[8]
+          if !compact && !reserved.zero?
+            raise "BOMC invalid: section #{index} reserved field."
+          end
           if offset < Binary.align(directory_end) || offset + stored_size > content.bytesize
             raise "BOMC invalid: section #{index} outside file."
           end
@@ -294,7 +336,7 @@ module BOMEngine
             major: major,
             minor: minor,
             header_bytes: HEADER_BYTES,
-            directory_entry_bytes: DIRECTORY_ENTRY_BYTES,
+            directory_entry_bytes: directory_entry_bytes,
             endianness: :little,
             flags: flags,
             section_count: section_count,
@@ -304,12 +346,12 @@ module BOMEngine
         }
       end
 
-      def prepare_section(section)
+      def prepare_section(section, compression_level)
         raw = section.fetch(:bytes).b
         stored = raw
         codec = CODEC_STORE
         if section[:compress]
-          candidate = Zlib::Deflate.deflate(raw, Zlib::BEST_COMPRESSION)
+          candidate = Zlib::Deflate.deflate(raw, Integer(compression_level))
           if candidate.bytesize < raw.bytesize
             stored = candidate
             codec = CODEC_DEFLATE

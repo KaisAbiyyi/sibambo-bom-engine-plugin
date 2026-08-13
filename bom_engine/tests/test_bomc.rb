@@ -45,6 +45,7 @@ module BOMEngine
         test_uv_codecs
         test_transform_codecs
         test_compiled_round_trip
+        test_sparse_empty_model
         test_model_eval_adapter
         test_differential_validation
         test_shared_definition_scaling
@@ -102,15 +103,26 @@ module BOMEngine
         ]
         bytes = BOMC::Container.pack(sections, flags: BOMC::PROFILE_PRODUCTION)
         second = BOMC::Container.pack(sections, flags: BOMC::PROFILE_PRODUCTION)
+        legacy = BOMC::Container.pack(
+          sections,
+          flags: BOMC::PROFILE_PRODUCTION,
+          compact_directory: false,
+          version_minor: 0
+        )
         parsed = BOMC::Container.parse(bytes)
+        legacy_parsed = BOMC::Container.parse(legacy)
         directory_only = BOMC::Container.read_directory(bytes)
 
         assert(bytes.byteslice(0, 8) == "BOMC\r\n\x1a\n".b, 'BOMC magic is explicit')
-        assert(parsed[:header][:major] == 1 && parsed[:header][:minor] == 0, 'BOMC container version is 1.0')
+        assert(parsed[:header][:major] == 1 && parsed[:header][:minor] == 1, 'compact BOMC container version is 1.1')
         assert(parsed[:header][:header_bytes] == 32, 'fixed header is 32 bytes')
-        assert(parsed[:header][:directory_entry_bytes] == 40, 'directory entry is 40 bytes')
+        assert(parsed[:header][:directory_entry_bytes] == 24, 'compact directory entry is 24 bytes')
+        assert(legacy_parsed[:header][:minor] == 0, 'legacy BOMC 1.0 remains readable')
+        assert(legacy_parsed[:header][:directory_entry_bytes] == 40, 'legacy directory entry remains 40 bytes')
+        assert(bytes.bytesize < legacy.bytesize, 'compact directory reduces the same container')
         assert(parsed[:header][:endianness] == :little, 'endianness marker is little-endian')
-        assert(parsed[:header][:flags] == BOMC::PROFILE_PRODUCTION, 'profile flags survive')
+        assert((parsed[:header][:flags] & BOMC::PROFILE_PRODUCTION) != 0, 'profile flags survive')
+        assert((parsed[:header][:flags] & BOMC::FLAG_COMPACT_DIRECTORY) != 0, 'compact directory is declared in header flags')
         assert(!directory_only[:sections][0].key?(:bytes), 'directory-only parse does not decompress section payloads')
         assert(directory_only[:sections].map { |section| section[:type] } == parsed[:sections].map { |section| section[:type] }, 'directory-only parse exposes random-access descriptors')
         assert(parsed[:sections].map { |section| section[:type] } == [BOMC::SECTION_STRINGS, 65_000], 'section order is numeric and unknown types are skippable')
@@ -126,16 +138,16 @@ module BOMEngine
           BOMC::Container.parse(corrupt)
         end
 
-        bad_bounds = bytes.dup
-        first_directory = parsed[:header][:directory_offset]
-        bad_bounds[first_directory + 4, 8] = [bytes.bytesize + 8].pack('Q<')
+        bad_bounds = legacy.dup
+        first_directory = legacy_parsed[:header][:directory_offset]
+        bad_bounds[first_directory + 4, 8] = [legacy.bytesize + 8].pack('Q<')
         assert_raises('out-of-file section bounds are rejected', 'outside file') do
           BOMC::Container.parse(bad_bounds, verify_checksums: false)
         end
 
-        bad_overlap = bytes.dup
+        bad_overlap = legacy.dup
         second_directory = first_directory + BOMC::DIRECTORY_ENTRY_BYTES
-        bad_overlap[second_directory + 4, 8] = [parsed[:sections][0][:offset]].pack('Q<')
+        bad_overlap[second_directory + 4, 8] = [legacy_parsed[:sections][0][:offset]].pack('Q<')
         assert_raises('overlapping sections are rejected', 'overlap') do
           BOMC::Container.parse(bad_overlap, verify_checksums: false)
         end
@@ -324,6 +336,21 @@ module BOMEngine
         end
       end
 
+      def test_sparse_empty_model
+        result = BOMCWriter.pack(empty_fixture, profile: :production)
+        decoded = BOMCDecoder.decode(result[:bytes])
+        types = decoded[:directory].map { |section| section[:type] }
+
+        assert(decoded[:format][:version] == '1.1', 'sparse compiled model reports BOMC 1.1')
+        assert(!types.include?(BOMC::SECTION_MATERIALS), 'empty material section is omitted')
+        assert(!types.include?(BOMC::SECTION_TAGS), 'empty tag section is omitted')
+        assert(!types.include?(BOMC::SECTION_MESHES), 'empty geometry sections are omitted')
+        assert(!types.include?(BOMC::SECTION_TEXTURE_TABLE), 'empty texture sections are omitted')
+        assert(decoded[:materials] == [] && decoded[:tags] == [] && decoded[:meshes] == [], 'omitted tables decode as empty arrays')
+        assert(decoded[:coverage][:unaccounted] == 0, 'sparse empty model preserves the completeness invariant')
+        assert(result[:metrics][:omitted_empty_sections] >= 8, 'sparse writer reports omitted empty sections')
+      end
+
       def test_model_eval_adapter
         path = File.expand_path('../../examples/model-eval-json-v1-small.json', __dir__)
         payload = JSON.parse(File.read(path), symbolize_names: true)
@@ -443,6 +470,14 @@ module BOMEngine
             { id: 'node-text', kind: 'text', name: 'Room annotation', owner_definition_id: 'definition-root', definition_id: nil, transform_id: 0, material_override_id: nil, tag_id: 'tag-fixture-1', visible: true, text: 'Room annotation', attachment: { target_persistent_id: 'panel-pid' } }
           ]
         }
+      end
+
+      def empty_fixture
+        graph = shared_definition_fixture(0)
+        graph[:tags] = []
+        graph[:meshes] = []
+        graph[:definitions] = [graph[:definitions].first]
+        graph
       end
 
 
