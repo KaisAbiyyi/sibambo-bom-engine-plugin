@@ -230,6 +230,8 @@ module BOMEngine
           triangles: build_face_triangles(face, positions, position_index),
           front_material_id: material_id(face.material),
           back_material_id: material_id(face.back_material),
+          front_appearance_required: true,
+          back_appearance_required: !face.back_material.nil?,
           tag_id: tag_id(face.layer),
           normal: vector_array(face.normal),
           area_m2: (face.area.to_f * Constants::IN2_TO_M2).round(9),
@@ -278,16 +280,28 @@ module BOMEngine
       def build_face_uv(face)
         return nil if @texture_writer.nil?
 
-        helper = face.get_UVHelper(true, true, @texture_writer)
-        {
-          front_outer: uv_loop(face.outer_loop, helper, :front),
-          front_holes: face.loops.reject(&:outer?).map { |loop| uv_loop(loop, helper, :front) },
-          back_outer: uv_loop(face.outer_loop, helper, :back),
-          back_holes: face.loops.reject(&:outer?).map { |loop| uv_loop(loop, helper, :back) }
-        }
+        front = textured_material?(face.material)
+        back = textured_material?(face.back_material)
+        return nil unless front || back
+
+        helper = face.get_UVHelper(front, back, @texture_writer)
+        uv = {}
+        if front
+          uv[:front_outer] = uv_loop(face.outer_loop, helper, :front)
+          uv[:front_holes] = face.loops.reject(&:outer?).map { |loop| uv_loop(loop, helper, :front) }
+        end
+        if back
+          uv[:back_outer] = uv_loop(face.outer_loop, helper, :back)
+          uv[:back_holes] = face.loops.reject(&:outer?).map { |loop| uv_loop(loop, helper, :back) }
+        end
+        uv
       rescue StandardError => error
         @skipped["uv:#{error.class}"] += 1
         nil
+      end
+
+      def textured_material?(material)
+        !material.nil? && material.respond_to?(:texture) && !material.texture.nil?
       end
 
       def uv_loop(loop, helper, side)

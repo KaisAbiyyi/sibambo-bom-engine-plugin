@@ -180,12 +180,52 @@ module BOMEngine
               encodings: texture_encoding_metrics,
               evidence: @textures.map { |texture| texture[:encoding_evidence] }.compact
             },
+            appearance: appearance_metrics,
             coverage: @model[:coverage]
           }
         }
       end
 
       private
+
+      def appearance_metrics
+        faces = @model[:meshes].map { |mesh| mesh[:faces] }.flatten
+        triangle_count = lambda { |face| Array(face[:triangles]).length / 3 }
+        front = faces.select { |face| face[:front_appearance_required] }
+        back = faces.select { |face| face[:back_appearance_required] }
+        front_uv = faces.select { |face| uv_side_present?(face, :front) }
+        back_uv = faces.select { |face| uv_side_present?(face, :back) }
+        back_material = faces.select { |face| !face[:back_material].nil? }
+        back_uv_only = back_uv.reject { |face| face[:back_appearance_required] }
+        front_triangles = front.inject(0) { |sum, face| sum + triangle_count.call(face) }
+        back_triangles = back.inject(0) { |sum, face| sum + triangle_count.call(face) }
+        uv_scalars = faces.inject(0) do |sum, face|
+          sum + [:front_outer, :front_holes, :back_outer, :back_holes].inject(0) do |face_sum, key|
+            face_sum + Array(face.dig(:uv, key)).flatten.length
+          end
+        end
+        {
+          faces_total: faces.length,
+          front_appearance_faces: front.length,
+          back_appearance_faces: back.length,
+          front_uv_faces: front_uv.length,
+          back_uv_faces: back_uv.length,
+          back_material_faces: back_material.length,
+          back_uv_only_faces: back_uv_only.length,
+          redundant_back_pass_candidates: back_uv_only.length,
+          front_triangle_count: front_triangles,
+          required_back_triangle_count: back_triangles,
+          estimated_two_side_triangle_occurrences: front_triangles + back_triangles,
+          uv_scalar_count: uv_scalars,
+          uncompressed_uv_bytes: uv_scalars * 4
+        }
+      end
+
+      def uv_side_present?(face, side)
+        uv = face[:uv]
+        return false unless uv
+        !Array(uv[(side.to_s + '_outer').to_sym]).empty? || !Array(uv[(side.to_s + '_holes').to_sym]).empty?
+      end
 
       def section(type, count, bytes, compress)
         { type: type, count: count, bytes: bytes.b, compress: compress }

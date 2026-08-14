@@ -69,6 +69,8 @@ module BOMEngine
           topology_exact &&= source_face[:triangles] == decoded_face[:triangles]
           topology_exact &&= source_face[:front_material] == decoded_face[:front_material]
           topology_exact &&= source_face[:back_material] == decoded_face[:back_material]
+          topology_exact &&= source_face[:front_appearance_required] == decoded_face[:front_appearance_required]
+          topology_exact &&= source_face[:back_appearance_required] == decoded_face[:back_appearance_required]
           topology_exact &&= source_face[:tag] == decoded_face[:tag]
           topology_exact &&= normalize_surface(source_face[:surface_type]) == decoded_face[:surface_type].to_s
           topology_exact &&= normalize_role(source_face[:semantic_role]) == decoded_face[:semantic_role].to_s

@@ -11,6 +11,7 @@ require_relative '../bomc_model_adapter'
 require_relative '../bomc_writer'
 require_relative '../bomc_decoder'
 require_relative '../bomc_validator'
+require_relative '../canonical_graph_builder'
 
 module BOMEngine
   module Tests
@@ -45,6 +46,8 @@ module BOMEngine
         test_uv_codecs
         test_transform_codecs
         test_compiled_round_trip
+        test_canonical_uv_ownership
+        test_side_appearance_contract
         test_sparse_empty_model
         test_model_eval_adapter
         test_differential_validation
@@ -351,6 +354,130 @@ module BOMEngine
         assert(result[:metrics][:omitted_empty_sections] >= 8, 'sparse writer reports omitted empty sections')
       end
 
+      def test_side_appearance_contract
+        expectations = {
+          a: { front_material: 2, back_material: nil, front_uv: true, back_uv: false, back_required: false, override: nil },
+          b: { front_material: nil, back_material: nil, front_uv: false, back_uv: false, back_required: false, override: 0 },
+          c: { front_material: 0, back_material: 1, front_uv: false, back_uv: false, back_required: true, override: nil },
+          d: { front_material: 0, back_material: 2, front_uv: false, back_uv: true, back_required: true, override: nil },
+          e: { front_material: 2, back_material: 2, front_uv: true, back_uv: true, back_required: true, override: nil },
+          f: { front_material: nil, back_material: nil, front_uv: false, back_uv: false, back_required: false, override: nil }
+        }
+        expectations.each do |name, expected|
+          graph = side_appearance_fixture(name)
+          normalized = BOMC::ModelAdapter.from_canonical(graph)
+          packed = BOMCWriter.pack(graph, profile: :production)
+          decoded = BOMCDecoder.decode(packed[:bytes])
+          source_face = normalized[:meshes][0][:faces][0]
+          face = decoded[:meshes][0][:faces][0]
+
+          assert(face[:front_material] == expected[:front_material] && face[:back_material] == expected[:back_material], "case #{name.upcase} material references round-trip")
+          assert(face[:front_appearance_required] && face[:back_appearance_required] == expected[:back_required], "case #{name.upcase} side appearance requirements round-trip")
+          assert(face[:has_front_uv] == expected[:front_uv] && face[:has_back_uv] == expected[:back_uv], "case #{name.upcase} meaningful UV presence round-trips")
+          assert(decoded[:instances][1][:material] == expected[:override], "case #{name.upcase} instance material override round-trips")
+          assert(source_face[:uv] == face[:uv] || BOMCValidator.compare(graph, decoded)[:uv][:passed], "case #{name.upcase} UV values survive codec tolerance")
+          assert(BOMCValidator.validate!(graph, decoded)[:topology][:exact], "case #{name.upcase} canonical-to-BOMC differential validation passes")
+        end
+
+        ordinary = BOMCWriter.pack(side_appearance_fixture(:a), profile: :production)
+        metrics = ordinary[:metrics][:appearance]
+        assert(metrics[:back_uv_only_faces].zero? && metrics[:redundant_back_pass_candidates].zero?, 'ordinary textured-front face has no UV-only back pass candidate')
+        assert(metrics[:front_triangle_count] == 2 && metrics[:required_back_triangle_count].zero?, 'ordinary face counts only required front triangles')
+        assert(metrics[:uv_scalar_count] == 8 && metrics[:uncompressed_uv_bytes] == 32, 'ordinary face retains only its 32-byte front UV payload')
+      end
+
+      def test_canonical_uv_ownership
+        point = Struct.new(:x, :y, :z)
+        vertex = Struct.new(:position)
+        loop_type = Struct.new(:vertices) do
+          def outer?
+            true
+          end
+        end
+        material_type = Struct.new(:texture)
+        helper_type = Class.new do
+          attr_reader :front_calls, :back_calls
+
+          def initialize(point_type)
+            @point_type = point_type
+            @front_calls = 0
+            @back_calls = 0
+          end
+
+          def get_front_UVQ(position)
+            @front_calls += 1
+            @point_type.new(position.x, position.y, 1.0)
+          end
+
+          def get_back_UVQ(position)
+            @back_calls += 1
+            @point_type.new(position.x + 10.0, position.y + 10.0, 1.0)
+          end
+        end
+        face_type = Struct.new(:material, :back_material, :outer_loop, :loops, :helper, :helper_args) do
+          def get_UVHelper(front, back, writer)
+            self.helper_args = [front, back, writer]
+            helper
+          end
+        end
+        vertices = [point.new(0, 0, 0), point.new(1, 0, 0), point.new(1, 1, 0), point.new(0, 1, 0)].map { |position| vertex.new(position) }
+        outer = loop_type.new(vertices)
+        builder = BOMEngine::CanonicalGraphBuilder::Builder.allocate
+        builder.instance_variable_set(:@texture_writer, Object.new)
+        builder.instance_variable_set(:@skipped, Hash.new(0))
+        builder.instance_variable_set(:@progress, nil)
+
+        helper = helper_type.new(point)
+        front_only = face_type.new(material_type.new(Object.new), nil, outer, [outer], helper, nil)
+        uv = builder.send(:build_face_uv, front_only)
+        assert(uv.key?(:front_outer) && !uv.key?(:back_outer), 'canonical producer emits UV only for the explicit textured front side')
+        assert(front_only.helper_args[0, 2] == [true, false] && helper.back_calls.zero?, 'canonical producer does not request default-back UV coordinates')
+
+        helper = helper_type.new(point)
+        back_only = face_type.new(material_type.new(nil), material_type.new(Object.new), outer, [outer], helper, nil)
+        uv = builder.send(:build_face_uv, back_only)
+        assert(!uv.key?(:front_outer) && uv.key?(:back_outer), 'canonical producer retains distinct explicit textured-back UV coordinates')
+        assert(back_only.helper_args[0, 2] == [false, true] && helper.front_calls.zero?, 'canonical producer requests only the textured back side when appropriate')
+
+        plain = face_type.new(material_type.new(nil), nil, outer, [outer], helper_type.new(point), nil)
+        assert(builder.send(:build_face_uv, plain).nil? && plain.helper_args.nil?, 'canonical producer emits no meaningless UV payload when no side is textured')
+      end
+
+      def side_appearance_fixture(name)
+        texture = { bytes: "\x89PNG\r\n\x1a\nside-appearance".b, filename: 'side.png', image_width_px: 2, image_height_px: 2, width_m: 1.0, height_m: 1.0 }
+        materials = name == :f ? [] : [
+          { id: 'mat-front', name: 'Front color', color: { r: 1, g: 2, b: 3, a: 255 }, opacity: 1.0 },
+          { id: 'mat-back', name: 'Back color', color: { r: 4, g: 5, b: 6, a: 255 }, opacity: 1.0 },
+          { id: 'mat-textured', name: 'Textured', color: { r: 7, g: 8, b: 9, a: 255 }, opacity: 1.0, texture: texture }
+        ]
+        sides = {
+          a: ['mat-textured', nil], b: [nil, nil], c: ['mat-front', 'mat-back'],
+          d: ['mat-front', 'mat-textured'], e: ['mat-textured', 'mat-textured'], f: [nil, nil]
+        }.fetch(name)
+        front_uv = [[0.125, 0.25], [2.0, 0.25], [2.0, 1.5], [0.125, 1.5]]
+        back_uv = [[-0.5, 0.75], [1.5, 0.75], [1.5, 2.25], [-0.5, 2.25]]
+        uv = name == :f ? nil : { front_outer: front_uv, front_holes: [], back_outer: back_uv, back_holes: [] }
+        face = {
+          id: "face-#{name}", outer: [0, 1, 2, 3], holes: [], triangles: [0, 1, 2, 0, 2, 3],
+          front_material_id: sides[0], back_material_id: sides[1], normal: [0, 0, 1], area_m2: 1.0,
+          surface_hint: 'wall', hidden: false, uv: uv
+        }
+        override = name == :b ? 'mat-front' : nil
+        {
+          format: { name: 'BOM Engine Canonical', version: '3.0.0' }, source: {}, coordinate_system: {},
+          materials: materials, tags: [], transforms: [BOMC::ModelAdapter::IDENTITY.dup],
+          meshes: [{ id: "mesh-#{name}", definition_id: "definition-#{name}", positions_m: [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0], faces: [face], edges: [] }],
+          definitions: [
+            { id: 'definition-root', name: 'Root', kind: 'model_definition', mesh_id: nil, node_ids: ["node-#{name}"] },
+            { id: "definition-#{name}", name: 'Panel', kind: 'component_definition', mesh_id: "mesh-#{name}", node_ids: [] }
+          ],
+          nodes: [
+            { id: 'node-root', kind: 'root', name: 'Root', definition_id: 'definition-root', transform_id: 0, visible: true },
+            { id: "node-#{name}", kind: 'component_instance', name: 'Panel', owner_definition_id: 'definition-root', definition_id: "definition-#{name}", transform_id: 0, material_override_id: override, visible: true }
+          ]
+        }
+      end
+
       def test_model_eval_adapter
         path = File.expand_path('../../examples/model-eval-json-v1-small.json', __dir__)
         payload = JSON.parse(File.read(path), symbolize_names: true)
@@ -396,7 +523,7 @@ module BOMEngine
         rows = scales.map do |count|
           result = BOMCWriter.pack(shared_definition_fixture(count), profile: :production)
           geometry_bytes = [:positions, :topology, :normals, :uv, :visual_edges].map do |name|
-            result[:metrics][:sections].fetch(name)[:stored_bytes]
+            result[:metrics][:sections].fetch(name, { stored_bytes: 0 })[:stored_bytes]
           end.inject(0, :+)
           decoded = BOMCDecoder.decode(result[:bytes])
           assert(decoded[:instances].length == count + 1, "#{count} shared instances decode without expansion")
@@ -511,4 +638,6 @@ module BOMEngine
   end
 end
 
-exit(BOMEngine::Tests::BOMCTest.run ? 0 : 1)
+if $PROGRAM_NAME == __FILE__
+  exit(BOMEngine::Tests::BOMCTest.run ? 0 : 1)
+end

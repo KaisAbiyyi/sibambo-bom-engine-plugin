@@ -50,7 +50,7 @@ module BOMEngine
             positions: positions,
             faces: raw_faces.each_with_index.map do |face, face_index|
               notify(checkpoint, :encode_topology, face_index + 1, raw_faces.length)
-              canonical_face(face, positions, material_index, tag_index)
+              canonical_face(face, positions, material_index, tag_index, materials)
             end,
             edges: Array(mesh[:edges]).map { |edge| canonical_edge(edge, tag_index) }
           }
@@ -180,6 +180,8 @@ module BOMEngine
               triangles: face_triangles.map(&:to_i),
               front_material: optional_numeric(row[7]),
               back_material: optional_numeric(row[8]),
+              front_appearance_required: true,
+              back_appearance_required: !optional_numeric(row[8]).nil?,
               tag: optional_numeric(row[9]),
               normal: face_normal(positions, outer),
               area_m2: row[11].to_f,
@@ -277,17 +279,21 @@ module BOMEngine
       end
       private_class_method :texture_media_type
 
-      def canonical_face(face, positions, material_index, tag_index)
+      def canonical_face(face, positions, material_index, tag_index, materials)
         semantic = face[:semantic] || {}
         outer = Array(face[:outer]).map(&:to_i)
+        front_material = optional_reference(material_index, face[:front_material_id])
+        back_material = optional_reference(material_index, face[:back_material_id])
         {
           stable_id: face[:id].to_s,
           persistent_id: source_identity_value(face[:source_identity]),
           outer: outer,
           holes: Array(face[:holes]).map { |hole| Array(hole).map(&:to_i) },
           triangles: Array(face[:triangles]).map(&:to_i),
-          front_material: optional_reference(material_index, face[:front_material_id]),
-          back_material: optional_reference(material_index, face[:back_material_id]),
+          front_material: front_material,
+          back_material: back_material,
+          front_appearance_required: true,
+          back_appearance_required: !back_material.nil?,
           tag: optional_reference(tag_index, face[:tag_id]),
           normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : Array(face[:normal]).map(&:to_f),
           area_m2: face[:area_m2].to_f,
@@ -297,10 +303,32 @@ module BOMEngine
           semantic_role: semantic[:role],
           semantic_source: semantic[:source],
           classification_policy: semantic[:classification_policy],
-          uv: normalize_uv(face[:uv])
+          uv: normalize_uv_for_materials(face[:uv], front_material, back_material, materials)
         }
       end
       private_class_method :canonical_face
+
+      def normalize_uv_for_materials(uv, front_material, back_material, materials)
+        normalized = normalize_uv(uv)
+        return nil if normalized.nil?
+
+        result = {}
+        if textured_material_reference?(front_material, materials)
+          result[:front_outer] = normalized[:front_outer]
+          result[:front_holes] = normalized[:front_holes]
+        end
+        if textured_material_reference?(back_material, materials)
+          result[:back_outer] = normalized[:back_outer]
+          result[:back_holes] = normalized[:back_holes]
+        end
+        result.empty? ? nil : result
+      end
+      private_class_method :normalize_uv_for_materials
+
+      def textured_material_reference?(reference, materials)
+        !reference.nil? && !Array(materials).dig(reference, :texture).nil?
+      end
+      private_class_method :textured_material_reference?
 
       def canonical_edge(edge, tag_index)
         {

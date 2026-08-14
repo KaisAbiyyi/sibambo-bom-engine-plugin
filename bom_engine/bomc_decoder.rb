@@ -300,6 +300,8 @@ module BOMEngine
             has_holes: (flags[index] & 2) != 0,
             has_front_uv: (flags[index] & 4) != 0,
             has_back_uv: (flags[index] & 8) != 0,
+            front_appearance_required: true,
+            back_appearance_required: !back_materials[index].nil?,
             fallback: (flags[index] & 16) != 0,
             semantic_role: BOMC::SEMANTIC_ROLE_NAMES.fetch(roles[index], 'unknown'),
             semantic_label: string_value(strings, labels[index]),

@@ -154,7 +154,7 @@ module BOMEngine
         graph = shared_graph(count)
         result = BOMCWriter.pack(graph)
         geometry = [:positions, :topology, :normals, :uv, :visual_edges].map do |name|
-          result[:metrics][:sections].fetch(name)[:stored_bytes]
+          result[:metrics][:sections].fetch(name, { stored_bytes: 0 })[:stored_bytes]
         end.inject(0, :+)
         { count: count, total_bytes: result[:bytes].bytesize, geometry_bytes: geometry, instance_bytes: result[:metrics][:sections][:instances][:stored_bytes], transform_bytes: result[:metrics][:sections][:transforms][:stored_bytes] }
       end
@@ -244,6 +244,15 @@ module BOMEngine
       results.each do |row|
         counts = row[:counts]
         lines << "| #{row[:name]} | #{integer(counts[:meshes])} | #{integer(counts[:faces])} | #{integer(counts[:definitions])} | #{integer(counts[:instances])} | #{integer(counts[:fallback])} | #{integer(counts[:materials])} | #{integer(counts[:textures])} | #{integer(counts[:unaccounted])} |"
+      end
+      lines << ''
+      lines << '## Side appearance and UV diagnostics'
+      lines << ''
+      lines << '| Fixture | Faces | Front appearance | Back appearance | Front UV | Back UV | Back material | Back UV only | Redundant back candidates | Front triangles | Required back triangles | Estimated occurrences |'
+      lines << '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|'
+      results.each do |row|
+        values = row[:metrics][:appearance]
+        lines << "| #{row[:name]} | #{integer(values[:faces_total])} | #{integer(values[:front_appearance_faces])} | #{integer(values[:back_appearance_faces])} | #{integer(values[:front_uv_faces])} | #{integer(values[:back_uv_faces])} | #{integer(values[:back_material_faces])} | #{integer(values[:back_uv_only_faces])} | #{integer(values[:redundant_back_pass_candidates])} | #{integer(values[:front_triangle_count])} | #{integer(values[:required_back_triangle_count])} | #{integer(values[:estimated_two_side_triangle_occurrences])} |"
       end
       lines << ''
       lines << '| Fixture | Position max / p95 / RMS (m) | Normal max (deg) | UV max | Transform max | Tables | Topology | Edges | Fallback | Textures |'

@@ -230,6 +230,13 @@ Face flags:
 | 3 | Has back UV |
 | 4 | Geometry-fallback disposition |
 
+Side appearance and UV presence are distinct. A decoded face always requires its
+front appearance. It requires an independent back appearance only when
+`backMaterial` is not the sentinel. Instance/group paint remains an instance
+material override and supplies an unpainted front side without duplicating the
+definition geometry. The UV flags report mapping payload only; they never imply
+that a side requires a render pass.
+
 Surface enum:
 
 | Value | Meaning | Value | Meaning |
@@ -313,6 +320,12 @@ Octahedral quantization uses `-32767..32767`. The otherwise-unused pair `(-32768
 Each mesh with UV owns one block. Header (44 bytes): version, codec, two reserved bytes, UV pair count, payload length, Float64 origin UV, Float64 scale UV, then payload.
 
 Per face, values occur front side then back side. Within a side, values occur outer loop then hole loops. Loop lengths come from FACES, so no UV offset objects are stored.
+
+The producer emits a side's UV mapping only when that exact face side has an
+explicit textured material. In particular, UV coordinates merely obtainable
+from SketchUp's UV helper for an unpainted/default back side are omitted. An
+explicit textured back material retains its distinct back mapping. This matches
+CleanPKG's side-material, inherited-material, and UV ownership contract.
 
 | Codec | Encoding |
 |---:|---|
