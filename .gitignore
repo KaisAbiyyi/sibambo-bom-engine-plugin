@@ -3,6 +3,11 @@
 *.rbz
 *.log
 **/graphify-out/
-dist/
+dist/*
+!dist/history/
+dist/history/staging/
+!dist/history/MANIFEST.md
+!dist/history/CHECKSUMS.sha256
 *.skp
 skps/*.skp
+history/generated/*/raw/

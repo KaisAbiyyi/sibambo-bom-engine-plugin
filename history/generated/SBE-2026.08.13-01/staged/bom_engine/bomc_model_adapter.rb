@@ -1,0 +1,481 @@
+# Normalizes Canonical v3 or compact Model-Eval JSON into BOMC compiler input.
+
+require 'digest'
+
+module SibamboHistory
+  module V20260813_01
+  module BOMC
+    module ModelAdapter
+      IDENTITY = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0].freeze
+      NODE_KINDS = { 0 => 'unknown', 1 => 'root', 2 => 'component_instance', 3 => 'group_instance', 4 => 'image', 5 => 'text' }.freeze
+
+      module_function
+
+      def normalize(graph, base_path: nil)
+        payload = symbolize(graph)
+        if payload.dig(:format, :identifier).to_s == 'model_eval_json_v1'
+          from_model_eval(payload, base_path: base_path)
+        else
+          from_canonical(payload, base_path: base_path)
+        end
+      end
+
+      def from_canonical(graph, base_path: nil)
+        payload = symbolize(graph)
+        raw_materials = Array(payload[:materials])
+        raw_tags = Array(payload[:tags])
+        raw_definitions = Array(payload[:definitions])
+        raw_meshes = Array(payload[:meshes])
+        raw_nodes = Array(payload[:nodes])
+        material_index = index_ids(raw_materials)
+        tag_index = index_ids(raw_tags)
+        definition_index = index_ids(raw_definitions)
+        mesh_index = index_ids(raw_meshes)
+        node_index = index_ids(raw_nodes)
+
+        materials = raw_materials.map { |material| canonical_material(material, base_path) }
+        tags = raw_tags.map do |tag|
+          { stable_id: tag[:id].to_s, name: tag[:name].to_s, visible: tag[:visible] != false }
+        end
+        meshes = raw_meshes.map do |mesh|
+          positions = Array(mesh[:positions_m]).map(&:to_f)
+          {
+            stable_id: mesh[:id].to_s,
+            definition: fetch_reference(definition_index, mesh[:definition_id], 'mesh definition'),
+            positions: positions,
+            faces: Array(mesh[:faces]).map { |face| canonical_face(face, positions, material_index, tag_index) },
+            edges: Array(mesh[:edges]).map { |edge| canonical_edge(edge, tag_index) }
+          }
+        end
+        definitions = raw_definitions.map do |definition|
+          {
+            stable_id: definition[:id].to_s,
+            name: definition[:name].to_s,
+            kind: definition[:kind].to_s,
+            mesh: optional_reference(mesh_index, definition[:mesh_id]),
+            nodes: Array(definition[:node_ids]).map { |id| node_index[id] }.compact
+          }
+        end
+        instances = raw_nodes.map do |node|
+          semantic = node[:semantic] || {}
+          {
+            stable_id: node[:id].to_s,
+            persistent_id: source_identity_value(node[:source_identity]),
+            name: node[:name].to_s,
+            kind: node[:kind].to_s,
+            owner_definition: optional_reference(definition_index, node[:owner_definition_id]),
+            definition: optional_reference(definition_index, node[:definition_id]),
+            transform: Integer(node[:transform_id] || 0),
+            material: optional_reference(material_index, node[:material_override_id]),
+            tag: optional_reference(tag_index, node[:tag_id]),
+            visible: node[:visible] != false,
+            semantic_label: semantic[:label],
+            semantic_role: semantic[:role],
+            semantic_source: semantic[:source],
+            classification_policy: semantic[:classification_policy],
+            fallback: canonical_fallback(node, base_path)
+          }
+        end
+        root_node = instances.index { |node| node[:kind] == 'root' }
+        raise 'BOMC source invalid: exactly one root instance is required.' if root_node.nil? || instances.count { |node| node[:kind] == 'root' } != 1
+
+        finalize(
+          source: payload[:source] || {},
+          coordinate_system: payload[:coordinate_system] || {},
+          materials: materials,
+          tags: tags,
+          transforms: normalize_transforms(payload[:transforms]),
+          meshes: meshes,
+          definitions: definitions,
+          instances: instances,
+          root_node: root_node
+        )
+      end
+
+      def from_model_eval(graph, base_path: nil)
+        payload = symbolize(graph)
+        strings = Array(payload[:strings])
+        materials = Array(payload[:materials]).map do |row|
+          color = parse_hex(string_at(strings, row[2]))
+          {
+            stable_id: string_at(strings, row[0]).to_s,
+            persistent_id: nil,
+            name: string_at(strings, row[1]).to_s,
+            display_name: string_at(strings, row[1]).to_s,
+            color: color,
+            opacity: row[3].to_f,
+            texture: nil
+          }
+        end
+        tags = Array(payload[:tags]).map do |row|
+          { stable_id: string_at(strings, row[0]).to_s, name: string_at(strings, row[1]).to_s, visible: row[2] != false }
+        end
+        definitions = Array(payload[:definitions]).map do |row|
+          {
+            stable_id: string_at(strings, row[0]).to_s,
+            name: string_at(strings, row[1]).to_s,
+            kind: string_at(strings, row[2]).to_s == 'root' ? 'model_definition' : string_at(strings, row[2]).to_s,
+            mesh: optional_numeric(row[3]),
+            nodes: Array(row[4]).map(&:to_i)
+          }
+        end
+        owner_by_node = {}
+        definitions.each_with_index do |definition, definition_index|
+          definition[:nodes].each { |node_index| owner_by_node[node_index] = definition_index }
+        end
+        raw_nodes = Array(payload[:nodes])
+        instances = raw_nodes.each_with_index.map do |row, index|
+          {
+            stable_id: string_at(strings, row[0]).to_s,
+            persistent_id: string_at(strings, row[8]),
+            name: string_at(strings, row[1]).to_s,
+            kind: NODE_KINDS.fetch(row[2].to_i, 'unknown'),
+            owner_definition: owner_by_node[index],
+            definition: row[3].to_i,
+            transform: row[4].to_i,
+            material: optional_numeric(row[5]),
+            tag: optional_numeric(row[6]),
+            visible: row[7] != false,
+            semantic_label: string_at(strings, row[9]),
+            semantic_source: string_at(strings, row[10]),
+            semantic_role: string_at(strings, row[11]),
+            classification_policy: string_at(strings, row[12])
+          }
+        end
+        meshes = Array(payload[:meshes]).map do |mesh|
+          positions = decode_model_eval_positions(mesh)
+          loops = Array(mesh[:loops])
+          triangles = Array(mesh[:triangles])
+          faces = Array(mesh[:faces]).map do |row|
+            outer = loops[row[2].to_i, row[3].to_i] || []
+            holes = Array(row[4]).map { |range| loops[range[0].to_i, range[1].to_i] || [] }
+            face_triangles = triangles[row[5].to_i, row[6].to_i] || []
+            role = string_at(strings, row[14])
+            {
+              stable_id: string_at(strings, row[0]).to_s,
+              persistent_id: string_at(strings, row[1]),
+              outer: outer.map(&:to_i),
+              holes: holes.map { |hole| hole.map(&:to_i) },
+              triangles: face_triangles.map(&:to_i),
+              front_material: optional_numeric(row[7]),
+              back_material: optional_numeric(row[8]),
+              tag: optional_numeric(row[9]),
+              normal: face_normal(positions, outer),
+              area_m2: row[11].to_f,
+              surface_type: role || string_at(strings, row[10]),
+              hidden: false,
+              semantic_label: string_at(strings, row[12]),
+              semantic_role: role,
+              semantic_source: string_at(strings, row[13]),
+              classification_policy: string_at(strings, row[15]),
+              uv: nil
+            }
+          end
+          {
+            stable_id: string_at(strings, mesh[:id]).to_s,
+            definition: mesh[:definition].to_i,
+            positions: positions,
+            faces: faces,
+            edges: []
+          }
+        end
+        source_row = Array(payload[:source])
+        source = {
+          file_name: string_at(strings, source_row[0]),
+          model_name: string_at(strings, source_row[1]),
+          scope: string_at(strings, source_row[2]),
+          exported_at: string_at(strings, source_row[3])
+        }
+        finalize(
+          source: source,
+          coordinate_system: payload[:coordinate_system] || {},
+          materials: materials,
+          tags: tags,
+          transforms: normalize_transforms(payload[:transforms]),
+          meshes: meshes,
+          definitions: definitions,
+          instances: instances,
+          root_node: payload[:root_node].to_i
+        )
+      end
+
+      def canonical_material(material, base_path)
+        color = material[:color] || {}
+        texture = material[:texture]
+        {
+          stable_id: material[:id].to_s,
+          persistent_id: source_identity_value(material[:source_identity]),
+          name: material[:name].to_s,
+          display_name: (material[:display_name] || material[:name]).to_s,
+          color: {
+            r: Integer(color[:r] || 0), g: Integer(color[:g] || 0), b: Integer(color[:b] || 0), a: Integer(color[:a] || 255)
+          },
+          opacity: material.key?(:opacity) ? material[:opacity].to_f : (material[:alpha] || 1.0).to_f,
+          texture: normalize_texture(texture, base_path)
+        }
+      end
+      private_class_method :canonical_material
+
+      def normalize_texture(texture, base_path)
+        return nil if texture.nil?
+
+        bytes = texture[:bytes]
+        if bytes.nil?
+          candidates = [texture[:source_path], texture[:filename]].compact.map(&:to_s)
+          if base_path
+            candidates += candidates.reject { |path| absolute_path?(path) }.map { |path| File.join(base_path, path) }
+          end
+          path = candidates.find { |candidate| File.file?(candidate) }
+          bytes = File.binread(path) if path
+        end
+        return nil if bytes.nil?
+
+        content = bytes.b
+        {
+          bytes: content,
+          sha256: Digest::SHA256.hexdigest(content),
+          media_type: texture_media_type(texture, content),
+          image_width_px: Integer(texture[:image_width_px] || 0),
+          image_height_px: Integer(texture[:image_height_px] || 0),
+          width_m: (texture[:width_m] || 0.0).to_f,
+          height_m: (texture[:height_m] || 0.0).to_f
+        }
+      end
+      private_class_method :normalize_texture
+
+      def texture_media_type(texture, bytes)
+        filename = (texture[:filename] || texture[:source_path]).to_s.downcase
+        return :png if bytes.start_with?("\x89PNG\r\n\x1a\n".b) || filename.end_with?('.png')
+        return :jpeg if bytes.start_with?("\xff\xd8".b) || filename.end_with?('.jpg', '.jpeg')
+        return :webp if bytes.bytesize >= 12 && bytes.byteslice(0, 4) == 'RIFF' && bytes.byteslice(8, 4) == 'WEBP'
+        return :avif if filename.end_with?('.avif')
+        return :ktx2 if bytes.start_with?("\xabKTX 20\xbb\r\n\x1a\n".b) || filename.end_with?('.ktx2')
+
+        :binary
+      end
+      private_class_method :texture_media_type
+
+      def canonical_face(face, positions, material_index, tag_index)
+        semantic = face[:semantic] || {}
+        outer = Array(face[:outer]).map(&:to_i)
+        {
+          stable_id: face[:id].to_s,
+          persistent_id: source_identity_value(face[:source_identity]),
+          outer: outer,
+          holes: Array(face[:holes]).map { |hole| Array(hole).map(&:to_i) },
+          triangles: Array(face[:triangles]).map(&:to_i),
+          front_material: optional_reference(material_index, face[:front_material_id]),
+          back_material: optional_reference(material_index, face[:back_material_id]),
+          tag: optional_reference(tag_index, face[:tag_id]),
+          normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : Array(face[:normal]).map(&:to_f),
+          area_m2: face[:area_m2].to_f,
+          surface_type: semantic[:role] || face[:surface_hint],
+          hidden: face[:hidden] == true,
+          semantic_label: semantic[:label],
+          semantic_role: semantic[:role],
+          semantic_source: semantic[:source],
+          classification_policy: semantic[:classification_policy],
+          uv: normalize_uv(face[:uv])
+        }
+      end
+      private_class_method :canonical_face
+
+      def canonical_edge(edge, tag_index)
+        {
+          stable_id: edge[:id].to_s,
+          persistent_id: source_identity_value(edge[:source_identity]),
+          vertices: Array(edge[:vertices]).map(&:to_i),
+          tag: optional_reference(tag_index, edge[:tag_id]),
+          hidden: edge[:hidden] == true,
+          soft: edge[:soft] == true,
+          smooth: edge[:smooth] == true
+        }
+      end
+      private_class_method :canonical_edge
+
+      def canonical_fallback(node, base_path)
+        kind = node[:kind].to_s
+        case kind
+        when 'image'
+          image = node[:image] || {}
+          texture = normalize_texture(
+            {
+              bytes: image[:bytes], filename: image[:filename], source_path: image[:filename],
+              image_width_px: image[:image_width_px], image_height_px: image[:image_height_px],
+              width_m: image[:width_m], height_m: image[:height_m]
+            },
+            base_path
+          )
+          {
+            kind: 'image', position: Array(image[:position]).map(&:to_f),
+            width_m: image[:width_m].to_f, height_m: image[:height_m].to_f,
+            text: node[:name].to_s, texture: texture
+          }
+        when 'text'
+          {
+            kind: 'text', position: [0.0, 0.0, 0.0], width_m: 0.0, height_m: 0.0,
+            text: (node[:text] || node[:name]).to_s, texture: nil,
+            attachment: node.dig(:attachment, :target_persistent_id)
+          }
+        end
+      end
+      private_class_method :canonical_fallback
+
+      def normalize_uv(uv)
+        return nil unless uv.is_a?(Hash)
+
+        result = {}
+        [:front_outer, :back_outer].each do |key|
+          result[key] = Array(uv[key]).map { |pair| Array(pair).map(&:to_f) }
+        end
+        [:front_holes, :back_holes].each do |key|
+          result[key] = Array(uv[key]).map { |loop| Array(loop).map { |pair| Array(pair).map(&:to_f) } }
+        end
+        result
+      end
+      private_class_method :normalize_uv
+
+      def normalize_transforms(transforms)
+        values = Array(transforms)
+        return [IDENTITY.dup] if values.empty?
+        if values[0].is_a?(Array)
+          values.map { |matrix| Array(matrix).map(&:to_f) }
+        else
+          raise 'BOMC source invalid: transform table is not divisible by 16.' unless (values.length % 16).zero?
+          values.each_slice(16).map { |matrix| matrix.map(&:to_f) }
+        end
+      end
+      private_class_method :normalize_transforms
+
+      def decode_model_eval_positions(mesh)
+        quantization = mesh[:quantization] || {}
+        minimum = Array(quantization[:minimum_m]).map(&:to_f)
+        scale = Array(quantization[:scale_m]).map(&:to_f)
+        Array(mesh[:positions]).each_with_index.map do |value, index|
+          minimum[index % 3].to_f + value.to_f * scale[index % 3].to_f
+        end
+      end
+      private_class_method :decode_model_eval_positions
+
+      def face_normal(positions, indices)
+        return [0.0, 0.0, 0.0] if Array(indices).length < 3
+        first = positions[indices[0].to_i * 3, 3]
+        second = positions[indices[1].to_i * 3, 3]
+        third = positions[indices[2].to_i * 3, 3]
+        return [0.0, 0.0, 0.0] unless first && second && third
+        left = 3.times.map { |axis| second[axis] - first[axis] }
+        right = 3.times.map { |axis| third[axis] - first[axis] }
+        cross = [
+          left[1] * right[2] - left[2] * right[1],
+          left[2] * right[0] - left[0] * right[2],
+          left[0] * right[1] - left[1] * right[0]
+        ]
+        length = Math.sqrt(cross.map { |value| value * value }.inject(0.0, :+))
+        length.zero? ? [0.0, 0.0, 0.0] : cross.map { |value| value / length }
+      end
+      private_class_method :face_normal
+
+      def finalize(model)
+        faces = model[:meshes].map { |mesh| mesh[:faces] }.flatten
+        analytical = faces.count { |face| classified_surface?(face[:surface_type]) }
+        fallback = faces.length - analytical
+        model[:coverage] = {
+          eligible: faces.length,
+          analytical: analytical,
+          visual_retained: model[:meshes].map { |mesh| mesh[:edges].length }.inject(0, :+) + model[:instances].count { |instance| !instance[:fallback].nil? },
+          fallback: fallback,
+          excluded: 0,
+          unaccounted: faces.length - analytical - fallback
+        }
+        model[:bounds] = model_bounds(model[:meshes])
+        model
+      end
+      private_class_method :finalize
+
+      def classified_surface?(value)
+        string = value.to_s.strip.downcase
+        !string.empty? && !['unknown', 'none', 'geometry_fallback'].include?(string)
+      end
+      private_class_method :classified_surface?
+
+      def model_bounds(meshes)
+        values = Array(meshes).map { |mesh| mesh[:positions] }.flatten
+        return { min: [0.0, 0.0, 0.0], max: [0.0, 0.0, 0.0] } if values.empty?
+        minimum = [Float::INFINITY, Float::INFINITY, Float::INFINITY]
+        maximum = [-Float::INFINITY, -Float::INFINITY, -Float::INFINITY]
+        values.each_with_index do |value, index|
+          axis = index % 3
+          minimum[axis] = value if value < minimum[axis]
+          maximum[axis] = value if value > maximum[axis]
+        end
+        { min: minimum, max: maximum }
+      end
+      private_class_method :model_bounds
+
+      def index_ids(items)
+        result = {}
+        Array(items).each_with_index { |item, index| result[item[:id]] = index }
+        result
+      end
+      private_class_method :index_ids
+
+      def fetch_reference(index, value, label)
+        result = index[value]
+        raise "BOMC source invalid: missing #{label} #{value}." if result.nil?
+        result
+      end
+      private_class_method :fetch_reference
+
+      def optional_reference(index, value)
+        value.nil? ? nil : index[value]
+      end
+      private_class_method :optional_reference
+
+      def optional_numeric(value)
+        integer = value.nil? ? -1 : value.to_i
+        integer < 0 ? nil : integer
+      end
+      private_class_method :optional_numeric
+
+      def string_at(strings, index)
+        return nil if index.nil? || index.to_i < 0
+        strings[index.to_i]
+      end
+      private_class_method :string_at
+
+      def parse_hex(value)
+        hex = value.to_s.delete('#')
+        return { r: 0, g: 0, b: 0, a: 255 } unless hex.length >= 6
+        { r: hex[0, 2].to_i(16), g: hex[2, 2].to_i(16), b: hex[4, 2].to_i(16), a: 255 }
+      end
+      private_class_method :parse_hex
+
+      def source_identity_value(identity)
+        return nil unless identity.is_a?(Hash)
+        identity[:persistent_id] || identity[:guid]
+      end
+      private_class_method :source_identity_value
+
+      def absolute_path?(path)
+        path =~ /\A(?:[A-Za-z]:[\\\/]|[\\\/]{2}|\/)/
+      end
+      private_class_method :absolute_path?
+
+      def symbolize(value)
+        case value
+        when Hash
+          result = {}
+          value.each { |key, child| result[key.to_sym] = symbolize(child) }
+          result
+        when Array
+          value.map { |child| symbolize(child) }
+        else
+          value
+        end
+      end
+      private_class_method :symbolize
+    end
+  end
+end
+
+end # SibamboHistory

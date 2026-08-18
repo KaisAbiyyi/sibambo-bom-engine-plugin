@@ -1,0 +1,11 @@
+sequence,date,label,commit,format,compression,small_export_ms,small_bytes,rumah_l_export_ms,rumah_l_bytes,model_eval_decode_ms,first_visible_ms,notes,pass
+1,2026-05-11,"[01] 2026-05-11 — Original BOM JSON",a6bf3f6,bom_json_v2,none,,,,,,,,
+2,2026-05-11,"[02] 2026-05-11 — Visual / Standard / Full JSON",abdc70b,bom_json_v2_multilevel,none,,,,,,,,
+3,2026-05-11,"[EXP-01] 2026-05-11 — Nano BBox JSON",7dd932d,bom_nano_json,none,,,,,,,,
+4,2026-05-11,"[03] 2026-05-11 — Minified Visual JSON",ac2fbc9,bom_json_v2_minified,none,,,,,,,,
+5,2026-07-16,"[04] 2026-07-16 — Canonical JSON v3 + Gzip",657d867,canonical_json_v3,gzip_optional,,,,,,,,
+6,2026-07-16,"[05] 2026-07-16 — Model-Eval Compact JSON",657d867,model_eval_json_v1,none,,,,,,,,
+7,2026-07-16,"[06] 2026-07-16 — BOME2 Binary Runtime",657d867,bome2_runtime_v2,gzip_optional,,,,,,,,
+8,2026-08-12,"[07] 2026-08-12 — CleanPKG Binary Container",d245b68,clean_package_v1,deterministic_zip,,,,,,,,
+9,2026-08-13,"[08] 2026-08-13 — First BOMC Compiled Format",ebf2e65,bomc_compiled_v1_0,section_deflate,,,,,,,,
+10,2026-08-19,"[09] 2026-08-19 — Scene/Page-Preserving BOMC",347fc72,bomc_compiled_v1_1_scenes,section_deflate,,,,,,,,

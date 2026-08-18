@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>BOM Engine Export</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px;
+    background: #1e2229;
+    color: #e0e4ea;
+    padding: 20px;
+  }
+
+  h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #4fffb0;
+    margin-bottom: 18px;
+    letter-spacing: 0.02em;
+  }
+
+  .field { margin-bottom: 14px; }
+
+  label {
+    display: block;
+    font-size: 11px;
+    color: #8899aa;
+    margin-bottom: 5px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  input[type=text] {
+    width: 100%;
+    padding: 8px 10px;
+    background: #141720;
+    border: 1px solid #2e3340;
+    border-radius: 5px;
+    color: #e0e4ea;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input[type=text]:focus { border-color: #4fffb0; }
+
+  .path-row { display: flex; gap: 8px; }
+  .path-row input { flex: 1; }
+
+  .btn {
+    padding: 8px 14px;
+    border-radius: 5px;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    transition: background 0.15s;
+  }
+  .btn-browse { background: #2e3340; color: #aab; }
+  .btn-browse:hover { background: #3a4050; }
+
+  .section {
+    background: #151a22;
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 14px;
+  }
+  .section h3 {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: #4fffb0;
+    margin-bottom: 10px;
+    letter-spacing: 0.1em;
+  }
+
+  /* ── Level selector ── */
+  .level-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .level-card {
+    background: #1e2229;
+    border: 1.5px solid #2e3340;
+    border-radius: 7px;
+    padding: 10px 10px 8px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    position: relative;
+  }
+  .level-card:hover { border-color: #4fffb055; }
+  .level-card input[type=radio] {
+    position: absolute;
+    opacity: 0;
+    width: 0; height: 0;
+  }
+  .level-card.selected {
+    border-color: #4fffb0;
+    background: #1a2820;
+  }
+  .level-name {
+    font-size: 12px;
+    font-weight: 700;
+    color: #c0ccd8;
+    margin-bottom: 3px;
+  }
+  .level-card.selected .level-name { color: #4fffb0; }
+  .level-size {
+    font-size: 10px;
+    color: #556677;
+    margin-bottom: 5px;
+    font-family: monospace;
+  }
+  .level-card.selected .level-size { color: #3ab888; }
+  .level-desc {
+    font-size: 10px;
+    color: #445566;
+    line-height: 1.45;
+  }
+  .level-card.selected .level-desc { color: #7a9988; }
+
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .checkbox-row:last-child { margin-bottom: 0; }
+  .checkbox-row input[type=checkbox] {
+    width: 15px;
+    height: 15px;
+    cursor: pointer;
+    accent-color: #4fffb0;
+    flex-shrink: 0;
+  }
+  .checkbox-row label {
+    text-transform: none;
+    font-size: 13px;
+    color: #c0ccd8;
+    letter-spacing: 0;
+    cursor: pointer;
+  }
+
+  .info {
+    font-size: 11px;
+    color: #556677;
+    margin-top: 5px;
+    line-height: 1.5;
+  }
+
+  /* hide options that don't apply to visual level */
+  .full-only { transition: opacity 0.2s; }
+  .full-only.dimmed { opacity: 0.35; pointer-events: none; }
+
+  .actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 18px;
+  }
+  .btn-cancel {
+    background: #2e3340;
+    color: #778899;
+    padding: 10px 22px;
+    border-radius: 6px;
+  }
+  .btn-cancel:hover { background: #3a4050; }
+  .btn-export {
+    background: #4fffb0;
+    color: #111;
+    padding: 10px 24px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .btn-export:hover { background: #3de89d; }
+
+  .badge {
+    display: inline-block;
+    font-size: 10px;
+    background: #2e3340;
+    color: #4fffb0;
+    border-radius: 3px;
+    padding: 1px 5px;
+    margin-left: 5px;
+    vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+
+  <h2>&#11041; BOM Engine Export <span class="badge">v2.0</span></h2>
+
+  <div class="field">
+    <label>Output JSON Path</label>
+    <div class="path-row">
+      <input type="text" id="outputPath" placeholder="/path/to/output_bom.json">
+      <button class="btn btn-browse" onclick="sketchup.browse()">Browse</button>
+    </div>
+  </div>
+
+  <!-- ── Export Level ── -->
+  <div class="section">
+    <h3>Level Export</h3>
+    <div class="level-grid">
+
+      <label class="level-card selected" id="card-visual" onclick="selectLevel('visual')">
+        <input type="radio" name="exportLevel" value="visual" checked>
+        <div class="level-name">&#9679; Visual</div>
+        <div class="level-size">~5–8 MB</div>
+        <div class="level-desc">Geometri polygon lengkap per face. Ringan untuk viewer 3D.</div>
+      </label>
+
+      <label class="level-card" id="card-standard" onclick="selectLevel('standard')">
+        <input type="radio" name="exportLevel" value="standard">
+        <div class="level-name">&#9679; Standard</div>
+        <div class="level-size">~15–20 MB</div>
+        <div class="level-desc">+ Warna material, area, hierarki dasar.</div>
+      </label>
+
+      <label class="level-card" id="card-full" onclick="selectLevel('full')">
+        <input type="radio" name="exportLevel" value="full">
+        <div class="level-name">&#9679; Full BIM</div>
+        <div class="level-size">~45–50 MB</div>
+        <div class="level-desc">Semua data: UV, atribut, analisis spasial.</div>
+      </label>
+
+    </div>
+  </div>
+
+  <!-- ── Opsi Export (beberapa hanya relevan untuk Full) ── -->
+  <div class="section">
+    <h3>Opsi Tambahan</h3>
+    <div class="checkbox-row full-only" id="opt-textures">
+      <input type="checkbox" id="exportTextures" checked>
+      <label for="exportTextures">Export tekstur ke subfolder /textures</label>
+    </div>
+    <div class="checkbox-row full-only" id="opt-edges">
+      <input type="checkbox" id="includeEdges">
+      <label for="includeEdges">Sertakan edge entities (memperbesar ukuran file)</label>
+    </div>
+    <div class="checkbox-row full-only" id="opt-materials">
+      <input type="checkbox" id="includeMaterials" checked>
+      <label for="includeMaterials">Sertakan library material lengkap</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="prettyPrint">
+      <label for="prettyPrint">Pretty-print JSON (mudah dibaca manusia)</label>
+    </div>
+    <p class="info" style="margin-top:-4px;margin-bottom:6px">&#9888; Pretty-print menambah spasi &amp; baris baru — ukuran file bisa <strong style="color:#ffaa44">2–3× lebih besar</strong>. Nonaktifkan untuk produksi.</p>
+  </div>
+
+  <div class="section">
+    <h3>Cakupan Export</h3>
+    <div class="checkbox-row" id="selectionRow">
+      <input type="checkbox" id="selectionOnly">
+      <label for="selectionOnly" id="selectionLabel">Hanya objek yang diseleksi</label>
+    </div>
+    <p class="info" id="selectionInfo">Pilih objek di SketchUp terlebih dahulu untuk mengaktifkan opsi ini.</p>
+  </div>
+
+  <div class="actions">
+    <button class="btn btn-cancel" onclick="sketchup.cancel()">Batal</button>
+    <button class="btn btn-export" onclick="doExport()">Export JSON</button>
+  </div>
+
+<script>
+  var currentLevel = 'visual';
+
+  function selectLevel(level) {
+    currentLevel = level;
+    ['visual','standard','full'].forEach(function(l) {
+      var card = document.getElementById('card-' + l);
+      card.classList.toggle('selected', l === level);
+      card.querySelector('input[type=radio]').checked = (l === level);
+    });
+    document.querySelectorAll('.full-only').forEach(function(el) {
+      el.classList.toggle('dimmed', level === 'visual');
+    });
+  }
+
+  function setDefaultPath(path) {
+    document.getElementById('outputPath').value = path;
+  }
+
+  function setPath(path) {
+    document.getElementById('outputPath').value = path;
+  }
+
+  function setSelectionState(hasSelection, forceSelection) {
+    var cb    = document.getElementById('selectionOnly');
+    var info  = document.getElementById('selectionInfo');
+    var label = document.getElementById('selectionLabel');
+
+    if (hasSelection) {
+      cb.disabled = false;
+      label.style.color = '#c0ccd8';
+      if (forceSelection) {
+        cb.checked  = true;
+        cb.disabled = true;
+        info.textContent = 'Hanya komponen yang sedang diseleksi yang akan diekspor.';
+        info.style.color = '#4fffb0';
+      } else {
+        info.textContent = 'Ada seleksi aktif. Centang untuk mengekspor seleksi saja.';
+      }
+    } else {
+      cb.disabled = true;
+      cb.checked  = false;
+      label.style.color = '#445566';
+      info.textContent  = 'Tidak ada objek yang diseleksi — akan mengekspor seluruh model.';
+    }
+  }
+
+  function doExport() {
+    var outputPath = document.getElementById('outputPath').value.trim();
+    if (!outputPath) {
+      alert('Harap tentukan path output terlebih dahulu.');
+      return;
+    }
+    var settings = {
+      output_path:       outputPath,
+      export_level:      currentLevel,
+      export_textures:   document.getElementById('exportTextures').checked,
+      include_edges:     document.getElementById('includeEdges').checked,
+      include_materials: document.getElementById('includeMaterials').checked,
+      pretty_print:      document.getElementById('prettyPrint').checked,
+      selection_only:    document.getElementById('selectionOnly').checked
+    };
+    sketchup.export(JSON.stringify(settings));
+  }
+
+  window.onload = function() {
+    sketchup.onReady();
+    selectLevel('visual'); // default
+  };
+</script>
+
+</body>
+</html>
