@@ -30,6 +30,7 @@ module BOMEngine
       BOMC::SECTION_TEXTURE_BLOBS => :textures,
       BOMC::SECTION_COVERAGE => :coverage,
       BOMC::SECTION_FALLBACK => :fallback,
+      BOMC::SECTION_SCENES => :scenes,
       BOMC::SECTION_DEBUG => :debug
     }.freeze
 
@@ -118,6 +119,10 @@ module BOMEngine
           section(BOMC::SECTION_COVERAGE, 1, build_coverage_section, true),
           section(BOMC::SECTION_FALLBACK, fallback_records.length, build_fallback_section, true)
         ]
+        scenes = Array(@model[:scenes])
+        if !scenes.empty?
+          all_sections << section(BOMC::SECTION_SCENES, scenes.length, build_scenes_section, true)
+        end
         all_sections << section(BOMC::SECTION_DEBUG, debug_records.length, build_debug_section, true) if @profile == :debug
         required = [
           BOMC::SECTION_MODEL, BOMC::SECTION_STRINGS, BOMC::SECTION_DEFINITIONS,
@@ -129,6 +134,13 @@ module BOMEngine
                      all_sections
                    end
         flags = @profile == :debug ? BOMC::PROFILE_DEBUG : BOMC::PROFILE_PRODUCTION
+        flags |= BOMC::FLAG_HAS_SCENES unless scenes.empty?
+        scope = (@model.dig(:source, :scope) || '').to_s
+        if scope == 'active'
+          flags |= BOMC::FLAG_SCOPE_ACTIVE
+        elsif scope == 'all' || !scenes.empty?
+          flags |= BOMC::FLAG_SCOPE_ALL
+        end
         bytes = BOMC::Container.pack(
           sections,
           flags: flags,
@@ -311,6 +323,12 @@ module BOMEngine
         end
         @model[:meshes].each do |mesh|
           mesh[:faces].each { |face| candidates << face[:semantic_label] }
+        end
+        Array(@model[:scenes]).each do |scene|
+          candidates << scene[:name]
+          candidates << scene[:description]
+          candidates << scene[:stable_id]
+          candidates << scene[:visibility_signature]
         end
         if @profile == :debug
           each_debug_string { |value| candidates << value }
@@ -616,6 +634,75 @@ module BOMEngine
         bytes << pack_indices(records.map { |record| record[:texture_index] }, texture_width)
         bytes << pack_indices(records.map { |record| string_reference(record[:text]) }, string_width)
         bytes
+      end
+
+      def build_scenes_section
+        scenes = Array(@model[:scenes])
+        tag_count = @model[:tags].length
+        tag_bitset_bytes = (tag_count + 7) / 8
+
+        data = [1, tag_count, scenes.length].pack('CCV')
+
+        scenes.each do |scene|
+          camera = scene[:camera] || {}
+          visibility = scene[:visibility] || {}
+
+          id_idx = @string_index[scene[:stable_id].to_s] || 0
+          name_idx = @string_index[scene[:name].to_s] || 0
+          desc_idx = @string_index[scene[:description].to_s] || 0
+          sig_idx = @string_index[scene[:visibility_signature].to_s] || 0
+
+          flags = 0
+          flags |= 0x01 if scene[:is_active_at_export]
+          flags |= 0x02 if scene[:use_camera] != false
+          flags |= 0x04 if scene[:stores_tag_visibility] != false
+          flags |= 0x08 if scene[:stores_hidden_objects] != false
+          flags |= 0x10 if scene[:stores_hidden_geometry] == true
+          flags |= 0x20 if scene[:stores_section_planes] == true
+          flags |= 0x40 if camera[:projection] != 'orthographic'
+
+          eye = Array(camera[:eye_m])
+          target = Array(camera[:target_m])
+          up = Array(camera[:up])
+          fov_or_height = (camera[:projection] == 'orthographic' ? camera[:orthographic_height_m] : camera[:field_of_view_degrees]).to_f
+          aspect_ratio = camera[:aspect_ratio].to_f
+          trans_time = scene[:transition_time_seconds].to_f
+
+          data << [
+            id_idx, name_idx, desc_idx, sig_idx,
+            flags,
+            eye[0].to_f, eye[1].to_f, eye[2].to_f,
+            target[0].to_f, target[1].to_f, target[2].to_f,
+            up[0].to_f, up[1].to_f, up[2].to_f,
+            fov_or_height, aspect_ratio, trans_time
+          ].pack('VVVVVe3e3e3e3')
+
+          visible_tag_indices = Array(visibility[:visible_tag_indices])
+          if visible_tag_indices.empty? && Array(visibility[:visible_tag_ids]).empty?
+            bitset = Array.new(tag_bitset_bytes, 0xff)
+          else
+            bitset = Array.new(tag_bitset_bytes, 0)
+            visible_tag_indices.each do |idx|
+              if idx >= 0 && idx < tag_count
+                byte_idx = idx / 8
+                bit_idx = idx % 8
+                bitset[byte_idx] |= (1 << bit_idx)
+              end
+            end
+          end
+          data << bitset.pack('C*')
+
+          hidden_nodes = Array(visibility[:hidden_node_indices])
+          visible_nodes = Array(visibility[:visible_node_indices])
+
+          data << BOMC::Binary.write_varuint(hidden_nodes.length)
+          hidden_nodes.each { |idx| data << BOMC::Binary.write_varuint(idx) }
+
+          data << BOMC::Binary.write_varuint(visible_nodes.length)
+          visible_nodes.each { |idx| data << BOMC::Binary.write_varuint(idx) }
+        end
+
+        data
       end
 
       def debug_records

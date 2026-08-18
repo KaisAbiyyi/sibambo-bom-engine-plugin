@@ -3,6 +3,7 @@
 require 'digest'
 require_relative 'bomc_format'
 require_relative 'bomc_codecs'
+require_relative 'scene_visibility_resolver'
 
 module BOMEngine
   module BOMCDecoder
@@ -102,6 +103,15 @@ module BOMEngine
           fallback = optional_decode(BOMC::SECTION_FALLBACK, []) { |bytes| decode_fallback(bytes, strings) }
         end
 
+        scenes = nil
+        measure(timings, :scenes_ms) do
+          scenes = if @sections[BOMC::SECTION_SCENES]
+                     decode_scenes(section_bytes(BOMC::SECTION_SCENES), strings, tags, instances)
+                   else
+                     synthetic_default_scenes(tags, instances)
+                   end
+        end
+
         measure(timings, :validation_ms) do
           validate_references!(model, materials, tags, meshes, definitions, instances, transforms, textures, coverage, fallback)
         end
@@ -118,6 +128,8 @@ module BOMEngine
           definitions: definitions,
           instances: instances,
           root_node: model[:root_node],
+          scenes: scenes,
+          active_scene_id: (scenes.find { |s| s[:is_active_at_export] } || scenes.first)&.dig(:id),
           textures: textures,
           coverage: coverage,
           fallback: fallback,
@@ -250,7 +262,8 @@ module BOMEngine
         visibility = cursor.read((count + 7) / 8).unpack('C*')
         cursor.finish!
         count.times.map do |index|
-          { name: string_value(strings, names[index]), visible: (visibility[index / 8] & (1 << (index % 8))) != 0 }
+          name = string_value(strings, names[index])
+          { id: "tag:#{index}", stable_id: "tag:#{index}", name: name, visible: (visibility[index / 8] & (1 << (index % 8))) != 0 }
         end
       end
 
@@ -348,6 +361,8 @@ module BOMEngine
         cursor.finish!
         count.times.map do |index|
           {
+            id: "node:#{index}",
+            stable_id: "node:#{index}",
             name: string_value(strings, names[index]), kind: BOMC::NODE_NAMES.fetch(kinds[index], 'unknown'),
             owner_definition: owners[index], definition: definitions[index], transform: transforms[index],
             material: materials[index], tag: tags[index], visible: (flags[index] & 1) != 0,
@@ -710,6 +725,156 @@ module BOMEngine
       def decode_coordinate_flags(flags)
         axis = { 0 => '+X', 1 => '+Y', 2 => '+Z' }.fetch((flags >> 1) & 0x03, '+Z')
         { units: 'm', handedness: (flags & 1).zero? ? 'left' : 'right', up_axis: axis }
+      end
+
+      def decode_scenes(bytes, strings, tags, instances)
+        return [] if bytes.nil? || bytes.empty?
+
+        _version, tag_count, scenes_count = bytes.byteslice(0, 6).unpack('CCV')
+        tag_bitset_bytes = (tag_count + 7) / 8
+        cursor = 6
+
+        scenes_count.times.map do
+          scene_header = bytes.byteslice(cursor, 68)
+          cursor += 68
+          id_idx, name_idx, desc_idx, sig_idx, flags,
+          eye_x, eye_y, eye_z,
+          tgt_x, tgt_y, tgt_z,
+          up_x, up_y, up_z,
+          fov_or_height, aspect_ratio, trans_time = scene_header.unpack('VVVVVe3e3e3e3')
+
+          is_active = (flags & 0x01) != 0
+          use_camera = (flags & 0x02) != 0
+          stores_tags = (flags & 0x04) != 0
+          stores_objects = (flags & 0x08) != 0
+          stores_geometry = (flags & 0x10) != 0
+          stores_sections = (flags & 0x20) != 0
+          is_persp = (flags & 0x40) != 0
+
+          bitset_bytes = bytes.byteslice(cursor, tag_bitset_bytes).unpack('C*')
+          cursor += tag_bitset_bytes
+
+          visible_tag_indices = []
+          hidden_tag_indices = []
+          tag_count.times do |idx|
+            byte_idx = idx / 8
+            bit_idx = idx % 8
+            if (bitset_bytes[byte_idx] & (1 << bit_idx)) != 0
+              visible_tag_indices << idx
+            else
+              hidden_tag_indices << idx
+            end
+          end
+
+          hidden_nodes_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+          hidden_nodes = []
+          hidden_nodes_count.times do
+            node_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+            hidden_nodes << node_idx
+          end
+
+          visible_nodes_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+          visible_nodes = []
+          visible_nodes_count.times do
+            node_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+            visible_nodes << node_idx
+          end
+
+          visible_tag_ids = visible_tag_indices.map { |i| tags[i] ? tags[i][:stable_id] : "tag:#{i}" }
+          hidden_tag_ids = hidden_tag_indices.map { |i| tags[i] ? tags[i][:stable_id] : "tag:#{i}" }
+          visible_node_overrides = visible_nodes.map { |i| instances[i] ? instances[i][:stable_id] : "node:#{i}" }
+          hidden_node_overrides = hidden_nodes.map { |i| instances[i] ? instances[i][:stable_id] : "node:#{i}" }
+
+          stable_id = strings[id_idx].to_s
+          stable_id = "scene:doc:#{name_idx}" if stable_id.empty?
+
+          {
+            id: stable_id,
+            name: strings[name_idx].to_s,
+            description: strings[desc_idx].to_s,
+            is_active_at_export: is_active,
+            source: 'sketchup-page',
+            source_binding: { provider: 'sketchup', persistent_id: stable_id.sub(/\Ascene:doc:/, '') },
+            camera: {
+              projection: is_persp ? 'perspective' : 'orthographic',
+              eye_m: [eye_x.round(6), eye_y.round(6), eye_z.round(6)],
+              target_m: [tgt_x.round(6), tgt_y.round(6), tgt_z.round(6)],
+              up: [up_x.round(6), up_y.round(6), up_z.round(6)],
+              field_of_view_degrees: is_persp ? fov_or_height.round(4) : nil,
+              orthographic_height_m: !is_persp ? fov_or_height.round(6) : nil,
+              aspect_ratio: aspect_ratio.round(6)
+            },
+            use_camera: use_camera,
+            transition_time_seconds: trans_time.round(4),
+            visibility: {
+              visible_tag_ids: visible_tag_ids,
+              hidden_tag_ids: hidden_tag_ids,
+              visible_node_overrides: visible_node_overrides,
+              hidden_node_overrides: hidden_node_overrides,
+              visible_tag_indices: visible_tag_indices,
+              hidden_tag_indices: hidden_tag_indices,
+              visible_node_indices: visible_nodes,
+              hidden_node_indices: hidden_nodes
+            },
+            stores_tag_visibility: stores_tags,
+            stores_hidden_objects: stores_objects,
+            stores_hidden_geometry: stores_geometry,
+            stores_section_planes: stores_sections,
+            section_state: { active_section_plane_ids: [], rendering_support: 'metadata-only' },
+            visibility_signature: strings[sig_idx].to_s
+          }
+        end
+      end
+
+      def synthetic_default_scenes(tags, instances)
+        visible_tag_ids = tags.select { |t| t[:visible] != false }.map { |t| t[:stable_id] }
+        hidden_tag_ids = tags.select { |t| t[:visible] == false }.map { |t| t[:stable_id] }
+        visible_tag_indices = tags.each_with_index.select { |t, _i| t[:visible] != false }.map { |_t, i| i }
+        hidden_tag_indices = tags.each_with_index.select { |t, _i| t[:visible] == false }.map { |_t, i| i }
+
+        signature = SceneVisibilityResolver.compute_visibility_signature(
+          visible_tag_ids: visible_tag_ids,
+          hidden_tag_ids: hidden_tag_ids,
+          visible_node_overrides: [],
+          hidden_node_overrides: [],
+          active_section_plane_ids: []
+        )
+
+        [{
+          id: 'scene:doc:default',
+          name: 'Default Scene',
+          description: '',
+          is_active_at_export: true,
+          source: 'legacy-synthetic',
+          source_binding: { provider: 'bomc', persistent_id: 'legacy_synthetic' },
+          camera: {
+            projection: 'perspective',
+            eye_m: [10.0, -10.0, 10.0],
+            target_m: [0.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            field_of_view_degrees: 35.0,
+            orthographic_height_m: nil,
+            aspect_ratio: 0.0
+          },
+          use_camera: false,
+          transition_time_seconds: 0.0,
+          visibility: {
+            visible_tag_ids: visible_tag_ids,
+            hidden_tag_ids: hidden_tag_ids,
+            visible_node_overrides: [],
+            hidden_node_overrides: [],
+            visible_tag_indices: visible_tag_indices,
+            hidden_tag_indices: hidden_tag_indices,
+            visible_node_indices: [],
+            hidden_node_indices: []
+          },
+          stores_tag_visibility: true,
+          stores_hidden_objects: true,
+          stores_hidden_geometry: false,
+          stores_section_planes: false,
+          section_state: { active_section_plane_ids: [], rendering_support: 'none' },
+          visibility_signature: signature
+        }]
       end
     end
 

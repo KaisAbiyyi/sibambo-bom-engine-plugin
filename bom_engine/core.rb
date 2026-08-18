@@ -8,6 +8,7 @@ require_relative 'compact_mesh_builder'
 require_relative 'binary_mesh_writer'
 require_relative 'binary_mesh_validator'
 require_relative 'classifier'
+require_relative 'semantic_labeler'
 require_relative 'opening_detector'
 require_relative 'material_extractor'
 require_relative 'spatial_analyzer'
@@ -20,6 +21,8 @@ require_relative 'model_eval_json_writer'
 require_relative 'texture_exporter'
 require_relative 'binary_mesh_streamer'
 require_relative 'ui_dialog'
+require_relative 'conversion_job'
+require_relative 'quick_export_options'
 require_relative 'observer'
 require 'json'
 require 'zlib'
@@ -32,7 +35,8 @@ module BOMEngine
 
     unless file_loaded?(__FILE__)
       plugins_menu = UI.menu("Plugins")
-      bom_menu     = plugins_menu.add_submenu("BOM Engine")
+      display_name = defined?(BOMEngine::PLUGIN_DISPLAY_NAME) ? BOMEngine::PLUGIN_DISPLAY_NAME : 'BOM Engine'
+      bom_menu     = plugins_menu.add_submenu(display_name)
 
       bom_menu.add_item("Quick Export for Model-Eval") { quick_export_for_model_eval }
       bom_menu.add_item("Export With Options...") { export_with_dialog }
@@ -52,13 +56,13 @@ module BOMEngine
       bom_menu.add_item("About BOM Engine") { show_about }
 
       # Toolbar
-      toolbar = UI::Toolbar.new("BOM Engine")
+      toolbar = UI::Toolbar.new(display_name)
       cmd = UI::Command.new("Quick Export for Model-Eval") { quick_export_for_model_eval }
       icon_path = File.join(File.dirname(__FILE__), "ui", "toolbar_icon.png")
       cmd.small_icon       = icon_path
       cmd.large_icon       = icon_path
-      cmd.tooltip          = "BOM Engine: Quick Export for Model-Eval"
-      cmd.status_bar_text  = "Export compact Model-Eval JSON without a dialog"
+      cmd.tooltip          = "#{display_name}: Quick Export for Model-Eval"
+      cmd.status_bar_text  = "Pilih batch optimal perangkat lalu export Model-Eval JSON"
       toolbar.add_item(cmd)
       toolbar.restore
 
@@ -100,27 +104,36 @@ module BOMEngine
     # settings, so compression and pretty-print cannot change this output.
     def self.quick_export_for_model_eval
       model = Sketchup.active_model
-      started_at = Time.now
+      if model.nil?
+        UI.messagebox('Model SketchUp tidak tersedia.', MB_OK)
+        return nil
+      end
+
+      profile = QuickExportOptions.device_profile
+      QuickExportOptions.show(profile: profile) do |batch_size, mode|
+        start_model_eval_export(model, batch_size, mode)
+      end
+    end
+
+    def self.start_model_eval_export(model, batch_size, mode = 'auto')
       output_path = model_eval_output_path(model)
-      begin
-        result = export_model_eval_json(model, output_path)
+      ConversionJob.start(
+        title: 'BOM Engine — Converting Model-Eval',
+        output_path: output_path,
+        batch_size: batch_size
+      ) do |progress|
+        started_at = Time.now
+        progress.call(stage: "Preparing Model-Eval export (#{mode} batch #{batch_size})", processed: 0)
+        result = export_model_eval_json(model, output_path, progress: progress, batch_size: batch_size)
         elapsed = (Time.now - started_at).round(3)
         stats = result[:validation]
-        message = "Model-Eval export selesai!\n\n" \
-                  "File: #{result[:path]}\n" \
-                  "Ukuran: #{result[:bytes]} bytes\n" \
-                  "Waktu: #{elapsed}s\n" \
-                  "Objek: #{stats[:nodes]}\n" \
-                  "Triangles: #{stats[:triangles]}\n" \
-                  "Format: model_eval_json_v1 / 1.0.0"
-        Logger.info(message.gsub("\n", ' | '))
+        Logger.info(
+          "Model-Eval export complete | File: #{result[:path]} | " \
+          "Bytes: #{result[:bytes]} | Time: #{elapsed}s | " \
+          "Nodes: #{stats[:nodes]} | Triangles: #{stats[:triangles]}"
+        )
         Sketchup.write_default(SETTINGS_KEY, 'last_model_eval_export_path', result[:path])
-        UI.messagebox(message, MB_OK)
         result.merge(elapsed_seconds: elapsed)
-      rescue => e
-        Logger.error("Model-Eval quick export failed: #{e.message}\n#{e.backtrace.first(5).join("\n")}")
-        UI.messagebox("Model-Eval quick export gagal:\n#{e.message}", MB_OK)
-        nil
       end
     end
 
@@ -414,10 +427,19 @@ module BOMEngine
       result.merge(validation).merge(elapsed_seconds: elapsed, format: 'bome2')
     end
 
-    def self.export_model_eval_json(model, output_path)
+    def self.export_model_eval_json(model, output_path, progress: nil, batch_size: 24)
       FileUtils.mkdir_p(File.dirname(output_path)) unless Dir.exist?(File.dirname(output_path))
-      graph = build_model_eval_graph(model)
-      result = ModelEvalJSONWriter.write(output_path, graph)
+      graph = build_model_eval_graph(model, progress: progress, batch_size: batch_size)
+      progress.call(stage: 'Compacting Model-Eval payload', processed: 0) if progress
+      result = ModelEvalJSONWriter.write(
+        output_path,
+        graph,
+        progress: progress,
+        destructive: true,
+        include_payload: false,
+        batch_size: [batch_size.to_i * 4, 128].max
+      )
+      graph.clear
       Logger.info("Model-Eval JSON export complete -> #{output_path} (#{result[:bytes]} bytes, #{result[:validation][:triangles]} triangles)")
       result.merge(format: 'model_eval_json_v1')
     end
@@ -436,14 +458,16 @@ module BOMEngine
       File.join(directory, "#{base_name}_model-eval.json")
     end
 
-    def self.build_model_eval_graph(model)
+    def self.build_model_eval_graph(model, progress: nil, batch_size: 24)
       CanonicalGraphBuilder.build(
         model: model,
         entities: model.entities,
         parent_transform: Geom::Transformation.new,
         settings: { selection_only: false, include_edges: false, export_textures: false, output_format: 'model_eval_json_v1' },
         spatial: {},
-        texture_writer: nil
+        texture_writer: nil,
+        progress: progress,
+        batch_size: batch_size
       )
     end
 

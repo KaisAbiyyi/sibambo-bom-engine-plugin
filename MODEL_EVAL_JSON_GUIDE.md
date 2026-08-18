@@ -1,4 +1,4 @@
-# Model-Eval JSON v1
+# Model-Eval JSON v1.1
 
 `model_eval_json_v1` is BOM Engine's compact, plain-JSON exchange for `model-eval`. It is the target of native **Quick Export for Model-Eval**. It is UTF-8, minified, uncompressed, and suitable for `JSON.parse`.
 
@@ -7,7 +7,7 @@ Canonical JSON v3 remains the readable full/debug interchange: it retains descri
 ## Top level
 
 ```json
-{"format":{"name":"BOM Engine Model-Eval JSON","version":"1.0.0","identifier":"model_eval_json_v1"},"units":"m","strings":[],"materials":[],"transforms":[],"meshes":[],"definitions":[],"nodes":[]}
+{"format":{"name":"BOM Engine Model-Eval JSON","version":"1.1.0","identifier":"model_eval_json_v1"},"units":"m","strings":[],"materials":[],"transforms":[],"meshes":[],"definitions":[],"nodes":[]}
 ```
 
 `strings` deduplicates all names and stable IDs. `source` is `[fileName, modelName, scope, exportedAt]`, each a string index. `materials` rows are `[id,name,colorHex,opacity]`. `tags` rows are `[id,name,visible]`. A negative index means no reference.
@@ -19,10 +19,13 @@ Each mesh has one reusable local geometry table. `positions` stores quantized un
 ```text
 [id, sourcePersistentId, outerStart, outerCount, holeRanges,
  triangleStart, triangleCount, frontMaterial, backMaterial, tag,
- surfaceHint, areaM2]
+ surfaceHint, areaM2, semanticLabel, semanticSource, semanticRole,
+ classificationPolicy]
 ```
 
-`definitions` rows are `[id,name,kind,meshIndex,nodeIndexes]`; `nodes` rows are `[id,name,kind,definition,transform,materialOverride,tag,visible,sourcePersistentId]`. Definitions reference child nodes, so repeated component instances share exactly one mesh.
+`definitions` rows are `[id,name,kind,meshIndex,nodeIndexes]`; `nodes` rows are `[id,name,kind,definition,transform,materialOverride,tag,visible,sourcePersistentId,semanticLabel,semanticSource,semanticRole,classificationPolicy]`. Definitions reference child nodes, so repeated component instances share exactly one mesh.
+
+Semantic metadata is resolved in this order: attached SketchUp leader text, explicit Group/Component instance name, meaningful component definition name, then meaningful Tag. Generated names such as `Component#46`, `Group`, `Untagged`, and `Layer0` are ignored. A recognized label uses `label_first`; geometry is only a validation signal. Objects without a usable label use `geometry_fallback`. Model-Eval JSON v1.0 remains readable by the consumer.
 
 The direct loader validates header, table lengths, integer ranges, quantization bounds, loops, triangle indexes, references, root, and hierarchy before it constructs typed render buffers. It renders indexed meshes with instance matrices; it does not convert compact JSON to Canonical v3, `BomEntity`, or initial `FaceRecord` arrays.
 
@@ -37,4 +40,4 @@ ruby bom_engine_plugin/bom_engine/tests/test_model_eval_json_writer.rb
 cd model-eval; bun test src/lib/formats/model-eval-json.test.ts; bun run check; bun run build
 ```
 
-See [small example](bom_engine_plugin/examples/model-eval-json-v1-small.json) and [schema](bom_engine_plugin/schema/model-eval-json-1.0.schema.json).
+See [small example](bom_engine_plugin/examples/model-eval-json-v1-small.json), the [v1.0 schema](bom_engine_plugin/schema/model-eval-json-1.0.schema.json), and the [v1.1 schema](bom_engine_plugin/schema/model-eval-json-1.1.schema.json).

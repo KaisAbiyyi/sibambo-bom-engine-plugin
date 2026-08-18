@@ -4,6 +4,7 @@
 
 require_relative '../constants'
 require_relative '../traversal'
+require_relative '../semantic_labeler'
 require_relative '../canonical_graph_builder'
 
 module BOMEngine
@@ -45,7 +46,7 @@ module BOMEngine
             definition,
             Geom::Transformation.translation([10, 0, 0])
           )
-          first_instance.name = 'First Reused Instance'
+          first_instance.name = 'Pintu Utama'
           second_instance = root.entities.add_instance(
             definition,
             Geom::Transformation.translation([20, 0, 0])
@@ -86,6 +87,15 @@ module BOMEngine
           end
           check(failures, 'two instances reference one definition') do
             reused_nodes.length == 2 && reused_nodes.map { |node| node[:transform_id] }.uniq.length == 2
+          end
+
+
+          labeled_node = reused_nodes.find { |node| node[:name] == 'Pintu Utama' }
+          check(failures, 'explicit instance label becomes deterministic semantic metadata') do
+            labeled_node && labeled_node.dig(:semantic, :label) == 'Pintu Utama' &&
+              labeled_node.dig(:semantic, :source) == 'instance_name' &&
+              labeled_node.dig(:semantic, :role) == 'door' &&
+              labeled_node.dig(:semantic, :classification_policy) == 'label_first'
           end
 
           mesh = graph[:meshes].find { |item| item[:id] == reused_definition[:mesh_id] }

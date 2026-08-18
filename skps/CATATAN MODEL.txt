@@ -1,0 +1,9 @@
+RUMAH G : Rumah 1 Lantai + 2 Lantai di Bagian Belakang, Bentuk Minimalis Sederhana, Lantai 1 Area R Keluarga dan Taman Besar serta Area Service, Lantai 2 Bagian Belakang Area Kamar Kamar
+RUMAH I : Rumah 2 Lantai + Ground Floor, Bentuk Modern Medium, Banyak Kanopi, Lantai Dasar Hanya Garasi, Lantai 1 Ruang Keluarga Open Plan, Lantai 2 Kamar Kamar
+RUMAH L : Rumah 2 Lantai, Bentuk Classic Medium, Lantai 1 Ruang Keluarga dan Service, Lantai 2 Kamar Kamar dan Area Santai
+RUMAH R : Rumah 3 Lantai, Bentuk Modern Cenderung Rumit, Terdapat Semi Basement, Lantai 1 Ruang Service, Lantai 2 Ruang Keluarga, Lantai 3 Kamar Kamar
+RUMAH S : Rumah 3 Lantai, Bentuk Modern Sederhana, Lantai 1 R Keluarga dan Service, Lantai 2 Kamar kamar, Lantai 3 Rooftop Santai
+RUMAH Y : Rumah 2 Lantai, Bentuk Modern Tropis Sederhana, Lantai 1 Ruang Keluarga dan Area Service, Lantai 2 Kamar Kamar
+
+RUMAH X : 
+

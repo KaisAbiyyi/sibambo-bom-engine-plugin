@@ -89,6 +89,8 @@ module BOMEngine
         root_node = instances.index { |node| node[:kind] == 'root' }
         raise 'BOMC source invalid: exactly one root instance is required.' if root_node.nil? || instances.count { |node| node[:kind] == 'root' } != 1
 
+        scenes = adapt_scenes(payload[:scenes], tag_index, node_index)
+
         finalize(
           source: payload[:source] || {},
           coordinate_system: payload[:coordinate_system] || {},
@@ -98,7 +100,8 @@ module BOMEngine
           meshes: meshes,
           definitions: definitions,
           instances: instances,
-          root_node: root_node
+          root_node: root_node,
+          scenes: scenes
         )
       end
 
@@ -209,6 +212,9 @@ module BOMEngine
           scope: string_at(strings, source_row[2]),
           exported_at: string_at(strings, source_row[3])
         }
+        tag_index = tags.each_with_index.each_with_object({}) { |(tag, idx), h| h[tag[:stable_id]] = idx }
+        node_index = instances.each_with_index.each_with_object({}) { |(inst, idx), h| h[inst[:stable_id]] = idx }
+        scenes = adapt_scenes(payload[:scenes], tag_index, node_index)
         finalize(
           source: source,
           coordinate_system: payload[:coordinate_system] || {},
@@ -218,9 +224,65 @@ module BOMEngine
           meshes: meshes,
           definitions: definitions,
           instances: instances,
-          root_node: payload[:root_node].to_i
+          root_node: payload[:root_node].to_i,
+          scenes: scenes
         )
       end
+
+      def adapt_scenes(raw_scenes, tag_index, node_index)
+        return [] if raw_scenes.nil? || raw_scenes.empty?
+
+        raw_scenes.map do |scene|
+          camera = scene[:camera] || {}
+          visibility = scene[:visibility] || {}
+          visible_tag_ids = Array(visibility[:visible_tag_ids]).map(&:to_s)
+          hidden_tag_ids = Array(visibility[:hidden_tag_ids]).map(&:to_s)
+          visible_node_overrides = Array(visibility[:visible_node_overrides]).map(&:to_s)
+          hidden_node_overrides = Array(visibility[:hidden_node_overrides]).map(&:to_s)
+
+          visible_tag_indices = visible_tag_ids.map { |id| tag_index[id] }.compact.sort
+          hidden_tag_indices = hidden_tag_ids.map { |id| tag_index[id] }.compact.sort
+          visible_node_indices = visible_node_overrides.map { |id| node_index[id] }.compact.sort
+          hidden_node_indices = hidden_node_overrides.map { |id| node_index[id] }.compact.sort
+
+          {
+            stable_id: scene[:id].to_s,
+            name: scene[:name].to_s,
+            description: scene[:description].to_s,
+            is_active_at_export: scene[:is_active_at_export] == true,
+            source: (scene[:source] || 'sketchup-page').to_s,
+            source_binding: scene[:source_binding] || {},
+            camera: {
+              projection: camera[:projection].to_s == 'orthographic' ? 'orthographic' : 'perspective',
+              eye_m: Array(camera[:eye_m]).map(&:to_f),
+              target_m: Array(camera[:target_m]).map(&:to_f),
+              up: Array(camera[:up]).map(&:to_f),
+              field_of_view_degrees: camera[:field_of_view_degrees]&.to_f,
+              orthographic_height_m: camera[:orthographic_height_m]&.to_f,
+              aspect_ratio: camera[:aspect_ratio].to_f
+            },
+            use_camera: scene[:use_camera] != false,
+            transition_time_seconds: scene[:transition_time_seconds].to_f,
+            visibility: {
+              visible_tag_ids: visible_tag_ids,
+              hidden_tag_ids: hidden_tag_ids,
+              visible_node_overrides: visible_node_overrides,
+              hidden_node_overrides: hidden_node_overrides,
+              visible_tag_indices: visible_tag_indices,
+              hidden_tag_indices: hidden_tag_indices,
+              visible_node_indices: visible_node_indices,
+              hidden_node_indices: hidden_node_indices
+            },
+            stores_tag_visibility: scene[:stores_tag_visibility] != false,
+            stores_hidden_objects: scene[:stores_hidden_objects] != false,
+            stores_hidden_geometry: scene[:stores_hidden_geometry] == true,
+            stores_section_planes: scene[:stores_section_planes] == true,
+            section_state: scene[:section_state] || { active_section_plane_ids: [], rendering_support: 'metadata-only' },
+            visibility_signature: scene[:visibility_signature].to_s
+          }
+        end
+      end
+      private_class_method :adapt_scenes
 
       def canonical_material(material, base_path)
         color = material[:color] || {}
@@ -446,6 +508,7 @@ module BOMEngine
           unaccounted: faces.length - analytical - fallback
         }
         model[:bounds] = model_bounds(model[:meshes])
+        model[:scenes] = Array(model[:scenes])
         model
       end
       private_class_method :finalize

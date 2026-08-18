@@ -6,15 +6,16 @@ require 'sketchup'
 require 'extensions'
 
 module BOMEngine
-  PLUGIN_VERSION = "3.0.0"
+  PLUGIN_VERSION = "3.1.0"
+  PLUGIN_DISPLAY_NAME = "BOM Engine Semantic Exporter"
   PLUGIN_PATH    = File.dirname(__FILE__)
 
   # Register as SketchUp Extension (enables/disables via Preferences > Extensions)
   extension = SketchupExtension.new(
-    "BOM Engine Exporter",
+    PLUGIN_DISPLAY_NAME,
     File.join(PLUGIN_PATH, "bom_engine", "core.rb")
   )
-  extension.description = "Exports canonical JSON v3 and optimized BOME2 runtime models."
+  extension.description = "Label-aware SketchUp exporter for canonical JSON and Model-Eval JSON v1.1."
   extension.version     = PLUGIN_VERSION
   extension.creator     = "Sibambo Research Team"
   extension.copyright   = "© 2026 Sibambo"

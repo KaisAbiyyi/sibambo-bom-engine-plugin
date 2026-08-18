@@ -1,4 +1,4 @@
-# Sibambo BOM Engine Plugin
+# Sibambo BOM Engine Semantic Plugin
 
 SketchUp Ruby extension. Exports a SketchUp model or active selection into Sibambo BOM JSON for downstream visualization and building analysis.
 
@@ -6,6 +6,8 @@ SketchUp Ruby extension. Exports a SketchUp model or active selection into Sibam
 
 - [Sibambo Model Viewer](https://github.com/KaisAbiyyi/sibambo-model-viewer): browser viewer for visual BOM exports.
 - [Sibambo Model Eval](https://github.com/KaisAbiyyi/sibambo-model-eval): SvelteKit application for early-stage building evaluation.
+
+Version 3.1 adds label-aware export. Name a Group/Component in Entity Info or attach leader text to it (for example `Pintu Utama`, `Jendela Kamar`, or `Dinding Luar`). Model-Eval JSON v1.1 records the label, its source, the normalized building role, and a `label_first` policy. Tags and component definition names are lower-priority fallbacks; generated names and `Untagged` are ignored.
 
 ## What it exports
 

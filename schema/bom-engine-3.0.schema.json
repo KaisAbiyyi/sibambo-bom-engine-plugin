@@ -271,6 +271,18 @@
       "minItems": 3,
       "items": { "type": "integer", "minimum": 0 }
     },
+    "semantic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "source", "role", "classification_policy", "aliases"],
+      "properties": {
+        "label": { "type": ["string", "null"] },
+        "source": { "enum": ["attached_text", "instance_name", "definition_name", "tag", "none"] },
+        "role": { "type": ["string", "null"] },
+        "classification_policy": { "enum": ["label_first", "geometry_fallback"] },
+        "aliases": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
     "face": {
       "type": "object",
       "additionalProperties": false,
@@ -292,6 +304,7 @@
         "area_m2": { "type": "number", "minimum": 0 },
         "area_space": { "const": "definition_local" },
         "surface_hint": { "type": "string" },
+        "semantic": { "$ref": "#/$defs/semantic" },
         "hidden": { "type": "boolean" },
         "attributes": { "$ref": "#/$defs/attributes" },
         "uv": { "type": "object", "additionalProperties": true }
@@ -361,6 +374,7 @@
         "tag_id": { "type": ["string", "null"] },
         "source_identity": { "$ref": "#/$defs/sourceIdentity" },
         "attributes": { "$ref": "#/$defs/attributes" },
+        "semantic": { "$ref": "#/$defs/semantic" },
         "visible": { "type": "boolean" }
       }
     },

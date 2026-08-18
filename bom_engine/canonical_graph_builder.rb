@@ -2,6 +2,8 @@
 # Builds the semantic, definition-local graph used by canonical JSON v3 and BOME2.
 
 require 'time'
+require_relative 'semantic_labeler'
+require_relative 'scene_visibility_resolver'
 
 module BOMEngine
   module CanonicalGraphBuilder
@@ -26,6 +28,9 @@ module BOMEngine
         @settings = settings || {}
         @spatial = spatial || {}
         @texture_writer = texture_writer
+        @scene_scope = (@settings[:scene_scope] || 'active').to_s
+        @scenes = SceneVisibilityResolver.resolve_scenes(@model)
+        @active_page = @model.respond_to?(:pages) && @model.pages.respond_to?(:selected_page) ? @model.pages.selected_page : nil
         @definitions = []
         @definition_index = {}
         @meshes = []
@@ -36,6 +41,7 @@ module BOMEngine
         @material_ids = {}
         @tags = []
         @tag_ids = {}
+        @attached_labels = Hash.new { |hash, key| hash[key] = [] }
         @skipped = Hash.new(0)
         @progress = progress
         @batch_size = [batch_size.to_i, 1].max
@@ -43,6 +49,8 @@ module BOMEngine
       end
 
       def build(entities, parent_transform)
+        checkpoint('Preparing model tables', force: true)
+        index_attached_labels(@model.entities)
         build_tags
         build_materials
         identity_transform_id = intern_transform(Geom::Transformation.new)
@@ -65,10 +73,12 @@ module BOMEngine
           material_override_id: nil,
           tag_id: nil,
           source_identity: model_source_identity,
-          attributes: {}
+          attributes: {},
+          semantic: SemanticLabeler.empty_semantic
         )
 
-        {
+        checkpoint('Finalizing canonical graph', force: true)
+        result = {
           format: {
             name: FORMAT_NAME,
             version: FORMAT_VERSION,
@@ -106,6 +116,8 @@ module BOMEngine
           analysis: @spatial,
           statistics: build_statistics(identity_transform_id)
         }
+        checkpoint('Canonical graph ready', force: true)
+        result
       end
 
       private
@@ -237,6 +249,7 @@ module BOMEngine
           area_m2: (face.area.to_f * Constants::IN2_TO_M2).round(9),
           area_space: 'definition_local',
           surface_hint: Classifier.classify(face.normal),
+          semantic: semantic_for_face(face),
           hidden: face.hidden?,
           attributes: Traversal.extract_dicts(face)
         }
@@ -313,6 +326,7 @@ module BOMEngine
       end
 
       def build_instance_node(entity, owner_definition_id, definition_id, kind)
+        definition_name = entity.respond_to?(:definition) ? entity.definition.name.to_s : nil
         {
           id: "node:#{owner_definition_id}:#{kind}:#{safe_persistent_id(entity)}",
           kind: kind,
@@ -324,6 +338,12 @@ module BOMEngine
           tag_id: tag_id(entity.layer),
           source_identity: entity_source_identity(entity),
           attributes: Traversal.extract_dicts(entity),
+          semantic: SemanticLabeler.build(
+            instance_name: entity.name,
+            definition_name: definition_name,
+            tag_name: entity_tag_name(entity),
+            attached_labels: @attached_labels[entity.object_id]
+          ),
           visible: entity_visible?(entity)
         }
       end
@@ -360,6 +380,7 @@ module BOMEngine
           tag_id: tag_id(text.layer),
           source_identity: entity_source_identity(text),
           text: text.text.to_s,
+          attachment: text_attachment(text),
           attributes: Traversal.extract_dicts(text),
           visible: entity_visible?(text)
         }
@@ -375,11 +396,12 @@ module BOMEngine
           rescue StandardError
             nil
           end
+          visible = SceneVisibilityResolver.effective_tag_visibility(layer, @active_page)
           @tags << {
             id: id,
             source_identity: entity_source_identity(layer),
             name: layer.name,
-            visible: layer.visible?,
+            visible: visible,
             color: color && color_hash(color)
           }
         end
@@ -442,29 +464,7 @@ module BOMEngine
       end
 
       def build_scenes
-        @model.pages.map do |page|
-          checkpoint('Reading model scenes')
-          camera = page.camera
-          {
-            id: "scene:#{page.name}",
-            name: page.name,
-            description: page.description,
-            camera: {
-              projection: camera.perspective? ? 'perspective' : 'orthographic',
-              eye_m: point_array(camera.eye),
-              target_m: point_array(camera.target),
-              up: vector_array(camera.up),
-              field_of_view_degrees: camera.perspective? ? camera.fov : nil,
-              orthographic_height_m: camera.perspective? ? nil : (camera.height.to_f * Constants::IN_TO_M).round(9),
-              aspect_ratio: camera.aspect_ratio
-            },
-            use_camera: page.use_camera?,
-            transition_time_seconds: page.transition_time
-          }
-        end
-      rescue StandardError => error
-        @skipped["scenes:#{error.class}"] += 1
-        []
+        @scenes
       end
 
       def extract_spaces
@@ -481,17 +481,35 @@ module BOMEngine
       end
 
       def build_statistics(identity_transform_id)
+        component_instances = 0
+        group_instances = 0
+        @nodes.each do |node|
+          checkpoint('Calculating export statistics')
+          component_instances += 1 if node[:kind] == 'component_instance'
+          group_instances += 1 if node[:kind] == 'group_instance'
+        end
+        faces = 0
+        unique_vertices = 0
+        @meshes.each do |mesh|
+          checkpoint('Calculating export statistics')
+          faces += mesh[:faces].length
+          unique_vertices += mesh[:positions_m].length / 3
+        end
+        semantic_nodes = @nodes.map { |node| node[:semantic] }.compact
         {
           definitions: @definitions.length,
           meshes: @meshes.length,
           nodes: @nodes.length,
-          component_instances: @nodes.count { |node| node[:kind] == 'component_instance' },
-          group_instances: @nodes.count { |node| node[:kind] == 'group_instance' },
-          faces: @meshes.sum { |mesh| mesh[:faces].length },
-          unique_vertices: @meshes.sum { |mesh| mesh[:positions_m].length / 3 },
+          component_instances: component_instances,
+          group_instances: group_instances,
+          faces: faces,
+          unique_vertices: unique_vertices,
           materials: @materials.length,
           tags: @tags.length,
           transforms: @transforms.length,
+          labeled_nodes: semantic_nodes.count { |semantic| !semantic[:label].nil? },
+          label_role_nodes: semantic_nodes.count { |semantic| !semantic[:role].nil? },
+          geometry_fallback_nodes: semantic_nodes.count { |semantic| semantic[:classification_policy] == SemanticLabeler::GEOMETRY_FALLBACK_POLICY },
           identity_transform_id: identity_transform_id,
           skipped: @skipped.sort.to_h
         }
@@ -499,7 +517,7 @@ module BOMEngine
 
       def intern_position(point, positions, index)
         values = point_array(point)
-        key = values.map { |value| format('%.9f', value) }.join(',')
+        key = values.freeze
         existing = index[key]
         return existing unless existing.nil?
 
@@ -527,7 +545,7 @@ module BOMEngine
       def each_entity(entities)
         entities.each do |entity|
           checkpoint('Converting model entities')
-          unless Traversal.exportable_entity?(entity)
+          unless SceneVisibilityResolver.exportable_universe?(entity, @scenes, scope: @scene_scope) && Traversal.exportable_entity?(entity)
             @skipped['hidden_or_invalid_entity'] += 1
             next
           end
@@ -579,7 +597,7 @@ module BOMEngine
       def bounds_from_positions(positions)
         return empty_bounds if positions.empty?
 
-        bounds_from_vectors(positions.each_slice(3).to_a)
+        bounds_from_vectors(positions.each_slice(3))
       end
 
       def bounds_from_vectors(vectors)
@@ -690,11 +708,77 @@ module BOMEngine
       end
 
       def entity_visible?(entity)
-        visible = entity.respond_to?(:visible?) ? entity.visible? : true
-        layer_visible = entity.respond_to?(:layer) && entity.layer ? entity.layer.visible? : true
-        visible && layer_visible && !(entity.respond_to?(:hidden?) && entity.hidden?)
+        SceneVisibilityResolver.effective_entity_visibility(entity, @active_page)
       rescue StandardError
         true
+      end
+
+      # SketchUp leader text can be attached to a nested InstancePath. Resolve it
+      # to the nearest Group/Component so instance semantics remain reusable and
+      # do not get duplicated across every face in the compact runtime format.
+      def index_attached_labels(entities, visited = {})
+        key = entities.object_id
+        return if visited[key]
+
+        visited[key] = true
+        entities.each do |entity|
+          checkpoint('Indexing attached labels')
+          case entity
+          when Sketchup::Text
+            attachment = text_attachment(entity)
+            next if attachment.nil? || attachment[:target_object_id].nil?
+
+            label = SemanticLabeler.clean(entity.text)
+            next if label.empty?
+
+            @attached_labels[attachment[:target_object_id]] << {
+              value: label,
+              text_persistent_id: safe_persistent_id(entity),
+              target_path: attachment[:target_path]
+            }
+          when Sketchup::Group
+            index_attached_labels(entity.entities, visited)
+          when Sketchup::ComponentInstance
+            index_attached_labels(entity.definition.entities, visited)
+          end
+        end
+      rescue StandardError => error
+        @skipped["attached_labels:#{error.class}"] += 1
+      end
+
+      def text_attachment(text)
+        attached = text.respond_to?(:attached_to) ? text.attached_to : nil
+        return nil unless attached.is_a?(Array) && attached[0]
+
+        path = attached[0]
+        entities = path.respond_to?(:to_a) ? path.to_a : Array(path)
+        target = entities.reverse.find do |entity|
+          entity.is_a?(Sketchup::Group) || entity.is_a?(Sketchup::ComponentInstance)
+        end
+        target ||= entities.last
+        return nil if target.nil?
+
+        {
+          target_object_id: target.object_id,
+          target_persistent_id: safe_persistent_id(target),
+          target_path: path.respond_to?(:persistent_id_path) ? path.persistent_id_path.to_s : entities.map { |entity| safe_persistent_id(entity) }.join('.')
+        }
+      rescue StandardError => error
+        @skipped["text_attachment:#{error.class}"] += 1
+        nil
+      end
+
+      def semantic_for_face(face)
+        labels = @attached_labels[face.object_id]
+        return SemanticLabeler.empty_semantic if labels.empty?
+
+        SemanticLabeler.build(instance_name: nil, attached_labels: labels)
+      end
+
+      def entity_tag_name(entity)
+        entity.respond_to?(:layer) && entity.layer ? entity.layer.name.to_s : nil
+      rescue StandardError
+        nil
       end
 
       def serializable_settings
