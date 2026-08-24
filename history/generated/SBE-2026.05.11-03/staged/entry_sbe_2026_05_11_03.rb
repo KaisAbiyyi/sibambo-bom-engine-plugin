@@ -2,6 +2,8 @@
 # Entry point for [03] 2026-05-11 — Minified Visual JSON (SBE-2026.05.11-03)
 
 module SibamboHistory
+  EVOLUTION_LAB_EMBEDDED = true unless const_defined?(:EVOLUTION_LAB_EMBEDDED, false)
+
   module V20260511_03
     DISPLAY_VERSION = "SBE-2026.05.11-03"
     LABEL = "[03] 2026-05-11 — Minified Visual JSON"

@@ -2,6 +2,8 @@
 # Entry point for [EXP-01] 2026-05-11 — Nano BBox JSON (SBE-2026.05.11-EXP)
 
 module SibamboHistory
+  EVOLUTION_LAB_EMBEDDED = true unless const_defined?(:EVOLUTION_LAB_EMBEDDED, false)
+
   module V20260511_EXP
     DISPLAY_VERSION = "SBE-2026.05.11-EXP"
     LABEL = "[EXP-01] 2026-05-11 — Nano BBox JSON"

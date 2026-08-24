@@ -232,7 +232,7 @@ module SibamboHistory
 end
 
 if defined?(Sketchup) && defined?(UI) && defined?(file_loaded?)
-  unless file_loaded?(__FILE__)
+  unless defined?(SibamboHistory::EVOLUTION_LAB_EMBEDDED) || file_loaded?(__FILE__)
     SibamboHistory::V20260819_01::BOMCExtension.register_menu(UI.menu('Plugins'))
     file_loaded(__FILE__)
   end

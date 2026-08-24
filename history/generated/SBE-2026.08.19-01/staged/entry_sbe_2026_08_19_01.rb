@@ -2,6 +2,8 @@
 # Entry point for [09] 2026-08-19 — Scene/Page-Preserving BOMC (SBE-2026.08.19-01)
 
 module SibamboHistory
+  EVOLUTION_LAB_EMBEDDED = true unless const_defined?(:EVOLUTION_LAB_EMBEDDED, false)
+
   module V20260819_01
     DISPLAY_VERSION = "SBE-2026.08.19-01"
     LABEL = "[09] 2026-08-19 — Scene/Page-Preserving BOMC"

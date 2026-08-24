@@ -2,6 +2,8 @@
 # Entry point for [06] 2026-07-16 — BOME2 Binary Runtime (SBE-2026.07.16-03)
 
 module SibamboHistory
+  EVOLUTION_LAB_EMBEDDED = true unless const_defined?(:EVOLUTION_LAB_EMBEDDED, false)
+
   module V20260716_03
     DISPLAY_VERSION = "SBE-2026.07.16-03"
     LABEL = "[06] 2026-07-16 — BOME2 Binary Runtime"

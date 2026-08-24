@@ -14,7 +14,7 @@ module SibamboHistory
       pages = model.respond_to?(:pages) ? model.pages : nil
       active = active_page || (pages.respond_to?(:selected_page) ? pages.selected_page : nil)
 
-      if pages.nil? || pages.empty?
+      if pages.nil? || pages.length.zero?
         [build_scene_profile(nil, is_active: true, model: model)]
       else
         pages.map do |page|

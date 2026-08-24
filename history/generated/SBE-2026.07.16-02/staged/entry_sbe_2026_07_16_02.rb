@@ -2,6 +2,8 @@
 # Entry point for [05] 2026-07-16 — Model-Eval Compact JSON (SBE-2026.07.16-02)
 
 module SibamboHistory
+  EVOLUTION_LAB_EMBEDDED = true unless const_defined?(:EVOLUTION_LAB_EMBEDDED, false)
+
   module V20260716_02
     DISPLAY_VERSION = "SBE-2026.07.16-02"
     LABEL = "[05] 2026-07-16 — Model-Eval Compact JSON"

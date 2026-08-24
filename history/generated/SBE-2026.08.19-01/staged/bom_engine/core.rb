@@ -34,7 +34,7 @@ module SibamboHistory
 
     # ── Menu & toolbar registration (runs once on load) ─────────────
 
-    unless file_loaded?(__FILE__)
+    unless defined?(SibamboHistory::EVOLUTION_LAB_EMBEDDED) || file_loaded?(__FILE__)
       plugins_menu = UI.menu("Plugins")
       display_name = defined?(SibamboHistory::V20260819_01::PLUGIN_DISPLAY_NAME) ? SibamboHistory::V20260819_01::PLUGIN_DISPLAY_NAME : 'BOM Engine'
       bom_menu     = plugins_menu.add_submenu(display_name)

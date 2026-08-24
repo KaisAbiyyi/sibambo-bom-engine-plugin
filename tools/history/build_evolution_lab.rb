@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.9'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.10'.freeze
 
   def self.build
     puts "======================================================================"
@@ -219,6 +219,8 @@ module EvolutionLabBuilder
       # Entry point for #{ver['label']} (#{ver['display_version']})
 
       module SibamboHistory
+        EVOLUTION_LAB_EMBEDDED = true unless const_defined?(:EVOLUTION_LAB_EMBEDDED, false)
+
         module #{sub_mod}
           DISPLAY_VERSION = #{ver['display_version'].inspect}
           LABEL = #{ver['label'].inspect}
@@ -493,10 +495,38 @@ module EvolutionLabBuilder
       harden_canonical_exporter(staged_dir, display)
     end
     harden_bomc_v1_batch(staged_dir) if display == 'SBE-2026.08.13-01'
+    harden_scene_pages_collection(staged_dir) if display == 'SBE-2026.08.19-01'
     harden_windows_dialog_paths(staged_dir) if display.start_with?('SBE-2026.05.11-')
     harden_scrollable_dialogs(staged_dir)
     add_batch_options_to_export_dialog(staged_dir)
     lock_specialized_export_dialog(staged_dir, ver)
+    isolate_embedded_menu_registration(staged_dir)
+  end
+
+  def self.harden_scene_pages_collection(staged_dir)
+    resolver_path = File.join(staged_dir, 'bom_engine', 'scene_visibility_resolver.rb')
+    source = File.read(resolver_path, encoding: 'UTF-8')
+    replace_once!(
+      source,
+      'if pages.nil? || pages.empty?',
+      'if pages.nil? || pages.length.zero?',
+      resolver_path
+    )
+    File.write(resolver_path, source, encoding: 'UTF-8')
+  end
+
+  def self.isolate_embedded_menu_registration(staged_dir)
+    guard = 'unless defined?(SibamboHistory::EVOLUTION_LAB_EMBEDDED) || file_loaded?(__FILE__)'
+    paths = [
+      File.join(staged_dir, 'bom_engine', 'core.rb'),
+      File.join(staged_dir, 'bom_engine', 'bomc_extension.rb')
+    ].select { |path| File.file?(path) }
+
+    paths.each do |path|
+      source = File.read(path, encoding: 'UTF-8')
+      replace_once!(source, 'unless file_loaded?(__FILE__)', guard, path)
+      File.write(path, source, encoding: 'UTF-8')
+    end
   end
 
   def self.harden_bomc_v1_batch(staged_dir)

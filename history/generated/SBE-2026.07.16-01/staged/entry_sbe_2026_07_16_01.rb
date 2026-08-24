@@ -2,6 +2,8 @@
 # Entry point for [04] 2026-07-16 — Canonical JSON v3 + Gzip (SBE-2026.07.16-01)
 
 module SibamboHistory
+  EVOLUTION_LAB_EMBEDDED = true unless const_defined?(:EVOLUTION_LAB_EMBEDDED, false)
+
   module V20260716_01
     DISPLAY_VERSION = "SBE-2026.07.16-01"
     LABEL = "[04] 2026-07-16 — Canonical JSON v3 + Gzip"
