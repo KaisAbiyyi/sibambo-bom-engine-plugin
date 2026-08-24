@@ -2,7 +2,7 @@
 # Entry point for [08] 2026-08-13 — First BOMC Compiled Format (SBE-2026.08.13-01)
 
 module SibamboHistory
-  module VSBE_2026_08_13_01
+  module V20260813_01
     DISPLAY_VERSION = "SBE-2026.08.13-01"
     LABEL = "[08] 2026-08-13 — First BOMC Compiled Format"
     COMMIT_SHA = "ebf2e658a790fc401265d20d899082b05ff18cb1"
@@ -27,7 +27,9 @@ module SibamboHistory
 
     def self.launch(model = Sketchup.active_model)
       load_engine
-      if defined?(Core) && Core.respond_to?(:show_export_dialog)
+if defined?(Core) && Core.respond_to?(:export_with_dialog)
+  Core.export_with_dialog
+elsif defined?(Core) && Core.respond_to?(:show_export_dialog)
         Core.show_export_dialog
       elsif defined?(Core) && Core.respond_to?(:export_from_ui)
         Core.export_from_ui

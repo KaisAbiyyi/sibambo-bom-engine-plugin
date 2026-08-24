@@ -27,11 +27,16 @@ module SibamboHistory
       ].freeze
 
       class << self
-        def start_or_resume
+        def start_or_resume(format_ids = nil)
           return if @running
 
           FileUtils.mkdir_p(OUTPUT_DIR)
-          @tasks = build_tasks
+          @format_ids = Array(format_ids).map { |id| id.to_s.rjust(2, '0') }
+          @format_ids = FORMATS.map { |format| format[:id] } if @format_ids.empty?
+          unknown_ids = @format_ids - FORMATS.map { |format| format[:id] }
+          raise "Format tidak dikenal: #{unknown_ids.join(', ')}" unless unknown_ids.empty?
+
+          @tasks = build_tasks(@format_ids)
           @status = load_status
           @status['status'] = 'running'
           @status['started_at'] ||= Time.now.iso8601
@@ -46,6 +51,10 @@ module SibamboHistory
         rescue StandardError => error
           @running = false
           UI.messagebox("Evolution batch gagal dimulai:\n#{error.message}", MB_OK)
+        end
+
+        def start_for_format(format_id)
+          start_or_resume([format_id])
         end
 
         def resume_if_pending
@@ -73,13 +82,18 @@ module SibamboHistory
 
         private
 
-        def build_tasks
+        def build_tasks(format_ids = nil)
+          selected_formats = if format_ids.nil? || format_ids.empty?
+                               FORMATS
+                             else
+                               FORMATS.select { |format| format_ids.include?(format[:id]) }
+                             end
           models = Dir.glob(File.join(SOURCE_DIR, '*.skp')).select do |path|
             File.basename(path).match?(MODEL_PATTERN)
           end.sort_by { |path| [File.size(path), File.basename(path).downcase] }
 
           models.flat_map do |model_path|
-            FORMATS.map do |format|
+            selected_formats.map do |format|
               model_name = File.basename(model_path, '.skp')
               output_dir = File.join(OUTPUT_DIR, model_name, "[#{format[:id]}] #{format[:label]}")
               format.merge(
@@ -368,7 +382,7 @@ module SibamboHistory
         def build_dialog
           @dialog&.close
           @dialog = UI::HtmlDialog.new(
-            dialog_title: 'Evolution Lab Batch Export', scrollable: false, resizable: true,
+            dialog_title: "Evolution Lab Export [#{@format_ids.join(', ')}]", scrollable: false, resizable: true,
             width: 560, height: 260, min_width: 460, min_height: 220,
             style: UI::HtmlDialog::STYLE_DIALOG
           )

@@ -2,7 +2,7 @@
 # Entry point for [07] 2026-08-12 — CleanPKG Binary Container (SBE-2026.08.12-01)
 
 module SibamboHistory
-  module VSBE_2026_08_12_01
+  module V20260812_01
     DISPLAY_VERSION = "SBE-2026.08.12-01"
     LABEL = "[07] 2026-08-12 — CleanPKG Binary Container"
     COMMIT_SHA = "d245b6873a992c87f7647c6b816c13e6ab7815e0"
@@ -27,7 +27,9 @@ module SibamboHistory
 
     def self.launch(model = Sketchup.active_model)
       load_engine
-      if defined?(Core) && Core.respond_to?(:show_export_dialog)
+if defined?(Core) && Core.respond_to?(:export_with_dialog)
+  Core.export_with_dialog
+elsif defined?(Core) && Core.respond_to?(:show_export_dialog)
         Core.show_export_dialog
       elsif defined?(Core) && Core.respond_to?(:export_from_ui)
         Core.export_from_ui

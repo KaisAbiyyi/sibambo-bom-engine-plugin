@@ -2,7 +2,7 @@
 # Entry point for [01] 2026-05-11 — Original BOM JSON (SBE-2026.05.11-01)
 
 module SibamboHistory
-  module VSBE_2026_05_11_01
+  module V20260511_01
     DISPLAY_VERSION = "SBE-2026.05.11-01"
     LABEL = "[01] 2026-05-11 — Original BOM JSON"
     COMMIT_SHA = "a6bf3f638e387f52a6e32bf4aea7f635b9ad2225"
@@ -27,7 +27,9 @@ module SibamboHistory
 
     def self.launch(model = Sketchup.active_model)
       load_engine
-      if defined?(Core) && Core.respond_to?(:show_export_dialog)
+if defined?(Core) && Core.respond_to?(:export_with_dialog)
+  Core.export_with_dialog
+elsif defined?(Core) && Core.respond_to?(:show_export_dialog)
         Core.show_export_dialog
       elsif defined?(Core) && Core.respond_to?(:export_from_ui)
         Core.export_from_ui

@@ -2,7 +2,7 @@
 # Entry point for [EXP-01] 2026-05-11 — Nano BBox JSON (SBE-2026.05.11-EXP)
 
 module SibamboHistory
-  module VSBE_2026_05_11_EXP
+  module V20260511_EXP
     DISPLAY_VERSION = "SBE-2026.05.11-EXP"
     LABEL = "[EXP-01] 2026-05-11 — Nano BBox JSON"
     COMMIT_SHA = "7dd932dfe1b7eeb500e9d82e2d87fbe2275f56be"
@@ -27,7 +27,9 @@ module SibamboHistory
 
     def self.launch(model = Sketchup.active_model)
       load_engine
-      if defined?(Core) && Core.respond_to?(:show_export_dialog)
+if defined?(Core) && Core.respond_to?(:export_with_dialog)
+  Core.export_with_dialog
+elsif defined?(Core) && Core.respond_to?(:show_export_dialog)
         Core.show_export_dialog
       elsif defined?(Core) && Core.respond_to?(:export_from_ui)
         Core.export_from_ui

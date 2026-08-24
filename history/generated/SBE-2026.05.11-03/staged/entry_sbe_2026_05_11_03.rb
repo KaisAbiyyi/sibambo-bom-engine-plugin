@@ -2,7 +2,7 @@
 # Entry point for [03] 2026-05-11 — Minified Visual JSON (SBE-2026.05.11-03)
 
 module SibamboHistory
-  module VSBE_2026_05_11_03
+  module V20260511_03
     DISPLAY_VERSION = "SBE-2026.05.11-03"
     LABEL = "[03] 2026-05-11 — Minified Visual JSON"
     COMMIT_SHA = "ac2fbc983cee75a2c295145280157bf36c08cf58"
@@ -27,7 +27,9 @@ module SibamboHistory
 
     def self.launch(model = Sketchup.active_model)
       load_engine
-      if defined?(Core) && Core.respond_to?(:show_export_dialog)
+if defined?(Core) && Core.respond_to?(:export_with_dialog)
+  Core.export_with_dialog
+elsif defined?(Core) && Core.respond_to?(:show_export_dialog)
         Core.show_export_dialog
       elsif defined?(Core) && Core.respond_to?(:export_from_ui)
         Core.export_from_ui

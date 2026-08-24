@@ -2,7 +2,7 @@
 # Entry point for [09] 2026-08-19 — Scene/Page-Preserving BOMC (SBE-2026.08.19-01)
 
 module SibamboHistory
-  module VSBE_2026_08_19_01
+  module V20260819_01
     DISPLAY_VERSION = "SBE-2026.08.19-01"
     LABEL = "[09] 2026-08-19 — Scene/Page-Preserving BOMC"
     COMMIT_SHA = "347fc7247fdec4041ffb9ee81226b271b5044b3a"
@@ -27,7 +27,9 @@ module SibamboHistory
 
     def self.launch(model = Sketchup.active_model)
       load_engine
-      if defined?(Core) && Core.respond_to?(:show_export_dialog)
+if defined?(Core) && Core.respond_to?(:export_with_dialog)
+  Core.export_with_dialog
+elsif defined?(Core) && Core.respond_to?(:show_export_dialog)
         Core.show_export_dialog
       elsif defined?(Core) && Core.respond_to?(:export_from_ui)
         Core.export_from_ui

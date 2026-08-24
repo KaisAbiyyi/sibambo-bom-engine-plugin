@@ -2,7 +2,7 @@
 # Entry point for [02] 2026-05-11 — Visual / Standard / Full JSON (SBE-2026.05.11-02)
 
 module SibamboHistory
-  module VSBE_2026_05_11_02
+  module V20260511_02
     DISPLAY_VERSION = "SBE-2026.05.11-02"
     LABEL = "[02] 2026-05-11 — Visual / Standard / Full JSON"
     COMMIT_SHA = "abdc70bbfd176c481be4a6a3e71f4a9944d4faee"
@@ -27,7 +27,9 @@ module SibamboHistory
 
     def self.launch(model = Sketchup.active_model)
       load_engine
-      if defined?(Core) && Core.respond_to?(:show_export_dialog)
+if defined?(Core) && Core.respond_to?(:export_with_dialog)
+  Core.export_with_dialog
+elsif defined?(Core) && Core.respond_to?(:show_export_dialog)
         Core.show_export_dialog
       elsif defined?(Core) && Core.respond_to?(:export_from_ui)
         Core.export_from_ui

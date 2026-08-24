@@ -2,7 +2,7 @@
 # Entry point for [06] 2026-07-16 — BOME2 Binary Runtime (SBE-2026.07.16-03)
 
 module SibamboHistory
-  module VSBE_2026_07_16_03
+  module V20260716_03
     DISPLAY_VERSION = "SBE-2026.07.16-03"
     LABEL = "[06] 2026-07-16 — BOME2 Binary Runtime"
     COMMIT_SHA = "657d8671a66a78d643935d891e5c8b07154b8948"
@@ -27,7 +27,9 @@ module SibamboHistory
 
     def self.launch(model = Sketchup.active_model)
       load_engine
-      if defined?(Core) && Core.respond_to?(:show_export_dialog)
+if defined?(Core) && Core.respond_to?(:export_with_dialog)
+  Core.export_with_dialog
+elsif defined?(Core) && Core.respond_to?(:show_export_dialog)
         Core.show_export_dialog
       elsif defined?(Core) && Core.respond_to?(:export_from_ui)
         Core.export_from_ui

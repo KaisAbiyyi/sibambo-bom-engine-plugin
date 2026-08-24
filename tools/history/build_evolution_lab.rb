@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.0'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.1'.freeze
 
   def self.build
     puts "======================================================================"
@@ -209,13 +209,14 @@ module EvolutionLabBuilder
   end
 
   def self.create_engine_entry_point(staged_dir, ver, key, mod_name)
+    sub_mod = mod_name.split('::').last
     entry_file = File.join(staged_dir, "entry_#{key.downcase}.rb")
     code = <<~RUBY
       # frozen_string_literal: true
       # Entry point for #{ver['label']} (#{ver['display_version']})
 
       module SibamboHistory
-        module V#{key}
+        module #{sub_mod}
           DISPLAY_VERSION = #{ver['display_version'].inspect}
           LABEL = #{ver['label'].inspect}
           COMMIT_SHA = #{ver['commit_sha'].inspect}
@@ -240,7 +241,9 @@ module EvolutionLabBuilder
 
           def self.launch(model = Sketchup.active_model)
             load_engine
-            if defined?(Core) && Core.respond_to?(:show_export_dialog)
+      if defined?(Core) && Core.respond_to?(:export_with_dialog)
+        Core.export_with_dialog
+      elsif defined?(Core) && Core.respond_to?(:show_export_dialog)
               Core.show_export_dialog
             elsif defined?(Core) && Core.respond_to?(:export_from_ui)
               Core.export_from_ui
@@ -497,13 +500,23 @@ module EvolutionLabBuilder
     versions.each do |ver|
       key = ver['display_version'].gsub(/[^A-Za-z0-9_]/, '_')
       target_sub = ver['classification'] == 'EXPERIMENT' ? 'exp_submenu' : 'major_submenu'
-      menu_code << <<~RUBY
-            #{target_sub}.add_item(#{ver['label'].inspect}) do
-              entry = File.join(__dir__, 'engine_#{key.downcase}', 'entry_#{key.downcase}.rb')
-              require entry if File.exist?(entry)
-              SibamboHistory::V#{key}.launch(Sketchup.active_model)
-            end
-      RUBY
+      format_id = ver['label'][/\A\[(\d{2})\]/, 1]
+      if format_id
+        menu_code << <<~RUBY
+              #{target_sub}.add_item(#{ver['label'].inspect}) do
+                require File.join(__dir__, 'batch_runner.rb')
+                SibamboHistory::EvolutionLab::BatchRunner.start_for_format(#{format_id.inspect})
+              end
+        RUBY
+      else
+        menu_code << <<~RUBY
+              #{target_sub}.add_item(#{ver['label'].inspect}) do
+                entry = File.join(__dir__, 'engine_#{key.downcase}', 'entry_#{key.downcase}.rb')
+                require entry if File.exist?(entry)
+                #{ver['isolated_module']}.launch(Sketchup.active_model)
+              end
+        RUBY
+      end
     end
 
     menu_code << <<~RUBY
@@ -571,6 +584,7 @@ module EvolutionLabBuilder
 
     standalone_loader_name = "sibambo_bom_engine_#{key.downcase}_loader.rb"
     standalone_folder_name = "sibambo_bom_engine_#{key.downcase}"
+    isolated_submodule = ver['isolated_module'].split('::').last
 
     FileUtils.cp_r(staged_dir, File.join(temp_zip_dir, standalone_folder_name))
 
@@ -580,7 +594,7 @@ module EvolutionLabBuilder
       require 'extensions.rb'
 
       module SibamboHistory
-        module V#{key}
+        module #{isolated_submodule}
           PLUGIN_ID = 'sibambo_bom_engine_#{key.downcase}'
           PLUGIN_NAME = 'Sibambo BOM Engine — #{ver['label']}'
           PLUGIN_VERSION = '1.0.0'
@@ -596,7 +610,7 @@ module EvolutionLabBuilder
 
             UI.menu('Extensions').add_item(PLUGIN_NAME) do
               require entry_point
-              SibamboHistory::V#{key}.launch(Sketchup.active_model)
+              SibamboHistory::#{isolated_submodule}.launch(Sketchup.active_model)
             end
 
             file_loaded(__FILE__)
