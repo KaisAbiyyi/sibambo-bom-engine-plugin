@@ -382,7 +382,7 @@ module SibamboHistory
         def build_dialog
           @dialog&.close
           @dialog = UI::HtmlDialog.new(
-            dialog_title: "Evolution Lab Export [#{@format_ids.join(', ')}]", scrollable: false, resizable: true,
+            dialog_title: "Evolution Lab Export [#{@format_ids.join(', ')}]", scrollable: true, resizable: true,
             width: 560, height: 260, min_width: 460, min_height: 220,
             style: UI::HtmlDialog::STYLE_DIALOG
           )

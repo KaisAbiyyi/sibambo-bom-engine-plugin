@@ -18,7 +18,7 @@ module SibamboHistory
     def self.show(has_selection: false, force_selection: false, &callback)
       dialog = UI::HtmlDialog.new(
         dialog_title: "BOM Engine — Export Settings",
-        scrollable:   false,
+        scrollable: true,
         resizable:    false,
         width:        480,
         height:       460,

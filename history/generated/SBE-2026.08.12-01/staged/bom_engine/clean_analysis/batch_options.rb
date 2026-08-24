@@ -63,7 +63,7 @@ module SibamboHistory
       def show(profile: device_profile, &callback)
         dialog = UI::HtmlDialog.new(
           dialog_title: 'BOM Engine Clean - Batch Options',
-          scrollable: false,
+          scrollable: true,
           resizable: false,
           width: 470,
           height: 530,

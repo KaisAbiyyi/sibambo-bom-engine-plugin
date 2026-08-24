@@ -47,7 +47,7 @@ module SibamboHistory
     end
 
     def self.show(profile: device_profile, &callback)
-      dialog = UI::HtmlDialog.new(dialog_title: 'BOM Engine - Quick Export Options', scrollable: false, resizable: false, width: 470, height: 480, min_width: 420, min_height: 450, style: UI::HtmlDialog::STYLE_DIALOG)
+      dialog = UI::HtmlDialog.new(dialog_title: 'BOM Engine - Quick Export Options', scrollable: true, resizable: false, width: 470, height: 480, min_width: 420, min_height: 450, style: UI::HtmlDialog::STYLE_DIALOG)
       dialog.set_file(File.join(File.dirname(__FILE__), 'ui', 'quick_export_options.html'))
       dialog.add_action_callback('ready') { |_ctx| dialog.execute_script("initializeQuickExportOptions(#{JSON.generate(profile)})") }
       dialog.add_action_callback('start') do |_ctx, raw|

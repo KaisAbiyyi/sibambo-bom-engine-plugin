@@ -73,7 +73,7 @@ module SibamboHistory
     def build_dialog
       @dialog = UI::HtmlDialog.new(
         dialog_title: @title,
-        scrollable: false,
+        scrollable: true,
         resizable: true,
         width: 440,
         height: 330,

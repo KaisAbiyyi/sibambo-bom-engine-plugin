@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.3'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.4'.freeze
 
   def self.build
     puts "======================================================================"
@@ -279,6 +279,20 @@ module EvolutionLabBuilder
       harden_canonical_exporter(staged_dir, display)
     end
     harden_windows_dialog_paths(staged_dir) if display.start_with?('SBE-2026.05.11-')
+    harden_scrollable_dialogs(staged_dir)
+  end
+
+  # Historical dialog dimensions were tuned for older displays. On Windows,
+  # DPI scaling can make their action buttons unreachable unless Chromium is
+  # allowed to expose a scrollbar at the HtmlDialog boundary.
+  def self.harden_scrollable_dialogs(staged_dir)
+    Dir.glob(File.join(staged_dir, '**', '*.rb')).each do |ruby_path|
+      content = File.read(ruby_path, encoding: 'UTF-8')
+      hardened = content.gsub(/scrollable:\s*false/, 'scrollable: true')
+      next if hardened == content
+
+      File.write(ruby_path, hardened, encoding: 'UTF-8')
+    end
   end
 
   def self.replace_once!(content, before, after, path)
