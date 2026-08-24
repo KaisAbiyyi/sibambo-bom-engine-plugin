@@ -36,16 +36,14 @@ module SibamboHistory
         model.path.gsub(".skp", "__SBE-2026.05.11-EXP_bom.json")
 
       dialog.add_action_callback("onReady") do |_ctx|
-        escaped = default_path.gsub("\\", "\\\\").gsub("'", "\\'")
-        dialog.execute_script("setDefaultPath('#{escaped}')")
+        dialog.execute_script("setDefaultPath(#{JSON.generate(default_path)})")
         dialog.execute_script("setSelectionState(#{has_selection}, #{force_selection})")
       end
 
       dialog.add_action_callback("browse") do |_ctx|
         chosen = UI.savepanel("Save BOM JSON", File.dirname(default_path), "*.json")
         if chosen
-          escaped = chosen.gsub("\\", "\\\\").gsub("'", "\\'")
-          dialog.execute_script("setPath('#{escaped}')")
+          dialog.execute_script("setPath(#{JSON.generate(chosen)})")
         end
       end
 

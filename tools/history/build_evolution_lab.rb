@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.2'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.3'.freeze
 
   def self.build
     puts "======================================================================"
@@ -278,12 +278,38 @@ module EvolutionLabBuilder
     elsif %w[SBE-2026.07.16-01 SBE-2026.07.16-02 SBE-2026.07.16-03 SBE-2026.08.13-01].include?(display)
       harden_canonical_exporter(staged_dir, display)
     end
+    harden_windows_dialog_paths(staged_dir) if display.start_with?('SBE-2026.05.11-')
   end
 
   def self.replace_once!(content, before, after, path)
     raise "Hardening anchor not found in #{path}: #{before.lines.first.to_s.strip}" unless content.include?(before)
 
     content.sub!(before, after)
+  end
+
+  def self.harden_windows_dialog_paths(staged_dir)
+    dialog_path = File.join(staged_dir, 'bom_engine', 'ui_dialog.rb')
+    return unless File.file?(dialog_path)
+
+    dialog = File.read(dialog_path, encoding: 'UTF-8')
+    default_before = <<-'RUBY'.rstrip
+        escaped = default_path.gsub("\\", "\\\\").gsub("'", "\\'")
+        dialog.execute_script("setDefaultPath('#{escaped}')")
+    RUBY
+    default_after = <<-'RUBY'.rstrip
+        dialog.execute_script("setDefaultPath(#{JSON.generate(default_path)})")
+    RUBY
+    browse_before = <<-'RUBY'.rstrip
+          escaped = chosen.gsub("\\", "\\\\").gsub("'", "\\'")
+          dialog.execute_script("setPath('#{escaped}')")
+    RUBY
+    browse_after = <<-'RUBY'.rstrip
+          dialog.execute_script("setPath(#{JSON.generate(chosen)})")
+    RUBY
+
+    replace_once!(dialog, default_before, default_after, dialog_path)
+    replace_once!(dialog, browse_before, browse_after, dialog_path)
+    File.write(dialog_path, dialog, encoding: 'UTF-8')
   end
 
   def self.harden_legacy_tree_exporter(staged_dir, display)
