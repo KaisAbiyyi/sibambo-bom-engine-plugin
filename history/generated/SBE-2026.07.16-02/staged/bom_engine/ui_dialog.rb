@@ -18,7 +18,7 @@ module SibamboHistory
     #   :compact_geometry, :binary_geometry, :selection_only
     def self.show(has_selection: false, force_selection: false, &callback)
       dialog = UI::HtmlDialog.new(
-        dialog_title: "BOM Engine — Export Settings",
+        dialog_title: "Model-Eval Compact JSON",
         scrollable:   true,
         resizable:    true,
         width:        480,
@@ -33,10 +33,10 @@ module SibamboHistory
 
       model = Sketchup.active_model
       default_path = model.path.empty? ?
-        File.join(Dir.home, "bom_export__SBE-2026.07.16-02_canonical.json") :
+        File.join(Dir.home, "bom_export__SBE-2026.07.16-02_model-eval.json") :
         File.join(
           File.dirname(model.path),
-          "#{File.basename(model.path, File.extname(model.path))}__SBE-2026.07.16-02_canonical.json"
+          "#{File.basename(model.path, File.extname(model.path))}__SBE-2026.07.16-02_model-eval.json"
         )
 
       dialog.add_action_callback("onReady") do |_ctx|

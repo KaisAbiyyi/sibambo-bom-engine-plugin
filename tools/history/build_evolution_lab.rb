@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.8'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.9'.freeze
 
   def self.build
     puts "======================================================================"
@@ -496,6 +496,7 @@ module EvolutionLabBuilder
     harden_windows_dialog_paths(staged_dir) if display.start_with?('SBE-2026.05.11-')
     harden_scrollable_dialogs(staged_dir)
     add_batch_options_to_export_dialog(staged_dir)
+    lock_specialized_export_dialog(staged_dir, ver)
   end
 
   def self.harden_bomc_v1_batch(staged_dir)
@@ -583,6 +584,174 @@ module EvolutionLabBuilder
     replace_once!(html, '  window.onload = function() {', "  window.onload = function() {\n    refreshBatchMode();", html_path)
     html.gsub!(/[ \t]+$/, '')
     File.write(html_path, html, encoding: 'UTF-8')
+  end
+
+  def self.specialized_dialog_spec(ver)
+    id = ver.fetch('label').to_s[/\A\[(\d{2})\]/, 1]
+    {
+      '05' => {
+        kind: 'model_eval_json', title: 'Model-Eval Compact JSON', badge: 'MODEL-EVAL',
+        description: 'JSON ringkas khusus evaluasi model dan perbandingan hasil web.',
+        suffix: '_model-eval.json', button: 'Export Model-Eval'
+      },
+      '06' => {
+        kind: 'bome2', title: 'BOME2 Binary Runtime', badge: 'BOME2',
+        description: 'Runtime binary BOME2 untuk pembacaan cepat dan ukuran ringkas.',
+        suffix: '_runtime.bome2', button: 'Export BOME2'
+      },
+      '07' => {
+        kind: 'cleanpkg', title: 'CleanPKG Binary Container', badge: 'CLEANPKG',
+        description: 'Container CleanPKG untuk analisis model bersih dan portabel.',
+        suffix: '.cleanpkg', button: 'Export CleanPKG'
+      },
+      '08' => {
+        kind: 'bomc_v1', title: 'First BOMC Compiled Format', badge: 'BOMC 1.0',
+        description: 'Format BOMC compiled generasi pertama.',
+        suffix: '.bomc', button: 'Export BOMC 1.0'
+      },
+      '09' => {
+        kind: 'bomc_scene', title: 'Scene/Page-Preserving BOMC', badge: 'BOMC SCENE',
+        description: 'BOMC yang mempertahankan scene, page, dan visibility profile.',
+        suffix: '.bomc', button: 'Export Scene BOMC'
+      }
+    }.fetch(id, nil)
+  end
+
+  def self.lock_specialized_export_dialog(staged_dir, ver)
+    spec = specialized_dialog_spec(ver)
+    return unless spec
+
+    html_path = File.join(staged_dir, 'bom_engine', 'ui', 'export_dialog.html')
+    dialog_path = File.join(staged_dir, 'bom_engine', 'ui_dialog.rb')
+    raise "Specialized export dialog missing: #{html_path}" unless File.file?(html_path)
+    raise "Specialized UI bridge missing: #{dialog_path}" unless File.file?(dialog_path)
+
+    suffix_json = JSON.generate(spec.fetch(:suffix))
+    html = <<~HTML
+      <!doctype html>
+      <html lang="id">
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>#{spec.fetch(:title)}</title>
+        <style>
+          * { box-sizing: border-box; }
+          html, body { min-height: 100%; margin: 0; overflow: auto; }
+          body { background: #10151d; color: #e7edf3; font: 13px/1.45 system-ui, "Segoe UI", sans-serif; padding: 20px; }
+          .shell { margin: 0 auto; max-width: 620px; }
+          .header { border-bottom: 1px solid #293645; margin-bottom: 18px; padding-bottom: 15px; }
+          .title-row { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
+          h1 { color: #53ffc1; font-size: 19px; margin: 0; }
+          .badge { background: #253443; border-radius: 4px; color: #9fd9ff; font-size: 10px; font-weight: 700; padding: 3px 7px; }
+          .description { color: #93a4b6; margin: 8px 0 0; }
+          label, h2 { color: #64ffd0; display: block; font-size: 11px; font-weight: 700; letter-spacing: .07em; margin: 0 0 7px; text-transform: uppercase; }
+          .path-row { display: flex; gap: 9px; }
+          input[type=text], select { background: #151c26; border: 1px solid #344456; border-radius: 6px; color: #edf5fb; min-width: 0; padding: 9px 10px; }
+          input[type=text] { flex: 1; }
+          button { background: #263545; border: 1px solid #3a4d60; border-radius: 6px; color: #e6eef5; cursor: pointer; padding: 9px 14px; }
+          button.primary { background: #0fa572; border-color: #20d49a; color: white; font-weight: 700; }
+          .panel { background: #151c26; border: 1px solid #293746; border-radius: 9px; margin-top: 17px; padding: 14px; }
+          .modes { display: flex; gap: 20px; margin-bottom: 11px; }
+          .modes label { color: #cbd6e0; cursor: pointer; font-size: 12px; font-weight: 400; letter-spacing: 0; margin: 0; text-transform: none; }
+          .batch-row { align-items: center; display: flex; gap: 12px; }
+          .help { color: #8191a2; font-size: 11px; margin-top: 9px; }
+          .suffix { color: #9fb1c3; font-family: Consolas, monospace; margin-top: 7px; }
+          .actions { display: flex; gap: 9px; justify-content: flex-end; margin-top: 20px; padding-bottom: 8px; }
+        </style>
+      </head>
+      <body data-evolution-export-kind="#{spec.fetch(:kind)}">
+        <main class="shell">
+          <header class="header">
+            <div class="title-row"><h1>#{spec.fetch(:title)}</h1><span class="badge">#{spec.fetch(:badge)}</span></div>
+            <p class="description">#{spec.fetch(:description)}</p>
+          </header>
+
+          <section>
+            <label for="outputPath">Output file</label>
+            <div class="path-row"><input id="outputPath" type="text"><button type="button" onclick="sketchup.browse()">Browse</button></div>
+            <div class="suffix">Format terkunci: #{spec.fetch(:suffix)}</div>
+          </section>
+
+          <section class="panel" id="evolution-batch-options">
+            <h2>Batch Pemrosesan Model</h2>
+            <div class="modes">
+              <label><input type="radio" name="batch-mode" value="auto" checked onchange="refreshBatchMode()"> Auto</label>
+              <label><input type="radio" name="batch-mode" value="manual" onchange="refreshBatchMode()"> Manual</label>
+            </div>
+            <div class="batch-row">
+              <span>Entity per giliran</span>
+              <select id="batch-size" disabled>
+                <option value="96">96 — paling ringan</option>
+                <option value="128">128</option>
+                <option value="256">256</option>
+                <option value="512" selected>512 — seimbang</option>
+                <option value="1024">1024</option>
+                <option value="2048">2048</option>
+                <option value="4096">4096</option>
+                <option value="8192">8192 — paling cepat</option>
+              </select>
+            </div>
+            <div class="help">Nilai kecil menjaga SketchUp lebih responsif; nilai besar memproses lebih cepat tetapi menahan UI lebih lama.</div>
+          </section>
+
+          <div class="actions"><button type="button" onclick="sketchup.cancel()">Cancel</button><button class="primary" type="button" onclick="doExport()">#{spec.fetch(:button)}</button></div>
+        </main>
+        <script>
+          var OUTPUT_SUFFIX = #{suffix_json};
+
+          function normalizeOutputPath(path) {
+            path = String(path || '').trim();
+            if (!path) return path;
+            return path.replace(/(?:_(?:bom|canonical|model-eval|runtime))?\.(?:json|bome2|cleanpkg|bomc)(?:\.gz)?$/i, '') + OUTPUT_SUFFIX;
+          }
+
+          function setDefaultPath(path) { document.getElementById('outputPath').value = normalizeOutputPath(path); }
+          function setPath(path) { document.getElementById('outputPath').value = normalizeOutputPath(path); }
+          function setSelectionState() {}
+
+          function recommendedBatchSize() {
+            var cores = Number(navigator.hardwareConcurrency || 4);
+            if (cores <= 4) return 128;
+            if (cores <= 8) return 256;
+            if (cores <= 16) return 512;
+            return 1024;
+          }
+
+          function selectedBatchSize() {
+            var mode = document.querySelector('input[name="batch-mode"]:checked').value;
+            return mode === 'auto' ? recommendedBatchSize() : Number(document.getElementById('batch-size').value);
+          }
+
+          function refreshBatchMode() {
+            var manual = document.querySelector('input[name="batch-mode"]:checked').value === 'manual';
+            var select = document.getElementById('batch-size');
+            select.disabled = !manual;
+            if (!manual) select.value = String(recommendedBatchSize());
+          }
+
+          function doExport() {
+            var outputPath = normalizeOutputPath(document.getElementById('outputPath').value);
+            if (!outputPath) { alert('Pilih output file terlebih dahulu.'); return; }
+            document.getElementById('outputPath').value = outputPath;
+            var settings = { output_path: outputPath };
+            settings.batch_size = selectedBatchSize();
+            sketchup.export(JSON.stringify(settings));
+          }
+
+          window.onload = function() { refreshBatchMode(); sketchup.onReady(); };
+        </script>
+      </body>
+      </html>
+    HTML
+    File.write(html_path, html, encoding: 'UTF-8')
+
+    dialog = File.read(dialog_path, encoding: 'UTF-8')
+    generic_title = 'dialog_title: "BOM Engine — Export Settings"'
+    raise "Generic dialog title missing: #{dialog_path}" unless dialog.include?(generic_title)
+
+    dialog.sub!(generic_title, "dialog_title: #{spec.fetch(:title).inspect}")
+    dialog.gsub!(/_canonical\.json/, spec.fetch(:suffix))
+    File.write(dialog_path, dialog, encoding: 'UTF-8')
   end
 
   # Historical dialog dimensions were tuned for older displays. On Windows,
