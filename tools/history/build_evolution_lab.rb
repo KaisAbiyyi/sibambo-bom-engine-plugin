@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.1'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.2'.freeze
 
   def self.build
     puts "======================================================================"
@@ -484,6 +484,39 @@ module EvolutionLabBuilder
         module EvolutionLab
           MENU_TITLE = 'Sibambo BOM Engine Evolution Lab'
 
+          CURRENT_MODEL_EXPORTERS = {
+    RUBY
+
+    versions.each do |ver|
+      format_id = ver['label'][/\A\[(\d{2})\]/, 1]
+      next if format_id.nil?
+
+      key = ver['display_version'].gsub(/[^A-Za-z0-9_]/, '_').downcase
+      menu_code << <<~RUBY
+            #{format_id.inspect} => {
+              entry: #{"engine_#{key}/entry_#{key}.rb".inspect},
+              module_name: #{ver['isolated_module'].inspect}
+            },
+      RUBY
+    end
+
+    menu_code << <<~RUBY
+          }.freeze
+
+          def self.export_current_model(format_id, model = Sketchup.active_model)
+            exporter = CURRENT_MODEL_EXPORTERS.fetch(format_id.to_s.rjust(2, '0'))
+            entry = File.join(__dir__, exporter.fetch(:entry))
+            raise "Historical exporter entry missing: \#{entry}" unless File.file?(entry)
+
+            require entry
+            target = exporter.fetch(:module_name).split('::').reject(&:empty?).inject(Object) do |scope, name|
+              scope.const_get(name)
+            end
+            target.launch(model)
+          rescue StandardError => error
+            UI.messagebox("Current-model export [\#{format_id}] gagal:\n\#{error.message}", MB_OK)
+          end
+
           def self.init_menus
             return if @menus_initialized
             @menus_initialized = true
@@ -504,8 +537,7 @@ module EvolutionLabBuilder
       if format_id
         menu_code << <<~RUBY
               #{target_sub}.add_item(#{ver['label'].inspect}) do
-                require File.join(__dir__, 'batch_runner.rb')
-                SibamboHistory::EvolutionLab::BatchRunner.start_for_format(#{format_id.inspect})
+                SibamboHistory::EvolutionLab.export_current_model(#{format_id.inspect}, Sketchup.active_model)
               end
         RUBY
       else
