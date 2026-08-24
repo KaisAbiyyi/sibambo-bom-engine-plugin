@@ -136,7 +136,7 @@ module SibamboHistory
         materials = MaterialExtractor.extract(model, tw, tex_dir)
 
         # Phase 3: entity tree walk — selection or full model
-        walk_opts = { include_edges: settings[:include_edges] }
+        walk_opts = { include_edges: settings[:include_edges], progress: settings[:progress], batch_size: settings[:batch_size] || 64 }
 
         if selection_only
           context_tf = active_context_transform(model)

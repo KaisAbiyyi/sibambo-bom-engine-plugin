@@ -415,9 +415,9 @@ module SibamboHistory
       result.merge(validation).merge(elapsed_seconds: elapsed, format: 'bome2')
     end
 
-    def self.export_model_eval_json(model, output_path)
+    def self.export_model_eval_json(model, output_path, progress: nil, batch_size: 32)
       FileUtils.mkdir_p(File.dirname(output_path)) unless Dir.exist?(File.dirname(output_path))
-      graph = build_model_eval_graph(model)
+      graph = build_model_eval_graph(model, progress: progress, batch_size: batch_size)
       result = ModelEvalJSONWriter.write(output_path, graph)
       Logger.info("Model-Eval JSON export complete -> #{output_path} (#{result[:bytes]} bytes, #{result[:validation][:triangles]} triangles)")
       result.merge(format: 'model_eval_json_v1')
@@ -437,14 +437,16 @@ module SibamboHistory
       File.join(directory, "#{base_name}__SBE-2026.07.16-03_model-eval.json")
     end
 
-    def self.build_model_eval_graph(model)
+    def self.build_model_eval_graph(model, progress: nil, batch_size: 32)
       CanonicalGraphBuilder.build(
         model: model,
         entities: model.entities,
         parent_transform: Geom::Transformation.new,
         settings: { selection_only: false, include_edges: false, export_textures: false, output_format: 'model_eval_json_v1' },
         spatial: {},
-        texture_writer: nil
+        texture_writer: nil,
+        progress: progress,
+        batch_size: batch_size
       )
     end
 
@@ -479,7 +481,9 @@ module SibamboHistory
         parent_transform: parent_transform,
         settings: canonical_settings,
         spatial: spatial,
-        texture_writer: texture_writer
+        texture_writer: texture_writer,
+        progress: settings[:progress],
+        batch_size: settings[:batch_size] || 32
       )
     end
 

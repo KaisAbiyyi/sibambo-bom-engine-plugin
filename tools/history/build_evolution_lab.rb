@@ -17,6 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
+  EVOLUTION_LAB_VERSION = '1.1.0'.freeze
 
   def self.build
     puts "======================================================================"
@@ -66,6 +67,11 @@ module EvolutionLabBuilder
       # 2. Transform into isolated namespace
       transform_snapshot(raw_dir, staged_dir, ver, key, mod_name)
 
+      # 2.5. Backport runtime-only responsiveness fixes. These do not change
+      # historical schemas or output ordering; they only memoize pure counts
+      # and add cooperative checkpoints used by the serial batch runner.
+      apply_runtime_hardening(staged_dir, ver)
+
       # 3. Verify Ruby syntax
       syntax_ok = verify_ruby_syntax(staged_dir)
       raise "Syntax error in transformed Ruby files for #{disp}" unless syntax_ok
@@ -93,7 +99,7 @@ module EvolutionLabBuilder
     create_master_loader(master_staging_dir, evolution_lab_dir, versions)
 
     # 8. Package Master RBZ
-    master_rbz = File.join(DIST_DIR, 'sibambo_bom_engine_evolution_lab_v1.0.0.rbz')
+    master_rbz = File.join(DIST_DIR, "sibambo_bom_engine_evolution_lab_v#{EVOLUTION_LAB_VERSION}.rbz")
     package_master_rbz(master_staging_dir, master_rbz)
     master_sha256 = Digest::SHA256.file(master_rbz).hexdigest
     puts "\n======================================================================"
@@ -262,6 +268,143 @@ module EvolutionLabBuilder
     File.write(entry_file, code, encoding: 'UTF-8')
   end
 
+  def self.apply_runtime_hardening(staged_dir, ver)
+    display = ver['display_version']
+    if %w[SBE-2026.05.11-01 SBE-2026.05.11-02 SBE-2026.05.11-03].include?(display)
+      harden_legacy_tree_exporter(staged_dir, display)
+    elsif %w[SBE-2026.07.16-01 SBE-2026.07.16-02 SBE-2026.07.16-03 SBE-2026.08.13-01].include?(display)
+      harden_canonical_exporter(staged_dir, display)
+    end
+  end
+
+  def self.replace_once!(content, before, after, path)
+    raise "Hardening anchor not found in #{path}: #{before.lines.first.to_s.strip}" unless content.include?(before)
+
+    content.sub!(before, after)
+  end
+
+  def self.harden_legacy_tree_exporter(staged_dir, display)
+    traversal_path = File.join(staged_dir, 'bom_engine', 'traversal.rb')
+    core_path = File.join(staged_dir, 'bom_engine', 'core.rb')
+    traversal = File.read(traversal_path, encoding: 'UTF-8')
+    core = File.read(core_path, encoding: 'UTF-8')
+
+    level_line = display == 'SBE-2026.05.11-01' ? '' : "      level         = opts.fetch(:export_level, \"full\")\n"
+    anchor = "      include_edges = opts.fetch(:include_edges, Constants::INCLUDE_EDGES)\n#{level_line}"
+    additions = <<~RUBY.gsub(/^/, '      ')
+      progress      = opts[:progress]
+      batch_size    = [opts.fetch(:batch_size, 64).to_i, 1].max
+      work_state    = opts[:work_state] ||= { processed: 0 }
+      face_cache    = opts[:face_count_cache] ||= {}
+      edge_cache    = opts[:edge_count_cache] ||= {}
+    RUBY
+    replace_once!(traversal, anchor, anchor + additions, traversal_path)
+
+    entity_anchor = "        next if entity.nil? || entity.deleted?\n"
+    checkpoint = <<~RUBY.gsub(/^/, '        ')
+
+      work_state[:processed] += 1
+      if progress && (work_state[:processed] % batch_size).zero?
+        progress.call(stage: 'Traversing legacy entity tree', processed: work_state[:processed])
+      end
+    RUBY
+    replace_once!(traversal, entity_anchor, entity_anchor + checkpoint, traversal_path)
+
+    if display == 'SBE-2026.05.11-01'
+      replace_once!(
+        traversal,
+        "          face_count  = count_faces(defn.entities)\n          edge_count  = include_edges ? count_edges(defn.entities) : 0\n",
+        "          cache_key   = defn.object_id\n          face_count  = face_cache.fetch(cache_key) { face_cache[cache_key] = count_faces(defn.entities) }\n          edge_count  = include_edges ? edge_cache.fetch(cache_key) { edge_cache[cache_key] = count_edges(defn.entities) } : 0\n",
+        traversal_path
+      )
+      replace_once!(
+        core,
+        "        walk_opts = { include_edges: settings[:include_edges] }\n",
+        "        walk_opts = { include_edges: settings[:include_edges], progress: settings[:progress], batch_size: settings[:batch_size] || 64 }\n",
+        core_path
+      )
+    else
+      replace_once!(
+        traversal,
+        "            h[:face_count]     = count_faces(defn.entities)\n",
+        "            h[:face_count]     = face_cache.fetch(defn.object_id) { face_cache[defn.object_id] = count_faces(defn.entities) }\n",
+        traversal_path
+      )
+      replace_once!(
+        traversal,
+        "            h[:edge_count]         = include_edges ? count_edges(defn.entities) : 0\n",
+        "            h[:edge_count]         = include_edges ? edge_cache.fetch(defn.object_id) { edge_cache[defn.object_id] = count_edges(defn.entities) } : 0\n",
+        traversal_path
+      )
+      replace_once!(
+        core,
+        "        walk_opts = { include_edges: settings[:include_edges], export_level: level }\n",
+        "        walk_opts = { include_edges: settings[:include_edges], export_level: level, progress: settings[:progress], batch_size: settings[:batch_size] || 64 }\n",
+        core_path
+      )
+    end
+
+    traversal.gsub!('def self.count_faces(entities, depth = 0)', 'def self.count_faces(entities, depth = 0, memo = nil)')
+    traversal.gsub!('def self.count_edges(entities, depth = 0)', 'def self.count_edges(entities, depth = 0, memo = nil)')
+    traversal.gsub!(/(def self\.count_(?:faces|edges)\(entities, depth = 0, memo = nil\)\n      return 0 if depth > Constants::MAX_RECURSION_DEPTH\n)/, "\\1      memo ||= {}\n")
+    traversal.gsub!(/when Sketchup::Group\s+then sum \+ count_(faces|edges)\(e\.entities, depth \+ 1\)/, 'when Sketchup::Group            then sum + count_\\1(e.entities, depth + 1, memo)')
+    traversal.gsub!(/when Sketchup::ComponentInstance then sum \+ count_(faces|edges)\(e\.definition\.entities, depth \+ 1\)/) do
+      kind = Regexp.last_match(1)
+      "when Sketchup::ComponentInstance\n          key = [e.definition.object_id, depth + 1]\n          sum + memo.fetch(key) { memo[key] = count_#{kind}(e.definition.entities, depth + 1, memo) }"
+    end
+
+    traversal.gsub!(/[ \t]+$/, '')
+    File.write(traversal_path, traversal, encoding: 'UTF-8')
+    File.write(core_path, core, encoding: 'UTF-8')
+  end
+
+  def self.harden_canonical_exporter(staged_dir, display)
+    builder_path = File.join(staged_dir, 'bom_engine', 'canonical_graph_builder.rb')
+    builder = File.read(builder_path, encoding: 'UTF-8')
+    replace_once!(builder, 'texture_writer: nil)', 'texture_writer: nil, progress: nil, batch_size: 32)', builder_path)
+    replace_once!(builder, "        texture_writer: texture_writer\n", "        texture_writer: texture_writer,\n        progress: progress,\n        batch_size: batch_size\n", builder_path)
+    replace_once!(builder, 'def initialize(model:, settings:, spatial:, texture_writer:)', 'def initialize(model:, settings:, spatial:, texture_writer:, progress: nil, batch_size: 32)', builder_path)
+    replace_once!(builder, "        @skipped = Hash.new(0)\n", "        @skipped = Hash.new(0)\n        @progress = progress\n        @batch_size = [batch_size.to_i, 1].max\n        @work_count = 0\n", builder_path)
+    replace_once!(builder, "        entities.each do |entity|\n          unless Traversal.exportable_entity?(entity)\n", "        entities.each do |entity|\n          checkpoint('Converting canonical entities')\n          unless Traversal.exportable_entity?(entity)\n", builder_path)
+    each_entity_end = <<~RUBY.gsub(/^/, '      ')
+      def each_entity(entities)
+        entities.each do |entity|
+          checkpoint('Converting canonical entities')
+          unless Traversal.exportable_entity?(entity)
+            @skipped['hidden_or_invalid_entity'] += 1
+            next
+          end
+          yield entity
+        end
+      end
+    RUBY
+    checkpoint_method = <<~RUBY.gsub(/^/, '      ')
+
+      def checkpoint(stage)
+        return unless @progress
+
+        @work_count += 1
+        return unless (@work_count % @batch_size).zero?
+
+        @progress.call(stage: stage, processed: @work_count)
+      end
+    RUBY
+    replace_once!(builder, each_entity_end, each_entity_end + checkpoint_method, builder_path)
+    builder.gsub!(/[ \t]+$/, '')
+    File.write(builder_path, builder, encoding: 'UTF-8')
+
+    return if display == 'SBE-2026.08.13-01'
+
+    core_path = File.join(staged_dir, 'bom_engine', 'core.rb')
+    core = File.read(core_path, encoding: 'UTF-8')
+    core.gsub!('def self.export_model_eval_json(model, output_path)', 'def self.export_model_eval_json(model, output_path, progress: nil, batch_size: 32)')
+    core.gsub!('graph = build_model_eval_graph(model)', 'graph = build_model_eval_graph(model, progress: progress, batch_size: batch_size)')
+    core.gsub!('def self.build_model_eval_graph(model)', 'def self.build_model_eval_graph(model, progress: nil, batch_size: 32)')
+    replace_once!(core, "        texture_writer: nil\n      )\n", "        texture_writer: nil,\n        progress: progress,\n        batch_size: batch_size\n      )\n", core_path)
+    replace_once!(core, "        texture_writer: texture_writer\n      )\n", "        texture_writer: texture_writer,\n        progress: settings[:progress],\n        batch_size: settings[:batch_size] || 32\n      )\n", core_path)
+    File.write(core_path, core, encoding: 'UTF-8')
+  end
+
   def self.verify_ruby_syntax(staged_dir)
     all_ok = true
     ruby_files = Dir.glob(File.join(staged_dir, '**', '*.rb'))
@@ -324,6 +467,10 @@ module EvolutionLabBuilder
   end
 
   def self.create_master_loader(master_staging_dir, evolution_lab_dir, versions)
+    FileUtils.cp(
+      File.join(ROOT_DIR, 'history', 'batch_runner.rb'),
+      File.join(evolution_lab_dir, 'batch_runner.rb')
+    )
     # 1. Write evolution_lab/master_menu.rb
     master_menu_file = File.join(evolution_lab_dir, 'master_menu.rb')
     menu_code = +<<~RUBY
@@ -362,6 +509,10 @@ module EvolutionLabBuilder
     menu_code << <<~RUBY
 
             lab_menu.add_separator
+            lab_menu.add_item('Batch Export RUMAH + SBOOST ([01] to [09])') do
+              require File.join(__dir__, 'batch_runner.rb')
+              SibamboHistory::EvolutionLab::BatchRunner.start_or_resume
+            end
             lab_menu.add_item('About Evolution Lab') do
               UI.messagebox(
                 "Sibambo BOM Engine Evolution Lab\\n\\n" +
@@ -376,6 +527,8 @@ module EvolutionLabBuilder
       end
 
       SibamboHistory::EvolutionLab.init_menus
+      require File.join(__dir__, 'batch_runner.rb')
+      SibamboHistory::EvolutionLab::BatchRunner.resume_if_pending
     RUBY
     File.write(master_menu_file, menu_code, encoding: 'UTF-8')
 
@@ -393,7 +546,7 @@ module EvolutionLabBuilder
         module EvolutionLab
           PLUGIN_ID = 'sibambo_bom_engine_evolution_lab'
           PLUGIN_NAME = 'Sibambo BOM Engine Evolution Lab'
-          PLUGIN_VERSION = '1.0.0'
+          PLUGIN_VERSION = '#{EVOLUTION_LAB_VERSION}'
 
           unless file_loaded?(__FILE__)
             ex = SketchupExtension.new(PLUGIN_NAME, File.join(__dir__, 'evolution_lab', 'master_menu.rb'))

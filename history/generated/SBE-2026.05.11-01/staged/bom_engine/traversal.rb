@@ -18,6 +18,11 @@ module SibamboHistory
     def self.walk(entities, tw, parent_tf, depth = 0, opts = {})
       result        = []
       include_edges = opts.fetch(:include_edges, Constants::INCLUDE_EDGES)
+      progress      = opts[:progress]
+      batch_size    = [opts.fetch(:batch_size, 64).to_i, 1].max
+      work_state    = opts[:work_state] ||= { processed: 0 }
+      face_cache    = opts[:face_count_cache] ||= {}
+      edge_cache    = opts[:edge_count_cache] ||= {}
 
       if depth > Constants::MAX_RECURSION_DEPTH
         Logger.warn("Max recursion depth #{Constants::MAX_RECURSION_DEPTH} reached. Skipping subtree.")
@@ -26,6 +31,11 @@ module SibamboHistory
 
       entities.each do |entity|
         next if entity.nil? || entity.deleted?
+
+        work_state[:processed] += 1
+        if progress && (work_state[:processed] % batch_size).zero?
+          progress.call(stage: 'Traversing legacy entity tree', processed: work_state[:processed])
+        end
 
         case entity
         when Sketchup::Face
@@ -56,8 +66,9 @@ module SibamboHistory
         when Sketchup::ComponentInstance
           defn        = entity.definition
           child_tf    = parent_tf * entity.transformation
-          face_count  = count_faces(defn.entities)
-          edge_count  = include_edges ? count_edges(defn.entities) : 0
+          cache_key   = defn.object_id
+          face_count  = face_cache.fetch(cache_key) { face_cache[cache_key] = count_faces(defn.entities) }
+          edge_count  = include_edges ? edge_cache.fetch(cache_key) { edge_cache[cache_key] = count_edges(defn.entities) } : 0
           result << {
             type:               "ComponentInstance",
             id:                 entity.persistent_id.to_s,
@@ -217,28 +228,34 @@ module SibamboHistory
     # ── Count helpers ───────────────────────────────────────────────
 
     # Count all Face entities recursively within entities.
-    def self.count_faces(entities, depth = 0)
+    def self.count_faces(entities, depth = 0, memo = nil)
       return 0 if depth > Constants::MAX_RECURSION_DEPTH
+      memo ||= {}
       entities.inject(0) do |sum, e|
         next sum if e.nil? || e.deleted?
         case e
         when Sketchup::Face             then sum + 1
-        when Sketchup::Group            then sum + count_faces(e.entities, depth + 1)
-        when Sketchup::ComponentInstance then sum + count_faces(e.definition.entities, depth + 1)
+        when Sketchup::Group            then sum + count_faces(e.entities, depth + 1, memo)
+        when Sketchup::ComponentInstance
+          key = [e.definition.object_id, depth + 1]
+          sum + memo.fetch(key) { memo[key] = count_faces(e.definition.entities, depth + 1, memo) }
         else sum
         end
       end
     end
 
     # Count all Edge entities recursively.
-    def self.count_edges(entities, depth = 0)
+    def self.count_edges(entities, depth = 0, memo = nil)
       return 0 if depth > Constants::MAX_RECURSION_DEPTH
+      memo ||= {}
       entities.inject(0) do |sum, e|
         next sum if e.nil? || e.deleted?
         case e
         when Sketchup::Edge             then sum + 1
-        when Sketchup::Group            then sum + count_edges(e.entities, depth + 1)
-        when Sketchup::ComponentInstance then sum + count_edges(e.definition.entities, depth + 1)
+        when Sketchup::Group            then sum + count_edges(e.entities, depth + 1, memo)
+        when Sketchup::ComponentInstance
+          key = [e.definition.object_id, depth + 1]
+          sum + memo.fetch(key) { memo[key] = count_edges(e.definition.entities, depth + 1, memo) }
         else sum
         end
       end

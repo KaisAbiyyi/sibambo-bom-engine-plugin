@@ -10,17 +10,19 @@ module SibamboHistory
     FORMAT_VERSION = '3.0.0'.freeze
     SCHEMA_URI = 'https://sibambo.dev/schemas/bom-engine/3.0.0/schema.json'.freeze
 
-    def self.build(model:, entities:, parent_transform:, settings:, spatial:, texture_writer: nil)
+    def self.build(model:, entities:, parent_transform:, settings:, spatial:, texture_writer: nil, progress: nil, batch_size: 32)
       Builder.new(
         model: model,
         settings: settings,
         spatial: spatial,
-        texture_writer: texture_writer
+        texture_writer: texture_writer,
+        progress: progress,
+        batch_size: batch_size
       ).build(entities, parent_transform)
     end
 
     class Builder
-      def initialize(model:, settings:, spatial:, texture_writer:)
+      def initialize(model:, settings:, spatial:, texture_writer:, progress: nil, batch_size: 32)
         @model = model
         @settings = settings || {}
         @spatial = spatial || {}
@@ -36,6 +38,9 @@ module SibamboHistory
         @tags = []
         @tag_ids = {}
         @skipped = Hash.new(0)
+        @progress = progress
+        @batch_size = [batch_size.to_i, 1].max
+        @work_count = 0
       end
 
       def build(entities, parent_transform)
@@ -499,12 +504,22 @@ module SibamboHistory
 
       def each_entity(entities)
         entities.each do |entity|
+          checkpoint('Converting canonical entities')
           unless Traversal.exportable_entity?(entity)
             @skipped['hidden_or_invalid_entity'] += 1
             next
           end
           yield entity
         end
+      end
+
+      def checkpoint(stage)
+        return unless @progress
+
+        @work_count += 1
+        return unless (@work_count % @batch_size).zero?
+
+        @progress.call(stage: stage, processed: @work_count)
       end
 
       def bounds_for_entities(entities)
