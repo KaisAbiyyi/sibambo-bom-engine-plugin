@@ -40,7 +40,7 @@ module SibamboHistory
       BOMCWriter.write(path, graph, profile: profile, base_path: base_path)
     end
 
-    def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil)
+    def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, batch_size: 512)
       texture_directory = Dir.mktmpdir('bomc-textures')
       begin
         texture_writer = begin
@@ -68,6 +68,7 @@ module SibamboHistory
           [:key, :keyreq].include?(kind) && name == :progress
         end
         build_arguments[:progress] = progress if supports_progress
+      build_arguments[:batch_size] = batch_size if supports_progress
         graph = CanonicalGraphBuilder.build(**build_arguments)
         attach_staged_textures(graph, extracted_materials, texture_directory)
         progress.call(stage: 'Compiling BOMC sections', processed: 0) if progress

@@ -7,6 +7,7 @@ module SibamboHistory
     LABEL = "[04] 2026-07-16 — Canonical JSON v3 + Gzip"
     COMMIT_SHA = "657d8671a66a78d643935d891e5c8b07154b8948"
     FORMAT_FAMILY = "canonical_json_v3"
+    EXPORT_KIND = :canonical_v3
     PLUGIN_VERSION = "3.0.0" unless const_defined?(:PLUGIN_VERSION, false)
 
     def self.load_engine
@@ -48,30 +49,94 @@ module SibamboHistory
   end
 
   def self.launch(model = Sketchup.active_model)
-      load_engine
-if defined?(Core) && Core.respond_to?(:export_with_dialog)
-  Core.export_with_dialog
-elsif defined?(Core) && Core.respond_to?(:show_export_dialog)
-        Core.show_export_dialog
-      elsif defined?(Core) && Core.respond_to?(:export_from_ui)
-        Core.export_from_ui
-      elsif defined?(CleanAnalysis::Exporter) && CleanAnalysis::Exporter.respond_to?(:export_active_model)
-        CleanAnalysis::Exporter.export_active_model
-      elsif defined?(Core) && Core.respond_to?(:export_bomc)
-        Core.export_bomc
-      elsif defined?(Core) && Core.respond_to?(:export_canonical_v3)
-        Core.export_canonical_v3
-      elsif defined?(Core) && Core.respond_to?(:export_model_eval_json)
-        output = Core.model_eval_output_path(model)
-        Core.export_model_eval_json(model, output)
-      elsif defined?(Core) && Core.respond_to?(:export_bome2)
-        output = Core.bome2_output_path(model.path, false)
-        Core.export_bome2(model, output, compress: false)
-      else
-        UI.messagebox("Engine initialized: #{LABEL}\nCommit: #{COMMIT_SHA}", MB_OK)
-      end
+    load_engine
+    load_format_adapter
+    UIDialog.show do |settings|
+      export_current_model(model, settings)
+    end
     rescue => e
       UI.messagebox("Error launching #{LABEL}:\n#{e.message}\n#{e.backtrace&.first}", MB_OK)
+    end
+
+    def self.load_format_adapter
+      case EXPORT_KIND
+      when :cleanpkg
+        require File.join(__dir__, 'bom_engine', 'clean_analysis.rb')
+      when :bomc_v1, :bomc_scene
+        require File.join(__dir__, 'bom_engine', 'bomc_extension.rb')
+      end
+    end
+
+    def self.export_current_model(model, settings)
+      selected = settings.is_a?(Hash) ? settings.dup : {}
+      batch_size = [selected.fetch(:batch_size, 512).to_i, 1].max
+      case EXPORT_KIND
+      when :legacy_json, :experimental
+        Core.run_export(selected.merge(output_format: 'legacy', batch_size: batch_size))
+      when :tiered_json
+        Core.run_export(selected.merge(output_format: 'legacy', batch_size: batch_size))
+      when :minified_visual_json
+        Core.run_export(selected.merge(output_format: 'legacy', export_level: 'visual', pretty_print: false, batch_size: batch_size))
+      when :canonical_v3
+        Core.run_export(selected.merge(output_format: 'canonical_v3', compress_output: true, batch_size: batch_size))
+      when :model_eval_json
+        output = output_with_suffix(selected[:output_path], '_model-eval.json')
+        run_direct_export(output, batch_size, 'Model-Eval JSON') do |progress|
+          Core.export_model_eval_json(model, output, progress: progress, batch_size: batch_size)
+        end
+      when :bome2
+        Core.run_export(selected.merge(output_format: 'bome2', compress_output: false, batch_size: batch_size))
+      when :cleanpkg
+        output = output_with_suffix(selected[:output_path], '.cleanpkg')
+        run_direct_export(output, batch_size, 'CleanPKG') do |progress|
+          CleanAnalysis::Exporter.export_package(
+            model: model,
+            roots: model.entities,
+            parent_transform: Geom::Transformation.new,
+            output_path: output,
+            settings: { scope_mode: 'model' },
+            progress: progress,
+            batch_size: batch_size
+          )
+        end
+      when :bomc_v1
+        output = output_with_suffix(selected[:output_path], '.bomc')
+        run_direct_export(output, batch_size, 'BOMC 1.0') do |progress|
+          BOMCExtension.export(model, output_path: output, profile: BOMCExtension::DEFAULT_PROFILE, progress: progress, batch_size: batch_size)
+        end
+      when :bomc_scene
+        output = output_with_suffix(selected[:output_path], '.bomc')
+        processing = BOMCProcessing.settings(
+          :custom,
+          custom: { max_items: batch_size, max_items_limit: 8_192, min_items: 1, max_ms: 24.0 }
+        )
+        run_direct_export(output, batch_size, 'BOMC Scene/Page') do |progress|
+          BOMCExtension.export(
+            model,
+            output_path: output,
+            profile: BOMCExtension::DEFAULT_PROFILE,
+            progress: progress,
+            settings: processing
+          )
+        end
+      else
+        raise "Unsupported Evolution Lab export kind: #{EXPORT_KIND.inspect}"
+      end
+    end
+
+    def self.run_direct_export(output, batch_size, format_name, &work)
+      EvolutionCooperativeJob.start(title: LABEL, batch_size: batch_size) do |progress|
+        result = work.call(progress)
+        path = result.is_a?(Hash) ? (result[:path] || output) : output
+        UI.messagebox("Export #{format_name} selesai!\n\nFile: #{path}", MB_OK)
+        result
+      end
+    end
+
+    def self.output_with_suffix(path, suffix)
+      base = path.to_s.sub(/.(?:json|bome2|cleanpkg|bomc)(?:.gz)?z/i, '')
+      base = base.sub(/_(?:bom|canonical|model-eval|runtime)z/i, '')
+      "#{base}#{suffix}"
     end
   end
 end
