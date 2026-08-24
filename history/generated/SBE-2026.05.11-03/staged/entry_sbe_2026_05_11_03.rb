@@ -7,6 +7,7 @@ module SibamboHistory
     LABEL = "[03] 2026-05-11 — Minified Visual JSON"
     COMMIT_SHA = "ac2fbc983cee75a2c295145280157bf36c08cf58"
     FORMAT_FAMILY = "bom_json_v2_minified"
+    PLUGIN_VERSION = "2.0.0" unless const_defined?(:PLUGIN_VERSION, false)
 
     def self.load_engine
       # Load all sub-components relative to this directory

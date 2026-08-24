@@ -7,6 +7,7 @@ module SibamboHistory
     LABEL = "[02] 2026-05-11 — Visual / Standard / Full JSON"
     COMMIT_SHA = "abdc70bbfd176c481be4a6a3e71f4a9944d4faee"
     FORMAT_FAMILY = "bom_json_v2_multilevel"
+    PLUGIN_VERSION = "2.0.0" unless const_defined?(:PLUGIN_VERSION, false)
 
     def self.load_engine
       # Load all sub-components relative to this directory

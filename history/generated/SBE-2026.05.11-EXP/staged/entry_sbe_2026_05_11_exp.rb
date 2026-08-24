@@ -7,6 +7,7 @@ module SibamboHistory
     LABEL = "[EXP-01] 2026-05-11 — Nano BBox JSON"
     COMMIT_SHA = "7dd932dfe1b7eeb500e9d82e2d87fbe2275f56be"
     FORMAT_FAMILY = "bom_nano_json"
+    PLUGIN_VERSION = "2.0.0" unless const_defined?(:PLUGIN_VERSION, false)
 
     def self.load_engine
       # Load all sub-components relative to this directory

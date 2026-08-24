@@ -7,6 +7,7 @@ module SibamboHistory
     LABEL = "[08] 2026-08-13 — First BOMC Compiled Format"
     COMMIT_SHA = "ebf2e658a790fc401265d20d899082b05ff18cb1"
     FORMAT_FAMILY = "bomc_compiled_v1_0"
+    PLUGIN_VERSION = "3.0.0" unless const_defined?(:PLUGIN_VERSION, false)
 
     def self.load_engine
       # Load all sub-components relative to this directory

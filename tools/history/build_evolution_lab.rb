@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.4'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.5'.freeze
 
   def self.build
     puts "======================================================================"
@@ -211,6 +211,7 @@ module EvolutionLabBuilder
   def self.create_engine_entry_point(staged_dir, ver, key, mod_name)
     sub_mod = mod_name.split('::').last
     entry_file = File.join(staged_dir, "entry_#{key.downcase}.rb")
+    engine_version = historical_plugin_version(staged_dir)
     code = <<~RUBY
       # frozen_string_literal: true
       # Entry point for #{ver['label']} (#{ver['display_version']})
@@ -221,6 +222,7 @@ module EvolutionLabBuilder
           LABEL = #{ver['label'].inspect}
           COMMIT_SHA = #{ver['commit_sha'].inspect}
           FORMAT_FAMILY = #{ver['format_family'].inspect}
+          PLUGIN_VERSION = #{engine_version.inspect} unless const_defined?(:PLUGIN_VERSION, false)
 
           def self.load_engine
             # Load all sub-components relative to this directory
@@ -269,6 +271,17 @@ module EvolutionLabBuilder
       end
     RUBY
     File.write(entry_file, code, encoding: 'UTF-8')
+  end
+
+  def self.historical_plugin_version(staged_dir)
+    loader_path = File.join(staged_dir, 'bom_engine_loader.rb')
+    raise "Historical BOM Engine loader missing: #{loader_path}" unless File.file?(loader_path)
+
+    loader = File.read(loader_path, encoding: 'UTF-8')
+    match = loader.match(/PLUGIN_VERSION\s*=\s*['"]([^'"]+)['"]/)
+    raise "PLUGIN_VERSION missing from historical loader: #{loader_path}" unless match
+
+    match[1]
   end
 
   def self.apply_runtime_hardening(staged_dir, ver)

@@ -7,6 +7,7 @@ module SibamboHistory
     LABEL = "[05] 2026-07-16 — Model-Eval Compact JSON"
     COMMIT_SHA = "657d8671a66a78d643935d891e5c8b07154b8948"
     FORMAT_FAMILY = "model_eval_json_v1"
+    PLUGIN_VERSION = "3.0.0" unless const_defined?(:PLUGIN_VERSION, false)
 
     def self.load_engine
       # Load all sub-components relative to this directory

@@ -7,6 +7,7 @@ module SibamboHistory
     LABEL = "[07] 2026-08-12 — CleanPKG Binary Container"
     COMMIT_SHA = "d245b6873a992c87f7647c6b816c13e6ab7815e0"
     FORMAT_FAMILY = "clean_package_v1"
+    PLUGIN_VERSION = "3.0.0" unless const_defined?(:PLUGIN_VERSION, false)
 
     def self.load_engine
       # Load all sub-components relative to this directory
