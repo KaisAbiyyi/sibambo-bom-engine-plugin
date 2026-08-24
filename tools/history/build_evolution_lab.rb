@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.11'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.12'.freeze
 
   def self.build
     puts "======================================================================"
@@ -528,8 +528,35 @@ module EvolutionLabBuilder
     helpers = indent.call(<<~RUBY)
       module_function
 
-      def numeric_values(value, label)
-        Array(value).flatten.each_with_index.map do |component, index|
+      def numeric_components(value, label)
+        return [] if value.nil?
+
+        if value.is_a?(Hash)
+          if [:x, :y, :z].all? { |key| value.key?(key) || value.key?(key.to_s) }
+            return [:x, :y, :z].map { |key| value.key?(key) ? value[key] : value[key.to_s] }
+          end
+          if [:u, :v].all? { |key| value.key?(key) || value.key?(key.to_s) }
+            return [:u, :v].map { |key| value.key?(key) ? value[key] : value[key.to_s] }
+          end
+          raise ArgumentError, "BOMC source invalid: \#{label} uses unsupported coordinate keys \#{value.keys.inspect}."
+        end
+
+        if value.is_a?(Array)
+          return value.each_with_index.flat_map do |component, index|
+            numeric_components(component, "\#{label}[\#{index}]")
+          end
+        end
+
+        if value.respond_to?(:x) && value.respond_to?(:y) && value.respond_to?(:z)
+          return [value.x, value.y, value.z]
+        end
+
+        [value]
+      end
+      private_class_method :numeric_components
+
+      def numeric_values(value, label, exact: nil, multiple_of: nil)
+        values = numeric_components(value, label).each_with_index.map do |component, index|
           begin
             number = Float(component)
             raise ArgumentError unless number.finite?
@@ -538,6 +565,13 @@ module EvolutionLabBuilder
             raise ArgumentError, "BOMC source invalid: \#{label}[\#{index}] must be a finite number; got \#{component.inspect}."
           end
         end
+        if exact && values.length != exact
+          raise ArgumentError, "BOMC source invalid: \#{label} must contain exactly \#{exact} numbers; got \#{values.length}."
+        end
+        if multiple_of && (values.length % multiple_of) != 0
+          raise ArgumentError, "BOMC source invalid: \#{label} must contain a multiple of \#{multiple_of} numbers; got \#{values.length}."
+        end
+        values
       end
       private_class_method :numeric_values
 
@@ -553,15 +587,20 @@ module EvolutionLabBuilder
     replace_once!(source, helper_anchor, helpers, adapter_path)
 
     replacements = {
-      'positions = Array(mesh[:positions_m]).map(&:to_f)' => "positions = numeric_values(mesh[:positions_m], 'mesh.positions_m')",
-      'eye_m: Array(camera[:eye_m]).map(&:to_f),' => "eye_m: numeric_values(camera[:eye_m], 'scene.camera.eye_m'),",
-      'target_m: Array(camera[:target_m]).map(&:to_f),' => "target_m: numeric_values(camera[:target_m], 'scene.camera.target_m'),",
-      'up: Array(camera[:up]).map(&:to_f),' => "up: numeric_values(camera[:up], 'scene.camera.up'),",
+      'positions = Array(mesh[:positions_m]).map(&:to_f)' => "positions = numeric_values(mesh[:positions_m], 'mesh.positions_m', multiple_of: 3)",
+      'eye_m: Array(camera[:eye_m]).map(&:to_f),' => "eye_m: numeric_values(camera[:eye_m], 'scene.camera.eye_m', exact: 3),",
+      'target_m: Array(camera[:target_m]).map(&:to_f),' => "target_m: numeric_values(camera[:target_m], 'scene.camera.target_m', exact: 3),",
+      'up: Array(camera[:up]).map(&:to_f),' => "up: numeric_values(camera[:up], 'scene.camera.up', exact: 3),",
       "normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : Array(face[:normal]).map(&:to_f)," =>
-        "normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : numeric_values(face[:normal], 'face.normal'),",
+        "normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : numeric_values(face[:normal], 'face.normal', exact: 3),",
       "kind: 'image', position: Array(image[:position]).map(&:to_f)," =>
-        "kind: 'image', position: numeric_values(image[:position], 'image.position'),",
-      'Array(matrix).map(&:to_f)' => "numeric_values(matrix, 'transform')"
+        "kind: 'image', position: numeric_values(image[:position], 'image.position', exact: 3),",
+      'Array(matrix).map(&:to_f)' => "numeric_values(matrix, 'transform', exact: 16)",
+      'matrix.map(&:to_f)' => "numeric_values(matrix, 'transform', exact: 16)",
+      'minimum = Array(quantization[:minimum_m]).map(&:to_f)' =>
+        "minimum = numeric_values(quantization[:minimum_m], 'mesh.quantization.minimum_m', exact: 3)",
+      'scale = Array(quantization[:scale_m]).map(&:to_f)' =>
+        "scale = numeric_values(quantization[:scale_m], 'mesh.quantization.scale_m', exact: 3)"
     }
     replacements.each { |before, after| replace_once!(source, before, after, adapter_path) }
 

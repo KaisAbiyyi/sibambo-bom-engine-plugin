@@ -11,8 +11,35 @@ module SibamboHistory
 
       module_function
 
-      def numeric_values(value, label)
-        Array(value).flatten.each_with_index.map do |component, index|
+      def numeric_components(value, label)
+        return [] if value.nil?
+
+        if value.is_a?(Hash)
+          if [:x, :y, :z].all? { |key| value.key?(key) || value.key?(key.to_s) }
+            return [:x, :y, :z].map { |key| value.key?(key) ? value[key] : value[key.to_s] }
+          end
+          if [:u, :v].all? { |key| value.key?(key) || value.key?(key.to_s) }
+            return [:u, :v].map { |key| value.key?(key) ? value[key] : value[key.to_s] }
+          end
+          raise ArgumentError, "BOMC source invalid: #{label} uses unsupported coordinate keys #{value.keys.inspect}."
+        end
+
+        if value.is_a?(Array)
+          return value.each_with_index.flat_map do |component, index|
+            numeric_components(component, "#{label}[#{index}]")
+          end
+        end
+
+        if value.respond_to?(:x) && value.respond_to?(:y) && value.respond_to?(:z)
+          return [value.x, value.y, value.z]
+        end
+
+        [value]
+      end
+      private_class_method :numeric_components
+
+      def numeric_values(value, label, exact: nil, multiple_of: nil)
+        values = numeric_components(value, label).each_with_index.map do |component, index|
           begin
             number = Float(component)
             raise ArgumentError unless number.finite?
@@ -21,6 +48,13 @@ module SibamboHistory
             raise ArgumentError, "BOMC source invalid: #{label}[#{index}] must be a finite number; got #{component.inspect}."
           end
         end
+        if exact && values.length != exact
+          raise ArgumentError, "BOMC source invalid: #{label} must contain exactly #{exact} numbers; got #{values.length}."
+        end
+        if multiple_of && (values.length % multiple_of) != 0
+          raise ArgumentError, "BOMC source invalid: #{label} must contain a multiple of #{multiple_of} numbers; got #{values.length}."
+        end
+        values
       end
       private_class_method :numeric_values
 
@@ -63,7 +97,7 @@ module SibamboHistory
         end
         meshes = raw_meshes.each_with_index.map do |mesh, mesh_index_value|
           notify(checkpoint, :encode_positions, mesh_index_value + 1, raw_meshes.length)
-          positions = numeric_values(mesh[:positions_m], 'mesh.positions_m')
+          positions = numeric_values(mesh[:positions_m], 'mesh.positions_m', multiple_of: 3)
           raw_faces = Array(mesh[:faces])
           {
             stable_id: mesh[:id].to_s,
@@ -275,9 +309,9 @@ module SibamboHistory
             source_binding: scene[:source_binding] || {},
             camera: {
               projection: camera[:projection].to_s == 'orthographic' ? 'orthographic' : 'perspective',
-              eye_m: numeric_values(camera[:eye_m], 'scene.camera.eye_m'),
-              target_m: numeric_values(camera[:target_m], 'scene.camera.target_m'),
-              up: numeric_values(camera[:up], 'scene.camera.up'),
+              eye_m: numeric_values(camera[:eye_m], 'scene.camera.eye_m', exact: 3),
+              target_m: numeric_values(camera[:target_m], 'scene.camera.target_m', exact: 3),
+              up: numeric_values(camera[:up], 'scene.camera.up', exact: 3),
               field_of_view_degrees: camera[:field_of_view_degrees]&.to_f,
               orthographic_height_m: camera[:orthographic_height_m]&.to_f,
               aspect_ratio: camera[:aspect_ratio].to_f
@@ -378,7 +412,7 @@ module SibamboHistory
           front_appearance_required: true,
           back_appearance_required: !back_material.nil?,
           tag: optional_reference(tag_index, face[:tag_id]),
-          normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : numeric_values(face[:normal], 'face.normal'),
+          normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : numeric_values(face[:normal], 'face.normal', exact: 3),
           area_m2: face[:area_m2].to_f,
           surface_type: semantic[:role] || face[:surface_hint],
           hidden: face[:hidden] == true,
@@ -440,7 +474,7 @@ module SibamboHistory
             base_path
           )
           {
-            kind: 'image', position: numeric_values(image[:position], 'image.position'),
+            kind: 'image', position: numeric_values(image[:position], 'image.position', exact: 3),
             width_m: image[:width_m].to_f, height_m: image[:height_m].to_f,
             text: node[:name].to_s, texture: texture
           }
@@ -476,11 +510,11 @@ module SibamboHistory
         if values[0].is_a?(Array)
           values.each_with_index.map do |matrix, index|
             notify(checkpoint, :encode_transforms, index + 1, values.length)
-            numeric_values(matrix, 'transform')
+            numeric_values(matrix, 'transform', exact: 16)
           end
         else
           raise 'BOMC source invalid: transform table is not divisible by 16.' unless (values.length % 16).zero?
-          values.each_slice(16).map { |matrix| matrix.map(&:to_f) }
+          values.each_slice(16).map { |matrix| numeric_values(matrix, 'transform', exact: 16) }
         end
       end
       private_class_method :normalize_transforms
@@ -492,8 +526,8 @@ module SibamboHistory
 
       def decode_model_eval_positions(mesh)
         quantization = mesh[:quantization] || {}
-        minimum = Array(quantization[:minimum_m]).map(&:to_f)
-        scale = Array(quantization[:scale_m]).map(&:to_f)
+        minimum = numeric_values(quantization[:minimum_m], 'mesh.quantization.minimum_m', exact: 3)
+        scale = numeric_values(quantization[:scale_m], 'mesh.quantization.scale_m', exact: 3)
         Array(mesh[:positions]).each_with_index.map do |value, index|
           minimum[index % 3].to_f + value.to_f * scale[index % 3].to_f
         end

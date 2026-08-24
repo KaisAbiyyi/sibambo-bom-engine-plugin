@@ -28,12 +28,20 @@ graph = {
     edges: []
   }],
   definitions: [
-    { id: 'definition-root', name: 'Root', kind: 'model_definition', node_ids: ['node-panel'] },
+    { id: 'definition-root', name: 'Root', kind: 'model_definition', node_ids: ['node-panel', 'node-image'] },
     { id: 'definition-panel', name: 'Panel', kind: 'component_definition', mesh_id: 'mesh-panel', node_ids: [] }
   ],
   nodes: [
     { id: 'node-root', kind: 'root', name: 'Root', definition_id: 'definition-root', transform_id: 0, visible: true },
-    { id: 'node-panel', kind: 'component_instance', name: 'Panel', owner_definition_id: 'definition-root', definition_id: 'definition-panel', transform_id: 0, visible: true }
+    { id: 'node-panel', kind: 'component_instance', name: 'Panel', owner_definition_id: 'definition-root', definition_id: 'definition-panel', transform_id: 0, visible: true },
+    {
+      id: 'node-image', kind: 'image', name: 'Reference image', owner_definition_id: 'definition-root',
+      transform_id: 0, visible: true,
+      image: {
+        filename: 'reference.png', bytes: "\x89PNG\r\n\x1a\nreference".b,
+        width_m: 2.0, height_m: 1.0, position: { x: 1.25, y: 2.5, z: 0.75 }
+      }
+    }
   ],
   scenes: [{
     id: 'scene:1', name: 'Scene 1', is_active_at_export: true,
@@ -49,8 +57,36 @@ packed = SibamboHistory::V20260819_01::BOMCWriter.pack(graph)
 decoded = SibamboHistory::V20260819_01::BOMCDecoder.decode(packed.fetch(:bytes))
 face = decoded.fetch(:meshes).first.fetch(:faces).first
 scene = decoded.fetch(:scenes).first
+image = decoded.fetch(:fallback).find { |row| row[:kind] == 'image' }
 
 raise "nested UV loop was not normalized: #{face[:uv].inspect}" unless face.dig(:uv, :front_outer) == uv_outer
 raise "nested scene camera was not normalized: #{scene.inspect}" unless scene.dig(:camera, :eye_m) == [2.0, 2.0, 2.0]
+raise "image position hash was not normalized: #{image.inspect}" unless image && image[:position] == [1.25, 2.5, 0.75]
 
-puts 'scene BOMC numeric shapes: PASS (nested vectors and UV loops normalize safely)'
+def assert_invalid_shape(graph, expected)
+  candidate = Marshal.load(Marshal.dump(graph))
+  yield(candidate)
+  begin
+    SibamboHistory::V20260819_01::BOMCWriter.pack(candidate)
+  rescue ArgumentError => error
+    return if error.message.include?(expected)
+
+    raise "expected validation error containing #{expected.inspect}; got #{error.message.inspect}"
+  end
+  raise "expected validation error containing #{expected.inspect}; export succeeded"
+end
+
+assert_invalid_shape(graph, 'image.position uses unsupported coordinate keys') do |candidate|
+  candidate[:nodes].last[:image][:position] = { x: 1.0, y: 2.0 }
+end
+assert_invalid_shape(graph, 'transform must contain exactly 16 numbers') do |candidate|
+  candidate[:transforms] = [identity.first(15)]
+end
+assert_invalid_shape(graph, 'mesh.positions_m must contain a multiple of 3 numbers') do |candidate|
+  candidate[:meshes].first[:positions_m] << [42.0]
+end
+assert_invalid_shape(graph, 'scene.camera.eye_m[0] must be a finite number') do |candidate|
+  candidate[:scenes].first[:camera][:eye_m] = [Float::INFINITY, 0.0, 0.0]
+end
+
+puts 'scene BOMC numeric shapes: PASS (nested vectors and coordinate hashes normalize; malformed shapes fail safely)'
