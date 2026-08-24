@@ -66,19 +66,6 @@ module SibamboHistory
   end
 end
 
-runner = SibamboHistory::EvolutionLab::BatchRunner
-runner.singleton_class.class_eval do
-  attr_accessor :test_batch_starts
-
-  define_method(:start_or_resume) do |*_args|
-    self.test_batch_starts = test_batch_starts.to_i + 1
-  end
-
-  define_method(:start_for_format) do |_format_id|
-    raise 'version menu incorrectly entered folder batch processing'
-  end
-end
-
 lab = UI.extensions_menu.submenus.fetch('Sibambo BOM Engine Evolution Lab')
 major = lab.submenus.fetch('Major & Release Versions')
 
@@ -92,10 +79,7 @@ actual = SibamboHistory::EvolutionLab.test_current_exports || []
 actual_ids = actual.map(&:first)
 raise "wrong current-model dispatch: #{actual_ids.inspect}" unless actual_ids == expected_ids
 raise 'a version menu did not pass SketchUp.active_model' unless actual.all? { |_id, model| model.equal?(Sketchup::CURRENT_MODEL) }
-raise 'version menu unexpectedly started folder batching' unless runner.test_batch_starts.to_i.zero?
 
-batch_item = lab.items.fetch('Batch Export RUMAH + SBOOST ([01] to [09])')
-batch_item.call
-raise 'separate batch menu did not start folder batching' unless runner.test_batch_starts == 1
+raise 'obsolete multi-model batch menu is still visible' if lab.items.key?('Batch Export RUMAH + SBOOST ([01] to [09])')
 
-puts 'menu export dispatch: PASS (9 current-model entries; 1 separate folder batch entry)'
+puts 'menu export dispatch: PASS (9 current-model entries; no multi-model batch menu)'

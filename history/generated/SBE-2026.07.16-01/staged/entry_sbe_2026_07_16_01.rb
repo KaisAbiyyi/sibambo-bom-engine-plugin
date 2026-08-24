@@ -22,11 +22,32 @@ module SibamboHistory
         Dir.glob(File.join(__dir__, '**', '*.rb')).each do |f|
           next if f == __FILE__
           require f
-        end
       end
     end
 
-    def self.launch(model = Sketchup.active_model)
+    require File.join(__dir__, 'evolution_cooperative_job.rb')
+    install_batch_wrapper
+  end
+
+  def self.install_batch_wrapper
+    return if @batch_wrapper_installed
+    return unless defined?(Core) && Core.respond_to?(:run_export)
+
+    original_run_export = Core.method(:run_export)
+    job = EvolutionCooperativeJob
+    label = LABEL
+    Core.define_singleton_method(:run_export) do |settings|
+      selected = settings.is_a?(Hash) ? settings.dup : {}
+      batch_size = selected.fetch(:batch_size, 512).to_i
+      batch_size = 512 if batch_size < 1
+      job.start(title: label, batch_size: batch_size) do |progress|
+        original_run_export.call(selected.merge(progress: progress, batch_size: batch_size))
+      end
+    end
+    @batch_wrapper_installed = true
+  end
+
+  def self.launch(model = Sketchup.active_model)
       load_engine
 if defined?(Core) && Core.respond_to?(:export_with_dialog)
   Core.export_with_dialog

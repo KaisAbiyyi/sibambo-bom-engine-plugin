@@ -48,6 +48,7 @@ module SibamboHistory; end
 VERSIONS = {
   '2026.05.11-01' => 'V20260511_01',
   '2026.05.11-02' => 'V20260511_02',
+  '2026.05.11-EXP' => 'V20260511_EXP',
   '2026.05.11-03' => 'V20260511_03'
 }.freeze
 
@@ -79,4 +80,4 @@ VERSIONS.each do |directory, namespace|
   raise "#{directory}: leaf definition rescanned #{leaf_entities.passes} times" unless leaf_entities.passes == 1
 end
 
-puts 'legacy traversal safety: PASS (3 versions, repeated definitions memoized)'
+puts 'legacy traversal safety: PASS (4 versions, repeated definitions memoized)'

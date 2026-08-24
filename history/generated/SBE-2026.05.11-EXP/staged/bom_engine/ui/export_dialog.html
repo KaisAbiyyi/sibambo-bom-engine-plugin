@@ -187,6 +187,13 @@
     margin-left: 5px;
     vertical-align: middle;
   }
+  .evolution-batch-panel { background: #151a22; border: 1px solid #2e4050; border-radius: 8px; padding: 14px; margin: 14px 0; }
+  .evolution-batch-panel h3 { color: #4fffb0; font-size: 11px; letter-spacing: .08em; margin: 0 0 9px; text-transform: uppercase; }
+  .evolution-batch-modes { display: flex; gap: 16px; margin-bottom: 10px; }
+  .evolution-batch-modes label { color: #c0ccd8; cursor: pointer; font-size: 12px; text-transform: none; }
+  .evolution-batch-row { align-items: center; display: flex; gap: 10px; }
+  .evolution-batch-row select { background: #141720; border: 1px solid #405064; border-radius: 5px; color: #e0e4ea; padding: 7px 9px; }
+  .evolution-batch-help { color: #778899; font-size: 11px; line-height: 1.45; margin-top: 9px; }
 </style>
 </head>
 <body>
@@ -267,6 +274,27 @@
     <p class="info" id="selectionInfo">Pilih objek di SketchUp terlebih dahulu untuk mengaktifkan opsi ini.</p>
   </div>
 
+  <div class="evolution-batch-panel" id="evolution-batch-options">
+    <h3>Batch Pemrosesan Model</h3>
+    <div class="evolution-batch-modes">
+      <label><input type="radio" name="batch-mode" value="auto" checked onchange="refreshBatchMode()"> Auto</label>
+      <label><input type="radio" name="batch-mode" value="manual" onchange="refreshBatchMode()"> Manual</label>
+    </div>
+    <div class="evolution-batch-row">
+      <span>Entity per giliran</span>
+      <select id="batch-size" disabled>
+        <option value="96">96 — paling ringan</option>
+        <option value="128">128</option>
+        <option value="256">256</option>
+        <option value="512" selected>512 — seimbang</option>
+        <option value="1024">1024</option>
+        <option value="2048">2048</option>
+        <option value="4096">4096</option>
+        <option value="8192">8192 — paling cepat</option>
+      </select>
+    </div>
+    <div class="evolution-batch-help" id="batch-help">Auto memilih ukuran dari jumlah logical CPU. Nilai kecil lebih responsif; nilai besar lebih cepat tetapi menahan UI lebih lama.</div>
+  </div>
   <div class="actions">
     <button class="btn btn-cancel" onclick="sketchup.cancel()">Batal</button>
     <button class="btn btn-export" onclick="doExport()">Export JSON</button>
@@ -322,6 +350,26 @@
     }
   }
 
+  function recommendedBatchSize() {
+    var cores = Number(navigator.hardwareConcurrency || 4);
+    if (cores <= 4) return 128;
+    if (cores <= 8) return 256;
+    if (cores <= 16) return 512;
+    return 1024;
+  }
+
+  function selectedBatchSize() {
+    var mode = document.querySelector('input[name="batch-mode"]:checked').value;
+    return mode === 'auto' ? recommendedBatchSize() : Number(document.getElementById('batch-size').value);
+  }
+
+  function refreshBatchMode() {
+    var manual = document.querySelector('input[name="batch-mode"]:checked').value === 'manual';
+    var select = document.getElementById('batch-size');
+    select.disabled = !manual;
+    if (!manual) select.value = String(recommendedBatchSize());
+  }
+
   function doExport() {
     var outputPath = document.getElementById('outputPath').value.trim();
     if (!outputPath) {
@@ -337,10 +385,12 @@
       pretty_print:      document.getElementById('prettyPrint').checked,
       selection_only:    document.getElementById('selectionOnly').checked
     };
+    settings.batch_size = selectedBatchSize();
     sketchup.export(JSON.stringify(settings));
   }
 
   window.onload = function() {
+    refreshBatchMode();
     sketchup.onReady();
     selectLevel('nano'); // default
   };

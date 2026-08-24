@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.5'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.6'.freeze
 
   def self.build
     puts "======================================================================"
@@ -212,6 +212,7 @@ module EvolutionLabBuilder
     sub_mod = mod_name.split('::').last
     entry_file = File.join(staged_dir, "entry_#{key.downcase}.rb")
     engine_version = historical_plugin_version(staged_dir)
+    create_cooperative_job(staged_dir, sub_mod)
     code = <<~RUBY
       # frozen_string_literal: true
       # Entry point for #{ver['label']} (#{ver['display_version']})
@@ -237,11 +238,32 @@ module EvolutionLabBuilder
               Dir.glob(File.join(__dir__, '**', '*.rb')).each do |f|
                 next if f == __FILE__
                 require f
-              end
             end
           end
 
-          def self.launch(model = Sketchup.active_model)
+          require File.join(__dir__, 'evolution_cooperative_job.rb')
+          install_batch_wrapper
+        end
+
+        def self.install_batch_wrapper
+          return if @batch_wrapper_installed
+          return unless defined?(Core) && Core.respond_to?(:run_export)
+
+          original_run_export = Core.method(:run_export)
+          job = EvolutionCooperativeJob
+          label = LABEL
+          Core.define_singleton_method(:run_export) do |settings|
+            selected = settings.is_a?(Hash) ? settings.dup : {}
+            batch_size = selected.fetch(:batch_size, 512).to_i
+            batch_size = 512 if batch_size < 1
+            job.start(title: label, batch_size: batch_size) do |progress|
+              original_run_export.call(selected.merge(progress: progress, batch_size: batch_size))
+            end
+          end
+          @batch_wrapper_installed = true
+        end
+
+        def self.launch(model = Sketchup.active_model)
             load_engine
       if defined?(Core) && Core.respond_to?(:export_with_dialog)
         Core.export_with_dialog
@@ -273,6 +295,96 @@ module EvolutionLabBuilder
     File.write(entry_file, code, encoding: 'UTF-8')
   end
 
+  def self.create_cooperative_job(staged_dir, sub_mod)
+    job_path = File.join(staged_dir, 'evolution_cooperative_job.rb')
+    code = <<~RUBY
+      # frozen_string_literal: true
+
+      require 'json'
+
+      module SibamboHistory
+        module #{sub_mod}
+          module EvolutionCooperativeJob
+            class << self
+              def start(title:, batch_size:, &work)
+                return UI.messagebox('Exporter ini masih berjalan.') if @running
+
+                @running = true
+                @batch_size = batch_size
+                @fiber = Fiber.new do
+                  begin
+                    [:complete, work.call(method(:checkpoint))]
+                  rescue StandardError => error
+                    [:error, error]
+                  end
+                end
+                build_dialog(title)
+                @dialog.show
+                @timer_id = UI.start_timer(0.04, true) { tick }
+                self
+              end
+
+              def checkpoint(event = {})
+                Fiber.yield(event || {})
+              end
+
+              def tick
+                outcome = @fiber.resume
+                unless outcome.is_a?(Array) && [:complete, :error].include?(outcome[0])
+                  update(outcome)
+                  return
+                end
+
+                status, value = outcome
+                finish
+                UI.messagebox("Export gagal:\n\#{value.message}") if status == :error
+              rescue StandardError => error
+                finish
+                UI.messagebox("Export gagal:\n\#{error.message}")
+              end
+
+              def build_dialog(title)
+                @dialog&.close
+                @dialog = UI::HtmlDialog.new(
+                  dialog_title: "\#{title} — Batch \#{@batch_size}",
+                  scrollable: true,
+                  resizable: true,
+                  width: 460,
+                  height: 260,
+                  min_width: 380,
+                  min_height: 220,
+                  style: UI::HtmlDialog::STYLE_DIALOG
+                )
+                @dialog.set_html(<<~HTML)
+                  <!doctype html><meta charset="utf-8"><style>
+                  body{font:14px system-ui;background:#17202a;color:#eef;padding:20px}h2{color:#4fffb0;margin-top:0}
+                  #status{white-space:pre-wrap;line-height:1.5;color:#b8c7d6}
+                  </style><h2>Current Model Export</h2><div id="status">Menyiapkan batch \#{@batch_size}…</div>
+                HTML
+                @dialog.set_on_closed { nil }
+              end
+
+              def update(event)
+                data = event.is_a?(Hash) ? event : {}
+                text = "\#{data[:stage] || 'Memproses model'}\nProcessed: \#{data[:processed] || 0}\nBatch: \#{@batch_size}"
+                @dialog.execute_script("document.getElementById('status').textContent=\#{JSON.generate(text)}")
+              end
+
+              def finish
+                UI.stop_timer(@timer_id) if @timer_id
+                @dialog.close if @dialog
+                @running = false
+                @fiber = nil
+                @timer_id = nil
+              end
+            end
+          end
+        end
+      end
+    RUBY
+    File.write(job_path, code, encoding: 'UTF-8')
+  end
+
   def self.historical_plugin_version(staged_dir)
     loader_path = File.join(staged_dir, 'bom_engine_loader.rb')
     raise "Historical BOM Engine loader missing: #{loader_path}" unless File.file?(loader_path)
@@ -286,13 +398,83 @@ module EvolutionLabBuilder
 
   def self.apply_runtime_hardening(staged_dir, ver)
     display = ver['display_version']
-    if %w[SBE-2026.05.11-01 SBE-2026.05.11-02 SBE-2026.05.11-03].include?(display)
+    if %w[SBE-2026.05.11-01 SBE-2026.05.11-02 SBE-2026.05.11-EXP SBE-2026.05.11-03].include?(display)
       harden_legacy_tree_exporter(staged_dir, display)
     elsif %w[SBE-2026.07.16-01 SBE-2026.07.16-02 SBE-2026.07.16-03 SBE-2026.08.13-01].include?(display)
       harden_canonical_exporter(staged_dir, display)
     end
     harden_windows_dialog_paths(staged_dir) if display.start_with?('SBE-2026.05.11-')
     harden_scrollable_dialogs(staged_dir)
+    add_batch_options_to_export_dialog(staged_dir)
+  end
+
+  def self.add_batch_options_to_export_dialog(staged_dir)
+    html_path = File.join(staged_dir, 'bom_engine', 'ui', 'export_dialog.html')
+    return unless File.file?(html_path)
+
+    html = File.read(html_path, encoding: 'UTF-8')
+    css = <<~CSS.gsub(/^/, '  ')
+      .evolution-batch-panel { background: #151a22; border: 1px solid #2e4050; border-radius: 8px; padding: 14px; margin: 14px 0; }
+      .evolution-batch-panel h3 { color: #4fffb0; font-size: 11px; letter-spacing: .08em; margin: 0 0 9px; text-transform: uppercase; }
+      .evolution-batch-modes { display: flex; gap: 16px; margin-bottom: 10px; }
+      .evolution-batch-modes label { color: #c0ccd8; cursor: pointer; font-size: 12px; text-transform: none; }
+      .evolution-batch-row { align-items: center; display: flex; gap: 10px; }
+      .evolution-batch-row select { background: #141720; border: 1px solid #405064; border-radius: 5px; color: #e0e4ea; padding: 7px 9px; }
+      .evolution-batch-help { color: #778899; font-size: 11px; line-height: 1.45; margin-top: 9px; }
+    CSS
+    panel = <<~HTML.gsub(/^/, '  ')
+      <div class="evolution-batch-panel" id="evolution-batch-options">
+        <h3>Batch Pemrosesan Model</h3>
+        <div class="evolution-batch-modes">
+          <label><input type="radio" name="batch-mode" value="auto" checked onchange="refreshBatchMode()"> Auto</label>
+          <label><input type="radio" name="batch-mode" value="manual" onchange="refreshBatchMode()"> Manual</label>
+        </div>
+        <div class="evolution-batch-row">
+          <span>Entity per giliran</span>
+          <select id="batch-size" disabled>
+            <option value="96">96 — paling ringan</option>
+            <option value="128">128</option>
+            <option value="256">256</option>
+            <option value="512" selected>512 — seimbang</option>
+            <option value="1024">1024</option>
+            <option value="2048">2048</option>
+            <option value="4096">4096</option>
+            <option value="8192">8192 — paling cepat</option>
+          </select>
+        </div>
+        <div class="evolution-batch-help" id="batch-help">Auto memilih ukuran dari jumlah logical CPU. Nilai kecil lebih responsif; nilai besar lebih cepat tetapi menahan UI lebih lama.</div>
+      </div>
+    HTML
+    javascript = <<~JS.gsub(/^/, '  ')
+      function recommendedBatchSize() {
+        var cores = Number(navigator.hardwareConcurrency || 4);
+        if (cores <= 4) return 128;
+        if (cores <= 8) return 256;
+        if (cores <= 16) return 512;
+        return 1024;
+      }
+
+      function selectedBatchSize() {
+        var mode = document.querySelector('input[name="batch-mode"]:checked').value;
+        return mode === 'auto' ? recommendedBatchSize() : Number(document.getElementById('batch-size').value);
+      }
+
+      function refreshBatchMode() {
+        var manual = document.querySelector('input[name="batch-mode"]:checked').value === 'manual';
+        var select = document.getElementById('batch-size');
+        select.disabled = !manual;
+        if (!manual) select.value = String(recommendedBatchSize());
+      }
+
+    JS
+
+    replace_once!(html, '</style>', "#{css}</style>", html_path)
+    replace_once!(html, '  <div class="actions">', "#{panel}  <div class=\"actions\">", html_path)
+    replace_once!(html, '  function doExport() {', "#{javascript}  function doExport() {", html_path)
+    replace_once!(html, '    sketchup.export(JSON.stringify(settings));', "    settings.batch_size = selectedBatchSize();\n    sketchup.export(JSON.stringify(settings));", html_path)
+    replace_once!(html, '  window.onload = function() {', "  window.onload = function() {\n    refreshBatchMode();", html_path)
+    html.gsub!(/[ \t]+$/, '')
+    File.write(html_path, html, encoding: 'UTF-8')
   end
 
   # Historical dialog dimensions were tuned for older displays. On Windows,
@@ -523,10 +705,6 @@ module EvolutionLabBuilder
   end
 
   def self.create_master_loader(master_staging_dir, evolution_lab_dir, versions)
-    FileUtils.cp(
-      File.join(ROOT_DIR, 'history', 'batch_runner.rb'),
-      File.join(evolution_lab_dir, 'batch_runner.rb')
-    )
     # 1. Write evolution_lab/master_menu.rb
     master_menu_file = File.join(evolution_lab_dir, 'master_menu.rb')
     menu_code = +<<~RUBY
@@ -607,10 +785,6 @@ module EvolutionLabBuilder
     menu_code << <<~RUBY
 
             lab_menu.add_separator
-            lab_menu.add_item('Batch Export RUMAH + SBOOST ([01] to [09])') do
-              require File.join(__dir__, 'batch_runner.rb')
-              SibamboHistory::EvolutionLab::BatchRunner.start_or_resume
-            end
             lab_menu.add_item('About Evolution Lab') do
               UI.messagebox(
                 "Sibambo BOM Engine Evolution Lab\\n\\n" +
@@ -625,8 +799,6 @@ module EvolutionLabBuilder
       end
 
       SibamboHistory::EvolutionLab.init_menus
-      require File.join(__dir__, 'batch_runner.rb')
-      SibamboHistory::EvolutionLab::BatchRunner.resume_if_pending
     RUBY
     File.write(master_menu_file, menu_code, encoding: 'UTF-8')
 
