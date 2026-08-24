@@ -10,6 +10,7 @@ module SibamboHistory
           return UI.messagebox('Exporter ini masih berjalan.') if @running
 
           @running = true
+          @ticking = false
           @batch_size = batch_size
           @fiber = Fiber.new do
             begin
@@ -29,20 +30,27 @@ module SibamboHistory
         end
 
         def tick
-          outcome = @fiber.resume
-          unless outcome.is_a?(Array) && [:complete, :error].include?(outcome[0])
-            update(outcome)
-            return
-          end
+          return if @ticking
 
-          status, value = outcome
-          finish
-          UI.messagebox("Export gagal:
+          @ticking = true
+          begin
+            outcome = @fiber.resume
+            unless outcome.is_a?(Array) && [:complete, :error].include?(outcome[0])
+              update(outcome)
+              return
+            end
+
+            status, value = outcome
+            finish
+            UI.messagebox("Export gagal:
 #{value.message}") if status == :error
-        rescue StandardError => error
-          finish
-          UI.messagebox("Export gagal:
+          rescue StandardError => error
+            finish
+            UI.messagebox("Export gagal:
 #{error.message}")
+          ensure
+            @ticking = false
+          end
         end
 
         def build_dialog(title)

@@ -35,6 +35,10 @@ module UI
       @messages ||= []
       @messages << message
     end
+
+    def clear_messages
+      @messages = []
+    end
   end
 end
 
@@ -63,4 +67,15 @@ raise "second checkpoint did not yield: #{events.inspect}; #{UI.messages.inspect
 tick.call
 raise "job did not finish after final slice: #{events.inspect}" unless events == %i[before middle after]
 
-puts 'current-model cooperative job: PASS (Fiber yields between selected batches)'
+UI.clear_messages
+modal_events = []
+job.start(title: 'Exporter modal completion', batch_size: 512) do
+  modal_events << :entered
+  UI.timers.last.call # SketchUp timers may fire again while a modal dialog is open.
+  modal_events << :exited
+end
+UI.timers.last.call
+raise "re-entrant timer interrupted the active Fiber: #{modal_events.inspect}" unless modal_events == %i[entered exited]
+raise "re-entrant timer produced a false export error: #{UI.messages.inspect}" unless UI.messages.empty?
+
+puts 'current-model cooperative job: PASS (batch yields and modal timer re-entry guarded)'
