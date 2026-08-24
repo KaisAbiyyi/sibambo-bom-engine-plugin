@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.10'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.11'.freeze
 
   def self.build
     puts "======================================================================"
@@ -495,7 +495,10 @@ module EvolutionLabBuilder
       harden_canonical_exporter(staged_dir, display)
     end
     harden_bomc_v1_batch(staged_dir) if display == 'SBE-2026.08.13-01'
-    harden_scene_pages_collection(staged_dir) if display == 'SBE-2026.08.19-01'
+    if display == 'SBE-2026.08.19-01'
+      harden_scene_pages_collection(staged_dir)
+      harden_scene_bomc_numeric_shapes(staged_dir)
+    end
     harden_windows_dialog_paths(staged_dir) if display.start_with?('SBE-2026.05.11-')
     harden_scrollable_dialogs(staged_dir)
     add_batch_options_to_export_dialog(staged_dir)
@@ -513,6 +516,76 @@ module EvolutionLabBuilder
       resolver_path
     )
     File.write(resolver_path, source, encoding: 'UTF-8')
+  end
+
+  def self.harden_scene_bomc_numeric_shapes(staged_dir)
+    adapter_path = File.join(staged_dir, 'bom_engine', 'bomc_model_adapter.rb')
+    source = File.read(adapter_path, encoding: 'UTF-8')
+    indent = lambda do |text|
+      text.lines.map { |line| line.strip.empty? ? line : "      #{line}" }.join.rstrip
+    end
+    helper_anchor = "      module_function\n\n      def normalize(graph, base_path: nil, checkpoint: nil)"
+    helpers = indent.call(<<~RUBY)
+      module_function
+
+      def numeric_values(value, label)
+        Array(value).flatten.each_with_index.map do |component, index|
+          begin
+            number = Float(component)
+            raise ArgumentError unless number.finite?
+            number
+          rescue ArgumentError, TypeError
+            raise ArgumentError, "BOMC source invalid: \#{label}[\#{index}] must be a finite number; got \#{component.inspect}."
+          end
+        end
+      end
+      private_class_method :numeric_values
+
+      def numeric_pairs(value, label)
+        values = numeric_values(value, label)
+        raise ArgumentError, "BOMC source invalid: \#{label} must contain UV pairs." unless (values.length % 2).zero?
+        values.each_slice(2).to_a
+      end
+      private_class_method :numeric_pairs
+
+      def normalize(graph, base_path: nil, checkpoint: nil)
+    RUBY
+    replace_once!(source, helper_anchor, helpers, adapter_path)
+
+    replacements = {
+      'positions = Array(mesh[:positions_m]).map(&:to_f)' => "positions = numeric_values(mesh[:positions_m], 'mesh.positions_m')",
+      'eye_m: Array(camera[:eye_m]).map(&:to_f),' => "eye_m: numeric_values(camera[:eye_m], 'scene.camera.eye_m'),",
+      'target_m: Array(camera[:target_m]).map(&:to_f),' => "target_m: numeric_values(camera[:target_m], 'scene.camera.target_m'),",
+      'up: Array(camera[:up]).map(&:to_f),' => "up: numeric_values(camera[:up], 'scene.camera.up'),",
+      "normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : Array(face[:normal]).map(&:to_f)," =>
+        "normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : numeric_values(face[:normal], 'face.normal'),",
+      "kind: 'image', position: Array(image[:position]).map(&:to_f)," =>
+        "kind: 'image', position: numeric_values(image[:position], 'image.position'),",
+      'Array(matrix).map(&:to_f)' => "numeric_values(matrix, 'transform')"
+    }
+    replacements.each { |before, after| replace_once!(source, before, after, adapter_path) }
+
+    uv_method = indent.call(<<~RUBY)
+      def normalize_uv(uv)
+        return nil unless uv.is_a?(Hash)
+
+        result = {}
+        [:front_outer, :back_outer].each do |key|
+          result[key] = numeric_pairs(uv[key], key.to_s)
+        end
+        [:front_holes, :back_holes].each do |key|
+          result[key] = Array(uv[key]).each_with_index.map do |loop, index|
+            numeric_pairs(loop, "\#{key}[\#{index}]")
+          end
+        end
+        result
+      end
+      private_class_method :normalize_uv
+    RUBY
+    uv_pattern = /      def normalize_uv\(uv\).*?      private_class_method :normalize_uv/m
+    raise "Hardening anchor not found in #{adapter_path}: def normalize_uv" unless source.match?(uv_pattern)
+    source.sub!(uv_pattern, uv_method)
+    File.write(adapter_path, source, encoding: 'UTF-8')
   end
 
   def self.isolate_embedded_menu_registration(staged_dir)

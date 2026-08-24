@@ -11,6 +11,26 @@ module SibamboHistory
 
       module_function
 
+      def numeric_values(value, label)
+        Array(value).flatten.each_with_index.map do |component, index|
+          begin
+            number = Float(component)
+            raise ArgumentError unless number.finite?
+            number
+          rescue ArgumentError, TypeError
+            raise ArgumentError, "BOMC source invalid: #{label}[#{index}] must be a finite number; got #{component.inspect}."
+          end
+        end
+      end
+      private_class_method :numeric_values
+
+      def numeric_pairs(value, label)
+        values = numeric_values(value, label)
+        raise ArgumentError, "BOMC source invalid: #{label} must contain UV pairs." unless (values.length % 2).zero?
+        values.each_slice(2).to_a
+      end
+      private_class_method :numeric_pairs
+
       def normalize(graph, base_path: nil, checkpoint: nil)
         payload = symbolize_if_needed(graph)
         if payload.dig(:format, :identifier).to_s == 'model_eval_json_v1'
@@ -43,7 +63,7 @@ module SibamboHistory
         end
         meshes = raw_meshes.each_with_index.map do |mesh, mesh_index_value|
           notify(checkpoint, :encode_positions, mesh_index_value + 1, raw_meshes.length)
-          positions = Array(mesh[:positions_m]).map(&:to_f)
+          positions = numeric_values(mesh[:positions_m], 'mesh.positions_m')
           raw_faces = Array(mesh[:faces])
           {
             stable_id: mesh[:id].to_s,
@@ -255,9 +275,9 @@ module SibamboHistory
             source_binding: scene[:source_binding] || {},
             camera: {
               projection: camera[:projection].to_s == 'orthographic' ? 'orthographic' : 'perspective',
-              eye_m: Array(camera[:eye_m]).map(&:to_f),
-              target_m: Array(camera[:target_m]).map(&:to_f),
-              up: Array(camera[:up]).map(&:to_f),
+              eye_m: numeric_values(camera[:eye_m], 'scene.camera.eye_m'),
+              target_m: numeric_values(camera[:target_m], 'scene.camera.target_m'),
+              up: numeric_values(camera[:up], 'scene.camera.up'),
               field_of_view_degrees: camera[:field_of_view_degrees]&.to_f,
               orthographic_height_m: camera[:orthographic_height_m]&.to_f,
               aspect_ratio: camera[:aspect_ratio].to_f
@@ -358,7 +378,7 @@ module SibamboHistory
           front_appearance_required: true,
           back_appearance_required: !back_material.nil?,
           tag: optional_reference(tag_index, face[:tag_id]),
-          normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : Array(face[:normal]).map(&:to_f),
+          normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : numeric_values(face[:normal], 'face.normal'),
           area_m2: face[:area_m2].to_f,
           surface_type: semantic[:role] || face[:surface_hint],
           hidden: face[:hidden] == true,
@@ -420,7 +440,7 @@ module SibamboHistory
             base_path
           )
           {
-            kind: 'image', position: Array(image[:position]).map(&:to_f),
+            kind: 'image', position: numeric_values(image[:position], 'image.position'),
             width_m: image[:width_m].to_f, height_m: image[:height_m].to_f,
             text: node[:name].to_s, texture: texture
           }
@@ -439,10 +459,12 @@ module SibamboHistory
 
         result = {}
         [:front_outer, :back_outer].each do |key|
-          result[key] = Array(uv[key]).map { |pair| Array(pair).map(&:to_f) }
+          result[key] = numeric_pairs(uv[key], key.to_s)
         end
         [:front_holes, :back_holes].each do |key|
-          result[key] = Array(uv[key]).map { |loop| Array(loop).map { |pair| Array(pair).map(&:to_f) } }
+          result[key] = Array(uv[key]).each_with_index.map do |loop, index|
+            numeric_pairs(loop, "#{key}[#{index}]")
+          end
         end
         result
       end
@@ -454,7 +476,7 @@ module SibamboHistory
         if values[0].is_a?(Array)
           values.each_with_index.map do |matrix, index|
             notify(checkpoint, :encode_transforms, index + 1, values.length)
-            Array(matrix).map(&:to_f)
+            numeric_values(matrix, 'transform')
           end
         else
           raise 'BOMC source invalid: transform table is not divisible by 16.' unless (values.length % 16).zero?
