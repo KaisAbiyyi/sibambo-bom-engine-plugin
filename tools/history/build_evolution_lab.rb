@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.13'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.14'.freeze
 
   def self.build
     puts "======================================================================"
@@ -760,6 +760,11 @@ module EvolutionLabBuilder
       '10' => {
         kind: 'bomc_scene', title: 'Scene/Page BOMC — Correct Visibility Semantics', badge: 'BOMC SCENE V2',
         description: 'BOMC dengan semantik visibilitas DrawingElement dan signature deterministik.',
+        suffix: '.bomc', button: 'Export Scene BOMC'
+      },
+      '11' => {
+        kind: 'bomc_scene', title: 'Scene/Page BOMC — Verified SketchUp Semantics', badge: 'BOMC SCENE V3',
+        description: 'BOMC dengan semantik visibilitas DrawingElement resmi, layer page_behavior, dan metadata kamera lengkap.',
         suffix: '.bomc', button: 'Export Scene BOMC'
       }
     }.fetch(id, nil)
