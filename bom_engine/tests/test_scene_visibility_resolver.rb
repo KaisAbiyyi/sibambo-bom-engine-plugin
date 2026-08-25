@@ -400,5 +400,172 @@ module BOMEngine
       assert_equal 'scene:doc:default', decoded[:active_scene_id]
       assert_not_nil default_scene[:visibility_signature]
     end
+
+    class MockDrawingElement
+      attr_accessor :persistent_id, :entityID, :layer, :hidden
+      def initialize(persistent_id, layer: nil, hidden: false)
+        @persistent_id = persistent_id
+        @entityID = persistent_id.to_i rescue 1000
+        @layer = layer
+        @hidden = hidden
+      end
+      def hidden?; @hidden; end
+      def visible?; !@hidden; end
+    end
+
+    def test_different_hidden_component_changes_signature
+      elem_a = MockDrawingElement.new('comp_a')
+      elem_b = MockDrawingElement.new('comp_b')
+      layer = MockLayer.new('Layer0', visible: true, persistent_id: 'l0')
+
+      page_pers = MockPage.new('PERS', persistent_id: 'p_pers', hidden_entities: [elem_b])
+      page_str = MockPage.new('STR', persistent_id: 'p_str', hidden_entities: [elem_a])
+
+      nodes = [
+        { id: 'node:root', kind: 'root', definition_id: 'def:root' },
+        { id: 'node:def:root:comp:comp_a', kind: 'component_instance', persistent_id: 'comp_a', _entity: elem_a },
+        { id: 'node:def:root:comp:comp_b', kind: 'component_instance', persistent_id: 'comp_b', _entity: elem_b }
+      ]
+
+      model = MockModel.new(pages: [page_pers, page_str], layers: [layer])
+      scenes = SceneVisibilityResolver.resolve_scenes(model, nodes: nodes)
+
+      pers_scene = scenes.find { |s| s[:name] == 'PERS' }
+      str_scene = scenes.find { |s| s[:name] == 'STR' }
+
+      assert_includes pers_scene.dig(:visibility, :hidden_node_overrides), 'node:def:root:comp:comp_b'
+      assert_includes str_scene.dig(:visibility, :hidden_node_overrides), 'node:def:root:comp:comp_a'
+      assert_not_equal pers_scene[:visibility_signature], str_scene[:visibility_signature],
+        'Scenes with different hidden components MUST have different visibility signatures'
+    end
+
+    def test_different_hidden_nested_group_changes_signature
+      elem_group = MockDrawingElement.new('nested_grp_1')
+      layer = MockLayer.new('Layer0', visible: true, persistent_id: 'l0')
+
+      page1 = MockPage.new('SCENE_1', persistent_id: 'p_1', hidden_entities: [])
+      page2 = MockPage.new('SCENE_2', persistent_id: 'p_2', hidden_entities: [elem_group])
+
+      nodes = [
+        { id: 'node:root', kind: 'root', definition_id: 'def:root' },
+        { id: 'node:def:root:group:nested_grp_1', kind: 'group_instance', persistent_id: 'nested_grp_1', _entity: elem_group }
+      ]
+
+      model = MockModel.new(pages: [page1, page2], layers: [layer])
+      scenes = SceneVisibilityResolver.resolve_scenes(model, nodes: nodes)
+
+      s1 = scenes.find { |s| s[:name] == 'SCENE_1' }
+      s2 = scenes.find { |s| s[:name] == 'SCENE_2' }
+
+      assert_empty s1.dig(:visibility, :hidden_node_overrides)
+      assert_includes s2.dig(:visibility, :hidden_node_overrides), 'node:def:root:group:nested_grp_1'
+      assert_not_equal s1[:visibility_signature], s2[:visibility_signature]
+    end
+
+    def test_drawingelement_visibility_override_values
+      elem_hidden = MockDrawingElement.new('elem_hid')
+      elem_vis = MockDrawingElement.new('elem_vis')
+
+      page = MockPage.new('OVERRIDE_SCENE', persistent_id: 'p_ov')
+      def page.get_drawingelement_visibility(elem)
+        return 1 if elem.persistent_id == 'elem_hid'
+        return 2 if elem.persistent_id == 'elem_vis'
+        0
+      end
+
+      nodes = [
+        { id: 'node:root', kind: 'root', definition_id: 'def:root' },
+        { id: 'node:1', kind: 'component_instance', persistent_id: 'elem_hid', _entity: elem_hidden },
+        { id: 'node:2', kind: 'component_instance', persistent_id: 'elem_vis', _entity: elem_vis }
+      ]
+
+      model = MockModel.new(pages: [page], layers: [MockLayer.new('Layer0', visible: true, persistent_id: 'l0')])
+      scenes = SceneVisibilityResolver.resolve_scenes(model, nodes: nodes)
+      scene = scenes.first
+
+      assert_includes scene.dig(:visibility, :hidden_node_overrides), 'node:1'
+      assert_includes scene.dig(:visibility, :visible_node_overrides), 'node:2'
+    end
+
+    def test_effective_visible_occurrences_calculation
+      elem_a = MockDrawingElement.new('comp_a')
+      elem_b = MockDrawingElement.new('comp_b')
+      layer = MockLayer.new('Layer0', visible: true, persistent_id: 'l0')
+
+      page_pers = MockPage.new('PERS', persistent_id: 'p_pers', hidden_entities: [elem_b])
+      page_all = MockPage.new('ALL', persistent_id: 'p_all', hidden_entities: [])
+
+      nodes = [
+        { id: 'node:root', kind: 'root', definition_id: 'def:root' },
+        { id: 'node:def:root:comp:comp_a', kind: 'component_instance', persistent_id: 'comp_a', definition_id: 'def:a', _entity: elem_a },
+        { id: 'node:def:root:comp:comp_b', kind: 'component_instance', persistent_id: 'comp_b', definition_id: 'def:b', _entity: elem_b }
+      ]
+
+      definitions = [
+        { id: 'def:root', node_ids: ['node:def:root:comp:comp_a', 'node:def:root:comp:comp_b'] },
+        { id: 'def:a', node_ids: [] },
+        { id: 'def:b', node_ids: [] }
+      ]
+
+      model = MockModel.new(pages: [page_pers, page_all], layers: [layer])
+      scenes = SceneVisibilityResolver.resolve_scenes(model, nodes: nodes, definitions: definitions)
+
+      pers = scenes.find { |s| s[:name] == 'PERS' }
+      all = scenes.find { |s| s[:name] == 'ALL' }
+
+      assert_equal 1, pers[:effective_visible_occurrence_count]
+      assert_equal 2, all[:effective_visible_occurrence_count]
+    end
+
+    def test_bomc_section_scenes_with_node_overrides_roundtrip
+      graph = {
+        format: { name: 'BOM Engine Canonical', version: '3.0.0' },
+        materials: [{ id: 'mat:1', name: 'Material', color: { hex: '#ffffff' }, opacity: 1.0 }],
+        tags: [{ id: 'tag:1', name: 'Layer0', visible: true }],
+        definitions: [
+          { id: 'def:root', name: 'Root', kind: 'model_definition', node_ids: ['node:inst:1', 'node:inst:2'] },
+          { id: 'def:comp', name: 'Comp', kind: 'component_definition', node_ids: [] }
+        ],
+        meshes: [],
+        nodes: [
+          { id: 'node:root', kind: 'root', name: 'Root', definition_id: 'def:root', transform_id: 0 },
+          { id: 'node:inst:1', kind: 'component_instance', name: 'Inst1', definition_id: 'def:comp', transform_id: 0, persistent_id: '1001' },
+          { id: 'node:inst:2', kind: 'component_instance', name: 'Inst2', definition_id: 'def:comp', transform_id: 0, persistent_id: '1002' }
+        ],
+        transforms: [[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]],
+        scenes: [
+          {
+            id: 'scene:doc:1',
+            name: 'Scene 1',
+            description: '',
+            is_active_at_export: true,
+            camera: { projection: 'perspective', eye_m: [10, 10, 10], target_m: [0, 0, 0], up: [0, 0, 1], field_of_view_degrees: 35.0, aspect_ratio: 1.0 },
+            use_camera: true,
+            transition_time_seconds: 0.0,
+            visibility: {
+              visible_tag_ids: ['tag:1'],
+              hidden_tag_ids: [],
+              visible_node_overrides: ['node:inst:1'],
+              hidden_node_overrides: ['node:inst:2']
+            },
+            stores_tag_visibility: true,
+            stores_hidden_objects: true,
+            stores_hidden_geometry: false,
+            stores_section_planes: false,
+            section_state: { active_section_plane_ids: [], rendering_support: 'metadata-only' },
+            visibility_signature: 'sig_override_1'
+          }
+        ]
+      }
+
+      packed = BOMCWriter.pack(graph)
+      decoded = BOMCDecoder.decode(packed[:bytes])
+
+      scene = decoded[:scenes].first
+      assert_equal 1, scene.dig(:visibility, :visible_node_indices).length
+      assert_equal 1, scene.dig(:visibility, :hidden_node_indices).length
+      assert_equal [1], scene.dig(:visibility, :visible_node_indices) # node:inst:1 is index 1
+      assert_equal [2], scene.dig(:visibility, :hidden_node_indices)  # node:inst:2 is index 2
+    end
   end
 end

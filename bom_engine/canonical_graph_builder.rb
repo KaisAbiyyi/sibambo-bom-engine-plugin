@@ -344,7 +344,8 @@ module BOMEngine
             tag_name: entity_tag_name(entity),
             attached_labels: @attached_labels[entity.object_id]
           ),
-          visible: entity_visible?(entity)
+          visible: entity_visible?(entity),
+          _entity: entity
         }
       end
 
@@ -362,7 +363,8 @@ module BOMEngine
           source_identity: entity_source_identity(image),
           image: data,
           attributes: Traversal.extract_dicts(image),
-          visible: entity_visible?(image)
+          visible: entity_visible?(image),
+          _entity: image
         }
       end
 
@@ -382,7 +384,8 @@ module BOMEngine
           text: text.text.to_s,
           attachment: text_attachment(text),
           attributes: Traversal.extract_dicts(text),
-          visible: entity_visible?(text)
+          visible: entity_visible?(text),
+          _entity: text
         }
       end
 
@@ -464,7 +467,9 @@ module BOMEngine
       end
 
       def build_scenes
-        @scenes
+        scenes = SceneVisibilityResolver.resolve_scenes(@model, nodes: @nodes, definitions: @definitions)
+        @nodes.each { |node| node.delete(:_entity) }
+        scenes
       end
 
       def extract_spaces

@@ -3,27 +3,28 @@
 
 require 'digest'
 require 'json'
+require 'set'
 require_relative 'constants'
 
 module BOMEngine
   module SceneVisibilityResolver
     module_function
 
-    def resolve_scenes(model, active_page: nil)
+    def resolve_scenes(model, active_page: nil, nodes: nil, definitions: nil)
       pages = model.respond_to?(:pages) ? model.pages : nil
       active = active_page || (pages.respond_to?(:selected_page) ? pages.selected_page : nil)
 
       if pages.nil? || pages.empty?
-        [build_scene_profile(nil, is_active: true, model: model)]
+        [build_scene_profile(nil, is_active: true, model: model, nodes: nodes, definitions: definitions)]
       else
         pages.map do |page|
           is_active = (page == active)
-          build_scene_profile(page, is_active: is_active, model: model)
+          build_scene_profile(page, is_active: is_active, model: model, nodes: nodes, definitions: definitions)
         end
       end
     end
 
-    def build_scene_profile(page, is_active: false, model: nil)
+    def build_scene_profile(page, is_active: false, model: nil, nodes: nil, definitions: nil)
       if page.nil?
         camera_data = current_view_camera(model)
         visible_tag_ids = []
@@ -45,7 +46,7 @@ module BOMEngine
           hidden_node_overrides: [],
           active_section_plane_ids: []
         )
-        return {
+        profile = {
           id: 'scene:doc:current_view',
           name: 'Current View',
           description: '',
@@ -59,8 +60,8 @@ module BOMEngine
           use_camera: true,
           transition_time_seconds: 0.0,
           visibility: {
-            visible_tag_ids: visible_tag_ids.sort,
-            hidden_tag_ids: hidden_tag_ids.sort,
+            visible_tag_ids: visible_tag_ids.sort.uniq,
+            hidden_tag_ids: hidden_tag_ids.sort.uniq,
             visible_node_overrides: [],
             hidden_node_overrides: []
           },
@@ -74,6 +75,10 @@ module BOMEngine
           },
           visibility_signature: signature
         }
+        if nodes && !nodes.empty?
+          profile[:effective_visible_occurrence_count] = calculate_effective_visible_occurrences(nodes, definitions, profile)
+        end
+        return profile
       end
 
       page_pid = safe_persistent_id(page)
@@ -98,8 +103,7 @@ module BOMEngine
       end
 
       # DrawingElement visibility overrides
-      visible_node_overrides = []
-      hidden_node_overrides = []
+      visible_node_overrides, hidden_node_overrides = extract_node_overrides(page, model, nodes)
       active_section_plane_ids = extract_active_section_planes(page)
 
       signature = compute_visibility_signature(
@@ -110,7 +114,7 @@ module BOMEngine
         active_section_plane_ids: active_section_plane_ids
       )
 
-      {
+      profile = {
         id: scene_id,
         name: page.name.to_s,
         description: page.description.to_s,
@@ -124,21 +128,156 @@ module BOMEngine
         use_camera: page.respond_to?(:use_camera?) ? page.use_camera? : true,
         transition_time_seconds: page.respond_to?(:transition_time) ? page.transition_time.to_f : 0.0,
         visibility: {
-          visible_tag_ids: visible_tag_ids.sort,
-          hidden_tag_ids: hidden_tag_ids.sort,
-          visible_node_overrides: visible_node_overrides.sort,
-          hidden_node_overrides: hidden_node_overrides.sort
+          visible_tag_ids: visible_tag_ids.sort.uniq,
+          hidden_tag_ids: hidden_tag_ids.sort.uniq,
+          visible_node_overrides: visible_node_overrides.sort.uniq,
+          hidden_node_overrides: hidden_node_overrides.sort.uniq
         },
         stores_tag_visibility: stores_tags,
         stores_hidden_objects: stores_objects,
         stores_hidden_geometry: stores_geometry,
         stores_section_planes: stores_sections,
         section_state: {
-          active_section_plane_ids: active_section_plane_ids.sort,
+          active_section_plane_ids: active_section_plane_ids.sort.uniq,
           rendering_support: 'metadata-only'
         },
         visibility_signature: signature
       }
+
+      if nodes && !nodes.empty?
+        profile[:effective_visible_occurrence_count] = calculate_effective_visible_occurrences(nodes, definitions, profile)
+      end
+
+      profile
+    end
+
+    def extract_node_overrides(page, model, nodes = nil)
+      visible_overrides = []
+      hidden_overrides = []
+
+      # 1. If nodes list is provided, inspect each node's underlying entity
+      if nodes && !nodes.empty?
+        nodes.each do |node|
+          next if node[:kind] == 'root'
+          node_id = node[:id]
+          entity = node[:_entity] || node[:entity]
+          pid = node.dig(:source_identity, :persistent_id) || node[:persistent_id]
+
+          if entity
+            if page.respond_to?(:get_drawingelement_visibility)
+              flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
+              if flag == 1
+                hidden_overrides << node_id
+                next
+              elsif flag == 2
+                visible_overrides << node_id
+                next
+              end
+            end
+
+            if page.respond_to?(:hidden_entities)
+              hidden_list = (begin page.hidden_entities rescue nil end)
+              if hidden_list && hidden_list.respond_to?(:include?) && hidden_list.include?(entity)
+                hidden_overrides << node_id
+                next
+              end
+            end
+
+            if page.respond_to?(:use_hidden_objects?) && !page.use_hidden_objects?
+              if entity.respond_to?(:hidden?) && entity.hidden?
+                hidden_overrides << node_id
+                next
+              end
+            end
+          elsif pid
+            # Check by persistent id if entity object is not directly bound
+            if page.respond_to?(:hidden_entities)
+              hidden_list = (begin page.hidden_entities rescue nil end) || []
+              if hidden_list.any? { |he| safe_persistent_id(he) == pid.to_s }
+                hidden_overrides << node_id
+                next
+              end
+            end
+          end
+        end
+      end
+
+      # 2. Extract from page.hidden_entities for any items not covered
+      if page.respond_to?(:hidden_entities)
+        hidden_list = (begin page.hidden_entities rescue nil end) || []
+        Array(hidden_list).each do |ent|
+          ent_pid = safe_persistent_id(ent)
+          node_ref = "node:pid:#{ent_pid}"
+          hidden_overrides << node_ref unless hidden_overrides.any? { |id| id.include?(ent_pid) }
+        end
+      end
+
+      if page.respond_to?(:visible_entities)
+        vis_list = (begin page.visible_entities rescue nil end) || []
+        Array(vis_list).each do |ent|
+          ent_pid = safe_persistent_id(ent)
+          node_ref = "node:pid:#{ent_pid}"
+          visible_overrides << node_ref unless visible_overrides.any? { |id| id.include?(ent_pid) }
+        end
+      end
+
+      [visible_overrides, hidden_overrides]
+    rescue StandardError
+      [[], []]
+    end
+
+    def calculate_effective_visible_occurrences(nodes, definitions, scene)
+      return 0 if nodes.nil? || nodes.empty?
+
+      hidden_nodes = Array(scene.dig(:visibility, :hidden_node_overrides)).to_set
+      visible_nodes = Array(scene.dig(:visibility, :visible_node_overrides)).to_set
+      hidden_tags = Array(scene.dig(:visibility, :hidden_tag_ids)).to_set
+      visible_tags = Array(scene.dig(:visibility, :visible_tag_ids)).to_set
+      stores_tags = scene[:stores_tag_visibility] != false
+
+      nodes_by_id = {}
+      nodes.each { |n| nodes_by_id[n[:id]] = n }
+
+      definitions_by_id = {}
+      Array(definitions).each { |d| definitions_by_id[d[:id]] = d }
+
+      root_node = nodes.find { |n| n[:kind] == 'root' }
+      return nodes.count { |n| n[:visible] != false } if root_node.nil?
+
+      node_visible = lambda do |node|
+        return false if hidden_nodes.include?(node[:id])
+        pid = node.dig(:source_identity, :persistent_id) || node[:persistent_id]
+        return false if pid && (hidden_nodes.include?(pid.to_s) || hidden_nodes.include?("node:pid:#{pid}"))
+        return true if visible_nodes.include?(node[:id])
+        return true if pid && (visible_nodes.include?(pid.to_s) || visible_nodes.include?("node:pid:#{pid}"))
+
+        tag_id = node[:tag_id]
+        if stores_tags && tag_id
+          return false if hidden_tags.include?(tag_id)
+          return true if visible_tags.include?(tag_id)
+        end
+        node[:visible] != false
+      end
+
+      count = 0
+      traverse = lambda do |definition_id|
+        defn = definitions_by_id[definition_id]
+        return unless defn
+        child_node_ids = defn[:node_ids] || []
+        child_node_ids.each do |nid|
+          child_node = nodes_by_id[nid]
+          next unless child_node
+          if node_visible.call(child_node)
+            count += 1
+            traverse.call(child_node[:definition_id]) if child_node[:definition_id]
+          end
+        end
+      end
+
+      traverse.call(root_node[:definition_id])
+      count
+    rescue StandardError
+      0
     end
 
     def effective_tag_visibility(layer, page)
@@ -225,41 +364,60 @@ module BOMEngine
     def exportable_universe?(entity, scenes, scope: 'active')
       return false if entity.nil? || (entity.respond_to?(:deleted?) && entity.deleted?)
 
+      pid = safe_persistent_id(entity)
+      tag_id = entity.respond_to?(:layer) && entity.layer ? tag_stable_id(entity.layer) : nil
+
       if scope == 'active'
         active_scene = scenes.find { |s| s[:is_active_at_export] } || scenes.first
         return true if active_scene.nil?
-        # Check tag visibility for active scene
-        if entity.respond_to?(:layer) && entity.layer
-          tag_id = tag_stable_id(entity.layer)
-          return false if active_scene.dig(:visibility, :hidden_tag_ids)&.include?(tag_id)
+
+        hidden_nodes = active_scene.dig(:visibility, :hidden_node_overrides) || []
+        visible_nodes = active_scene.dig(:visibility, :visible_node_overrides) || []
+
+        if visible_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
+          return true
         end
+
+        if hidden_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
+          return false
+        end
+
+        if tag_id && active_scene.dig(:visibility, :hidden_tag_ids)&.include?(tag_id)
+          return false
+        end
+
         return true
       end
 
       # scope == 'all' (Union of visible across all exported scenes)
-      return true if scenes.empty?
+      return true if scenes.nil? || scenes.empty?
 
-      # An entity is in the exportable universe if visible in AT LEAST ONE scene
-      if entity.respond_to?(:layer) && entity.layer
-        tag_id = tag_stable_id(entity.layer)
-        visible_in_any = scenes.any? do |scene|
-          scene.dig(:visibility, :visible_tag_ids)&.include?(tag_id)
+      visible_in_any = scenes.any? do |scene|
+        hidden_nodes = scene.dig(:visibility, :hidden_node_overrides) || []
+        visible_nodes = scene.dig(:visibility, :visible_node_overrides) || []
+
+        next true if visible_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
+        next false if hidden_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
+
+        if tag_id
+          scene.dig(:visibility, :visible_tag_ids)&.include?(tag_id) != false
+        else
+          true
         end
-        return false unless visible_in_any
       end
 
-      true
+      visible_in_any
     rescue StandardError
       true
     end
 
     def compute_visibility_signature(visible_tag_ids:, hidden_tag_ids:, visible_node_overrides:, hidden_node_overrides:, active_section_plane_ids:)
       payload = [
-        Array(visible_tag_ids).map(&:to_s).sort,
-        Array(hidden_tag_ids).map(&:to_s).sort,
-        Array(visible_node_overrides).map(&:to_s).sort,
-        Array(hidden_node_overrides).map(&:to_s).sort,
-        Array(active_section_plane_ids).map(&:to_s).sort
+        Array(visible_tag_ids).map(&:to_s).sort.uniq,
+        Array(hidden_tag_ids).map(&:to_s).sort.uniq,
+        Array(visible_node_overrides).map(&:to_s).sort.uniq,
+        Array(hidden_node_overrides).map(&:to_s).sort.uniq,
+        Array(active_section_plane_ids).map(&:to_s).sort.uniq
       ]
       Digest::SHA256.hexdigest(JSON.generate(payload))
     end

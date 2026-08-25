@@ -30,7 +30,7 @@ module BOMEngine
         tag_index = index_ids(raw_tags)
         definition_index = index_ids(raw_definitions)
         mesh_index = index_ids(raw_meshes)
-        node_index = index_ids(raw_nodes)
+        node_index = index_node_ids(raw_nodes)
 
         materials = raw_materials.each_with_index.map do |material, index|
           notify(checkpoint, :compile_metadata, index + 1, raw_materials.length)
@@ -240,10 +240,10 @@ module BOMEngine
           visible_node_overrides = Array(visibility[:visible_node_overrides]).map(&:to_s)
           hidden_node_overrides = Array(visibility[:hidden_node_overrides]).map(&:to_s)
 
-          visible_tag_indices = visible_tag_ids.map { |id| tag_index[id] }.compact.sort
-          hidden_tag_indices = hidden_tag_ids.map { |id| tag_index[id] }.compact.sort
-          visible_node_indices = visible_node_overrides.map { |id| node_index[id] }.compact.sort
-          hidden_node_indices = hidden_node_overrides.map { |id| node_index[id] }.compact.sort
+          visible_tag_indices = visible_tag_ids.map { |id| tag_index[id] }.compact.uniq.sort
+          hidden_tag_indices = hidden_tag_ids.map { |id| tag_index[id] }.compact.uniq.sort
+          visible_node_indices = visible_node_overrides.map { |id| node_index[id] }.compact.uniq.sort
+          hidden_node_indices = hidden_node_overrides.map { |id| node_index[id] }.compact.uniq.sort
 
           {
             stable_id: scene[:id].to_s,
@@ -539,6 +539,22 @@ module BOMEngine
         result
       end
       private_class_method :index_ids
+
+      def index_node_ids(raw_nodes)
+        result = {}
+        Array(raw_nodes).each_with_index do |node, index|
+          id = node[:id].to_s
+          result[id] = index
+          pid = source_identity_value(node[:source_identity]) || node[:persistent_id]
+          if pid && !pid.to_s.empty?
+            result[pid.to_s] ||= index
+            result["node:pid:#{pid}"] ||= index
+            result["node:#{pid}"] ||= index
+          end
+        end
+        result
+      end
+      private_class_method :index_node_ids
 
       def fetch_reference(index, value, label)
         result = index[value]
