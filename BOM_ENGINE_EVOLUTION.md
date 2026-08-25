@@ -1,6 +1,6 @@
 # Sibambo BOM Engine — Complete Format Evolution & Archaeology Report
 
-**Date**: 2026-08-19  
+**Date**: 2026-08-25  
 **Authors**: Sibambo Research Team (Ridwan Ilyas & Kais Abiyyi)  
 **Scope**: Historical format lineage spanning repository origin (`rdwnilyas-coder/sibambo-bom-engine`) to current production (`KaisAbiyyi/sibambo-bom-engine-plugin`).
 
@@ -10,7 +10,7 @@
 
 Before transitioning BOMC into Sibambo's primary authoring format, this archaeology establishes a complete, immutable, and reproducible baseline of every significant BOM Engine exporter generation.
 
-All 10 selected historical engines have been isolated under dedicated Ruby namespaces (`SibamboHistory::V*`) and packaged into a single side-by-side SketchUp extension: **Sibambo BOM Engine Evolution Lab**, coexisting seamlessly with the current production BOM Engine.
+All 11 selected historical engines have been isolated under dedicated Ruby namespaces (`SibamboHistory::V*`) and packaged into a single side-by-side SketchUp extension: **Sibambo BOM Engine Evolution Lab**, coexisting seamlessly with the current production BOM Engine.
 
 ---
 
@@ -29,6 +29,7 @@ timeline
     2026-08-12 : [07] CleanPKG Binary Package (d245b68)
     2026-08-13 : [08] First BOMC Compiled Format (ebf2e65)
     2026-08-19 : [09] Scene/Page-Preserving BOMC (347fc72)
+    2026-08-25 : [10] Scene/Page BOMC — Correct Visibility Semantics (1a38b6b)
 ```
 
 | Seq | Display Version | Date | Label | Repository | Commit SHA | Format Family | Output Ext | Compression | Classification |
@@ -43,6 +44,7 @@ timeline
 | **08** | `SBE-2026.08.12-01` | 2026-08-12 | CleanPKG Binary Container | `KaisAbiyyi` | `d245b6873a99` | `clean_package_v1` | `.cleanpkg` | Zip Deflate | `MAJOR` |
 | **09** | `SBE-2026.08.13-01` | 2026-08-13 | First BOMC Compiled Format | `KaisAbiyyi` | `ebf2e658a790` | `bomc_compiled_v1_0` | `.bomc` | Section Deflate | `MAJOR` |
 | **10** | `SBE-2026.08.19-01` | 2026-08-19 | Scene/Page-Preserving BOMC | `KaisAbiyyi` | `347fc7247fde` | `bomc_compiled_v1_1_scenes` | `.bomc` | Section Deflate | `MAJOR` |
+| **11** | `SBE-2026.08.25-01` | 2026-08-25 | Scene/Page BOMC — Correct Visibility Semantics | `KaisAbiyyi` | `1a38b6be3561` | `bomc_compiled_v1_1_scenes` | `.bomc` | Section Deflate | `RELEASE` |
 
 ---
 
@@ -85,22 +87,24 @@ timeline
 ### 3.7. BOMC Compiled Building Format Lineage
 - **First BOMC Commit**: `ebf2e658a790fc401265d20d899082b05ff18cb1` (2026-08-13 21:21:47 +07:00).
 - **Core Innovation**: Replaced multi-file ZIP containers with a zero-copy single-file binary container (`BOMC\x01\x00\x00\x00`) with a 24-section table, varint codecs, octahedral normal packing, and embedded WebP textures.
-- **Scene/Page BOMC Commit**: `347fc7247fdec4041ffb9ee81226b271b5044b3a` (2026-08-19 00:12:45 +07:00).
-- **Advancement**: Added `SECTION_SCENES = 19`, capturing SketchUp Page persistent IDs (`stableBomcId`), tag visibility bitsets, per-scene drawing element overrides, and deterministic `visibilitySignature` hashes.
+- **Scene/Page BOMC Commit ([09])**: `347fc7247fdec4041ffb9ee81226b271b5044b3a` (2026-08-19 00:12:45 +07:00).
+- **Advancement**: Added `SECTION_SCENES = 19`, establishing Section 19 binary container layout, tag visibility bitsets, and basic scene profiling.
+- **Corrected Scene Visibility Semantics ([10])**: `1a38b6be3561d21338d9ab437e3d8bc8ae2b23c0` (2026-08-25 13:45:00 +07:00).
+- **Resolution**: Resolved real SketchUp `page.get_drawingelement_visibility` flags (`1 = hidden`, `2 = visible`) and `page.hidden_entities` into `visible_node_overrides` and `hidden_node_overrides`. Built deterministic `visibilitySignature` hashes invariant to camera/metadata but strictly responsive to geometry changes, fixing silent skips during scene switching in Model Eval.
 
 ---
 
 ## 4. Architectural Comparison Table
 
-| Dimension | [01] Original JSON | [04] Canonical v3 | [06] BOME2 | [07] CleanPKG | [08] First BOMC | [09] Scene BOMC |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Container** | Plain JSON | Plain / Gzip JSON | Binary + Sections | Deterministic ZIP | Single-File Binary | Single-File Binary |
-| **Instance Reuse** | None (Expanded) | Shared DAG | Shared DAG | Shared DAG | Shared Table | Shared Table |
-| **Positions** | Float (Meters) | Float (Meters) | Quantized uint16/32 | Varint Delta | Varint Quantized | Varint Quantized |
-| **Normals** | None | Triangle Mesh | None | Packed Int8 | Octahedral (2 bytes) | Octahedral (2 bytes) |
-| **Textures** | Folder on Disk | Folder on Disk | None | Zip Assets | Embedded Section | Embedded Section |
-| **Scenes** | Camera Only | Camera Only | Camera Only | Camera Only | Camera Only | Full Tag/Node Visibility |
-| **Zero-Copy Web** | No (JSON.parse) | No (JSON.parse) | Partial (TypedArray) | No (JSZip decode) | Full (TypedArray slice) | Full (TypedArray slice) |
+| Dimension | [01] Original JSON | [04] Canonical v3 | [06] BOME2 | [07] CleanPKG | [08] First BOMC | [09] Scene BOMC (Initial) | [10] Scene BOMC (Corrected) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Container** | Plain JSON | Plain / Gzip JSON | Binary + Sections | Deterministic ZIP | Single-File Binary | Single-File Binary | Single-File Binary |
+| **Instance Reuse** | None (Expanded) | Shared DAG | Shared DAG | Shared DAG | Shared Table | Shared Table | Shared Table |
+| **Positions** | Float (Meters) | Float (Meters) | Quantized uint16/32 | Varint Delta | Varint Quantized | Varint Quantized | Varint Quantized |
+| **Normals** | None | Triangle Mesh | None | Packed Int8 | Octahedral (2 bytes) | Octahedral (2 bytes) | Octahedral (2 bytes) |
+| **Textures** | Folder on Disk | Folder on Disk | None | Zip Assets | Embedded Section | Embedded Section | Embedded Section |
+| **Scenes** | Camera Only | Camera Only | Camera Only | Camera Only | Camera Only | Tag-Only Bitsets | Real Node Overrides + Signatures |
+| **Zero-Copy Web** | No (JSON.parse) | No (JSON.parse) | Partial (TypedArray) | No (JSZip decode) | Full (TypedArray slice) | Full (TypedArray slice) | Full (TypedArray slice) |
 
 ---
 
@@ -118,7 +122,8 @@ Extensions
        │    ├─ [06] 2026-07-16 — BOME2 Binary Runtime
        │    ├─ [07] 2026-08-12 — CleanPKG Binary Container
        │    ├─ [08] 2026-08-13 — First BOMC Compiled Format
-       │    └─ [09] 2026-08-19 — Scene/Page-Preserving BOMC
+       │    ├─ [09] 2026-08-19 — Scene/Page-Preserving BOMC
+       │    └─ [10] 2026-08-25 — Scene/Page BOMC — Correct Visibility Semantics
        ├─ Experiments
        │    └─ [EXP-01] 2026-05-11 — Nano BBox JSON
        └─ About Evolution Lab

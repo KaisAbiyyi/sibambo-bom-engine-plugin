@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.12'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.13'.freeze
 
   def self.build
     puts "======================================================================"
@@ -374,7 +374,8 @@ module EvolutionLabBuilder
       '06' => :bome2,
       '07' => :cleanpkg,
       '08' => :bomc_v1,
-      '09' => :bomc_scene
+      '09' => :bomc_scene,
+      '10' => :bomc_scene
     }.fetch(id, :experimental)
   end
 
@@ -754,6 +755,11 @@ module EvolutionLabBuilder
       '09' => {
         kind: 'bomc_scene', title: 'Scene/Page-Preserving BOMC', badge: 'BOMC SCENE',
         description: 'BOMC yang mempertahankan scene, page, dan visibility profile.',
+        suffix: '.bomc', button: 'Export Scene BOMC'
+      },
+      '10' => {
+        kind: 'bomc_scene', title: 'Scene/Page BOMC — Correct Visibility Semantics', badge: 'BOMC SCENE V2',
+        description: 'BOMC dengan semantik visibilitas DrawingElement dan signature deterministik.',
         suffix: '.bomc', button: 'Export Scene BOMC'
       }
     }.fetch(id, nil)
@@ -1207,7 +1213,7 @@ module EvolutionLabBuilder
             lab_menu.add_item('About Evolution Lab') do
               UI.messagebox(
                 "Sibambo BOM Engine Evolution Lab\\n\\n" +
-                "Side-by-side historical exporter suite spanning 2026-05-11 to 2026-08-19.\\n" +
+                "Side-by-side historical exporter suite spanning 2026-05-11 to 2026-08-25.\\n" +
                 "Total historical engines: #{versions.length}\\n\\n" +
                 "Preserved for reproducible format archaeology and benchmark analysis.",
                 MB_OK
@@ -1239,7 +1245,7 @@ module EvolutionLabBuilder
 
           unless file_loaded?(__FILE__)
             ex = SketchupExtension.new(PLUGIN_NAME, File.join(__dir__, 'evolution_lab', 'master_menu.rb'))
-            ex.description = 'Comprehensive historical baseline and side-by-side runner for all Sibambo BOM Engine exporter generations (2026-05-11 to 2026-08-19).'
+            ex.description = 'Comprehensive historical baseline and side-by-side runner for all Sibambo BOM Engine exporter generations (2026-05-11 to 2026-08-25).'
             ex.version = PLUGIN_VERSION
             ex.creator = 'Sibambo Research / Ridwan Ilyas & Kais Abiyyi'
             ex.copyright = '2026 Sibambo'
@@ -1334,7 +1340,7 @@ module EvolutionLabBuilder
     md = +<<~MARKDOWN
       # Sibambo BOM Engine Evolution Lab — Package Manifest
 
-      **Generated At**: `2026-08-19`
+      **Generated At**: `2026-08-25`
       **Master RBZ**: [`#{File.basename(master_rbz)}`](file:///#{master_rbz.gsub('\\', '/')})
       **Master SHA256**: `#{master_sha256}`
 

@@ -13,4 +13,4 @@
 Preserve complete SketchUp Scene/Page tag and entity visibility semantics with stable IDs and deterministic visibility signatures across producer and consumer.
 
 ## Selection Reason
-Current state-of-the-art BOMC format preserving exact multi-scene document semantics.
+Initial Scene/Page-preserving BOMC implementation capturing Section 19 binary container layout.

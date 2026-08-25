@@ -34,6 +34,7 @@
      - `[07] 2026-08-12 — CleanPKG Binary Container`
      - `[08] 2026-08-13 — First BOMC Compiled Format`
      - `[09] 2026-08-19 — Scene/Page-Preserving BOMC`
+     - `[10] 2026-08-25 — Scene/Page BOMC — Correct Visibility Semantics`
    - Verify submenu `Experiments` contains:
      - `[EXP-01] 2026-05-11 — Nano BBox JSON`
    - Verify the separate **Production BOM Engine** menu entry remains present and functional.
@@ -55,7 +56,8 @@ Open Model A in SketchUp and execute each menu command once. Verify the output f
 | **06** | `[06] BOME2 Binary` | `*_SBE-2026.07.16-03_runtime.bome2` | Magic ASCII `BOME2\n` (bytes: `42 4F 4D 45 32 0A`) | [ ] |
 | **07** | `[07] CleanPKG Container` | `*_SBE-2026.08.12-01.cleanpkg` | ZIP magic `PK\x03\x04` containing `manifest.json` & `buffers.bin` | [ ] |
 | **08** | `[08] First BOMC` | `*_SBE-2026.08.13-01.bomc` | Magic bytes `BOMC\x01\x00\x00\x00` (8 bytes) | [ ] |
-| **09** | `[09] Scene BOMC` | `*_SBE-2026.08.19-01.bomc` | Magic `BOMC\x01\x00\x00\x00` + Section 19 present | [ ] |
+| **09** | `[09] Scene BOMC` | `*_SBE-2026.08.19-01.bomc` | Magic `BOMC\x01\x00\x00\x00` + Section 19 (Initial layout) | [ ] |
+| **10** | `[10] Correct Scene BOMC` | `*_SBE-2026.08.25-01.bomc` | Magic `BOMC\x01\x00\x00\x00` + Section 19 (Node overrides + dynamic signatures) | [ ] |
 
 ---
 
@@ -68,6 +70,7 @@ Open `RUMAH L.skp` and export using the major lineage engines:
 4. Export with `[06] BOME2 Binary` -> Record export time & file size.
 5. Export with `[07] CleanPKG` -> Record export time & file size.
 6. Export with `[09] Scene/Page BOMC` -> Record export time & file size.
+7. Export with `[10] Scene/Page BOMC — Correct Visibility Semantics` -> Record export time & file size.
 
 Record your measured values in [`history/BENCHMARK_TEMPLATE.csv`](file:///d:/projects/sibambo/bom_engine_plugin/history/BENCHMARK_TEMPLATE.csv).
 
@@ -75,11 +78,13 @@ Record your measured values in [`history/BENCHMARK_TEMPLATE.csv`](file:///d:/pro
 
 ### Manual Test E — Scene/Page Preservation Acceptance (`RUMAH L.skp`)
 
-Using `[09] Scene/Page-Preserving BOMC`:
-1. Export `RUMAH L.skp` with scope **All Scenes**.
-2. Open `model-eval` web viewer (`http://localhost:5173/`).
-3. Load the exported `.bomc` file.
-4. Test scene switcher buttons:
+Using `[10] 2026-08-25 — Scene/Page BOMC — Correct Visibility Semantics`:
+1. In SketchUp, go to:
+   **Extensions -> Sibambo BOM Engine Evolution Lab -> Major Release Versions -> [10] 2026-08-25 — Scene/Page BOMC — Correct Visibility Semantics**
+2. Export `RUMAH L.skp`.
+3. Open `model-eval` web viewer (`http://localhost:5173/`).
+4. Load the exported `.bomc` file.
+5. Test scene switcher buttons:
    - [ ] `PERS`: Perspective camera, furniture and architectural tags visible.
    - [ ] `STR`: Structural elements only; furniture and wall finishes hidden.
    - [ ] `LT1`: First floor plan view; upper levels hidden.
@@ -87,6 +92,7 @@ Using `[09] Scene/Page-Preserving BOMC`:
    - [ ] `TAMPAK A` / `TAMPAK B`: Orthographic elevation views with correct cameras.
    - [ ] `POT A` / `POT B`: Section metadata recognized (marked metadata-only).
    - [ ] **Performance**: Scene transitions execute instantly without full model re-decode or mesh rebuild.
+   - [ ] **Historical Compare**: Repeat with `[09]` to observe that `[09]` missed per-scene node visibility overrides while `[10]` properly changes geometry between scenes.
 
 ---
 
