@@ -7,7 +7,7 @@ module SibamboHistory
   module V20260825_01
     DISPLAY_VERSION = "SBE-2026.08.25-01"
     LABEL = "[10] 2026-08-25 — Scene/Page BOMC — Correct Visibility Semantics"
-    COMMIT_SHA = "1a38b6be3561d21338d9ab437e3d8bc8ae2b23c0"
+    COMMIT_SHA = "6501ff8fbaf325a536f4e8e5725db1bbcd8cbd23"
     FORMAT_FAMILY = "bomc_compiled_v1_1_scenes"
     EXPORT_KIND = :bomc_scene
     PLUGIN_VERSION = "3.1.0" unless const_defined?(:PLUGIN_VERSION, false)

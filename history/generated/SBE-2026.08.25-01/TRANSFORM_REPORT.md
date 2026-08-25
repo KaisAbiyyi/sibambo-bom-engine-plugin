@@ -1,7 +1,7 @@
 # Transform Report — SBE-2026.08.25-01
 
 **Engine**: [10] 2026-08-25 — Scene/Page BOMC — Correct Visibility Semantics
-**Commit SHA**: `1a38b6be3561d21338d9ab437e3d8bc8ae2b23c0`
+**Commit SHA**: `6501ff8fbaf325a536f4e8e5725db1bbcd8cbd23`
 **Isolated Module**: `SibamboHistory::V20260825_01`
 
 ## Applied Transformations

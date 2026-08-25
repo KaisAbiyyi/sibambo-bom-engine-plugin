@@ -4,7 +4,7 @@
 - **Label**: `[10] 2026-08-25 — Scene/Page BOMC — Correct Visibility Semantics`
 - **Date**: `2026-08-25T13:45:00+07:00`
 - **Source Repository**: [https://github.com/KaisAbiyyi/sibambo-bom-engine-plugin](https://github.com/KaisAbiyyi/sibambo-bom-engine-plugin)
-- **Commit SHA**: `1a38b6be3561d21338d9ab437e3d8bc8ae2b23c0`
+- **Commit SHA**: `6501ff8fbaf325a536f4e8e5725db1bbcd8cbd23`
 - **Commit Message**: `fix(scene): resolve explicit DrawingElement node overrides and deterministic visibility signatures`
 - **Classification**: `RELEASE`
 - **License**: GNU General Public License v3.0 (GPL-3.0)

@@ -29,7 +29,7 @@ timeline
     2026-08-12 : [07] CleanPKG Binary Package (d245b68)
     2026-08-13 : [08] First BOMC Compiled Format (ebf2e65)
     2026-08-19 : [09] Scene/Page-Preserving BOMC (347fc72)
-    2026-08-25 : [10] Scene/Page BOMC — Correct Visibility Semantics (1a38b6b)
+    2026-08-25 : [10] Scene/Page BOMC — Correct Visibility Semantics (6501ff8)
 ```
 
 | Seq | Display Version | Date | Label | Repository | Commit SHA | Format Family | Output Ext | Compression | Classification |
@@ -44,7 +44,7 @@ timeline
 | **08** | `SBE-2026.08.12-01` | 2026-08-12 | CleanPKG Binary Container | `KaisAbiyyi` | `d245b6873a99` | `clean_package_v1` | `.cleanpkg` | Zip Deflate | `MAJOR` |
 | **09** | `SBE-2026.08.13-01` | 2026-08-13 | First BOMC Compiled Format | `KaisAbiyyi` | `ebf2e658a790` | `bomc_compiled_v1_0` | `.bomc` | Section Deflate | `MAJOR` |
 | **10** | `SBE-2026.08.19-01` | 2026-08-19 | Scene/Page-Preserving BOMC | `KaisAbiyyi` | `347fc7247fde` | `bomc_compiled_v1_1_scenes` | `.bomc` | Section Deflate | `MAJOR` |
-| **11** | `SBE-2026.08.25-01` | 2026-08-25 | Scene/Page BOMC — Correct Visibility Semantics | `KaisAbiyyi` | `1a38b6be3561` | `bomc_compiled_v1_1_scenes` | `.bomc` | Section Deflate | `RELEASE` |
+| **11** | `SBE-2026.08.25-01` | 2026-08-25 | Scene/Page BOMC — Correct Visibility Semantics | `KaisAbiyyi` | `6501ff8fbaf3` | `bomc_compiled_v1_1_scenes` | `.bomc` | Section Deflate | `RELEASE` |
 
 ---
 
@@ -89,7 +89,7 @@ timeline
 - **Core Innovation**: Replaced multi-file ZIP containers with a zero-copy single-file binary container (`BOMC\x01\x00\x00\x00`) with a 24-section table, varint codecs, octahedral normal packing, and embedded WebP textures.
 - **Scene/Page BOMC Commit ([09])**: `347fc7247fdec4041ffb9ee81226b271b5044b3a` (2026-08-19 00:12:45 +07:00).
 - **Advancement**: Added `SECTION_SCENES = 19`, establishing Section 19 binary container layout, tag visibility bitsets, and basic scene profiling.
-- **Corrected Scene Visibility Semantics ([10])**: `1a38b6be3561d21338d9ab437e3d8bc8ae2b23c0` (2026-08-25 13:45:00 +07:00).
+- **Corrected Scene Visibility Semantics ([10])**: `6501ff8fbaf325a536f4e8e5725db1bbcd8cbd23` (2026-08-25 13:45:00 +07:00).
 - **Resolution**: Resolved real SketchUp `page.get_drawingelement_visibility` flags (`1 = hidden`, `2 = visible`) and `page.hidden_entities` into `visible_node_overrides` and `hidden_node_overrides`. Built deterministic `visibilitySignature` hashes invariant to camera/metadata but strictly responsive to geometry changes, fixing silent skips during scene switching in Model Eval.
 
 ---
