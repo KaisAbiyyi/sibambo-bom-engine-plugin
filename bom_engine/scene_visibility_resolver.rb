@@ -13,11 +13,12 @@ module BOMEngine
     def resolve_scenes(model, active_page: nil, nodes: nil, definitions: nil)
       pages = model.respond_to?(:pages) ? model.pages : nil
       active = active_page || (pages.respond_to?(:selected_page) ? pages.selected_page : nil)
+      pages_list = pages.respond_to?(:to_a) ? pages.to_a : Array(pages)
 
-      if pages.nil? || pages.empty?
+      if pages_list.empty?
         [build_scene_profile(nil, is_active: true, model: model, nodes: nodes, definitions: definitions)]
       else
-        pages.map do |page|
+        pages_list.map do |page|
           is_active = (page == active)
           build_scene_profile(page, is_active: is_active, model: model, nodes: nodes, definitions: definitions)
         end
