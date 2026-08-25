@@ -660,6 +660,8 @@ module BOMEngine
           flags |= 0x10 if scene[:stores_hidden_geometry] == true
           flags |= 0x20 if scene[:stores_section_planes] == true
           flags |= 0x40 if camera[:projection] != 'orthographic'
+          flags |= 0x80 if camera[:fov_is_height] != false
+          flags |= 0x100 if camera[:is_2d] == true
 
           eye = Array(camera[:eye_m])
           target = Array(camera[:target_m])

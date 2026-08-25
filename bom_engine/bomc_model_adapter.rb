@@ -258,8 +258,10 @@ module BOMEngine
               target_m: Array(camera[:target_m]).map(&:to_f),
               up: Array(camera[:up]).map(&:to_f),
               field_of_view_degrees: camera[:field_of_view_degrees]&.to_f,
+              fov_is_height: camera[:fov_is_height] != false,
               orthographic_height_m: camera[:orthographic_height_m]&.to_f,
-              aspect_ratio: camera[:aspect_ratio].to_f
+              aspect_ratio: camera[:aspect_ratio].to_f,
+              is_2d: camera[:is_2d] == true
             },
             use_camera: scene[:use_camera] != false,
             transition_time_seconds: scene[:transition_time_seconds].to_f,

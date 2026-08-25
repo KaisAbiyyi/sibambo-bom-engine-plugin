@@ -463,14 +463,14 @@ module BOMEngine
     end
 
     def test_drawingelement_visibility_override_values
-      elem_hidden = MockDrawingElement.new('elem_hid')
-      elem_vis = MockDrawingElement.new('elem_vis')
+      elem_hidden = MockDrawingElement.new('elem_hid', hidden: false)
+      elem_vis = MockDrawingElement.new('elem_vis', hidden: true) # Base hidden, overridden to visible on page
 
       page = MockPage.new('OVERRIDE_SCENE', persistent_id: 'p_ov')
       def page.get_drawingelement_visibility(elem)
-        return 1 if elem.persistent_id == 'elem_hid'
-        return 2 if elem.persistent_id == 'elem_vis'
-        0
+        return false if elem.persistent_id == 'elem_hid'
+        return true if elem.persistent_id == 'elem_vis'
+        nil
       end
 
       nodes = [
@@ -485,6 +485,26 @@ module BOMEngine
 
       assert_includes scene.dig(:visibility, :hidden_node_overrides), 'node:1'
       assert_includes scene.dig(:visibility, :visible_node_overrides), 'node:2'
+    end
+
+    def test_layer_page_behavior_four_cases
+      # Case A: Visible-by-default (page_behavior 0x0000), unchanged (not in page.layers)
+      tag_a = MockLayer.new('TagA', visible: true, persistent_id: '101')
+      # Case B: Visible-by-default (page_behavior 0x0000), hidden by scene (in page.layers)
+      tag_b = MockLayer.new('TagB', visible: true, persistent_id: '102')
+      # Case C: Hidden-by-default (page_behavior 0x0001), unchanged (not in page.layers)
+      tag_c = MockLayer.new('TagC', visible: false, persistent_id: '103')
+      tag_c.define_singleton_method(:page_behavior) { 0x0001 }
+      # Case D: Hidden-by-default (page_behavior 0x0001), made visible by scene (in page.layers)
+      tag_d = MockLayer.new('TagD', visible: false, persistent_id: '104')
+      tag_d.define_singleton_method(:page_behavior) { 0x0001 }
+
+      page = MockPage.new('TEST_SCENE', persistent_id: 'p_test', layers: [tag_b, tag_d])
+
+      assert_equal true, SceneVisibilityResolver.effective_tag_visibility(tag_a, page), 'Case A: visible default unchanged -> visible'
+      assert_equal false, SceneVisibilityResolver.effective_tag_visibility(tag_b, page), 'Case B: visible default in page.layers -> hidden'
+      assert_equal false, SceneVisibilityResolver.effective_tag_visibility(tag_c, page), 'Case C: hidden default unchanged -> hidden'
+      assert_equal true, SceneVisibilityResolver.effective_tag_visibility(tag_d, page), 'Case D: hidden default in page.layers -> visible'
     end
 
     def test_effective_visible_occurrences_calculation

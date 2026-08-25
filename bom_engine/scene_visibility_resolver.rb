@@ -25,6 +25,10 @@ module BOMEngine
       end
     end
 
+    def resolve_effective_scene_visibility(page, model: nil, nodes: nil, definitions: nil, is_active: false)
+      build_scene_profile(page, is_active: is_active, model: model, nodes: nodes, definitions: definitions)
+    end
+
     def build_scene_profile(page, is_active: false, model: nil, nodes: nil, definitions: nil)
       if page.nil?
         camera_data = current_view_camera(model)
@@ -155,6 +159,10 @@ module BOMEngine
     def extract_node_overrides(page, model, nodes = nil)
       visible_overrides = []
       hidden_overrides = []
+      return [[], []] if page.nil?
+
+      stores_objects = page.respond_to?(:use_hidden_objects?) ? page.use_hidden_objects? : (page.respond_to?(:use_hidden?) ? page.use_hidden? : true)
+      stores_geometry = page.respond_to?(:use_hidden_geometry?) ? page.use_hidden_geometry? : false
 
       # 1. If nodes list is provided, inspect each node's underlying entity
       if nodes && !nodes.empty?
@@ -165,35 +173,36 @@ module BOMEngine
           pid = node.dig(:source_identity, :persistent_id) || node[:persistent_id]
 
           if entity
-            if page.respond_to?(:get_drawingelement_visibility)
-              flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
-              if flag == 1
-                hidden_overrides << node_id
-                next
-              elsif flag == 2
-                visible_overrides << node_id
-                next
-              end
-            end
+            is_instance = entity.is_a?(Sketchup::ComponentInstance) || entity.is_a?(Sketchup::Group) rescue false
+            is_instance ||= (entity.respond_to?(:definition) || entity.respond_to?(:entities))
 
-            if page.respond_to?(:hidden_entities)
-              hidden_list = (begin page.hidden_entities rescue nil end)
-              if hidden_list && hidden_list.respond_to?(:include?) && hidden_list.include?(entity)
-                hidden_overrides << node_id
-                next
+            applies = is_instance ? stores_objects : stores_geometry
+            if applies
+              if page.respond_to?(:get_drawingelement_visibility)
+                flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
+                if flag == false
+                  hidden_overrides << node_id
+                  next
+                elsif flag == true
+                  # If entity is base-hidden, explicit true makes it visible override
+                  base_hidden = entity.respond_to?(:hidden?) ? entity.hidden? : false
+                  visible_overrides << node_id if base_hidden
+                  next
+                end
               end
-            end
 
-            if page.respond_to?(:use_hidden_objects?) && !page.use_hidden_objects?
-              if entity.respond_to?(:hidden?) && entity.hidden?
-                hidden_overrides << node_id
-                next
+              if page.respond_to?(:hidden_entities)
+                hidden_list = (begin page.hidden_entities.to_a rescue [] end) || []
+                if hidden_list.include?(entity)
+                  hidden_overrides << node_id
+                  next
+                end
               end
             end
           elsif pid
             # Check by persistent id if entity object is not directly bound
             if page.respond_to?(:hidden_entities)
-              hidden_list = (begin page.hidden_entities rescue nil end) || []
+              hidden_list = (begin page.hidden_entities.to_a rescue [] end) || []
               if hidden_list.any? { |he| safe_persistent_id(he) == pid.to_s }
                 hidden_overrides << node_id
                 next
@@ -205,8 +214,8 @@ module BOMEngine
 
       # 2. Extract from page.hidden_entities for any items not covered
       if page.respond_to?(:hidden_entities)
-        hidden_list = (begin page.hidden_entities rescue nil end) || []
-        Array(hidden_list).each do |ent|
+        hidden_list = (begin page.hidden_entities.to_a rescue [] end) || []
+        hidden_list.each do |ent|
           ent_pid = safe_persistent_id(ent)
           node_ref = "node:pid:#{ent_pid}"
           hidden_overrides << node_ref unless hidden_overrides.any? { |id| id.include?(ent_pid) }
@@ -214,15 +223,15 @@ module BOMEngine
       end
 
       if page.respond_to?(:visible_entities)
-        vis_list = (begin page.visible_entities rescue nil end) || []
-        Array(vis_list).each do |ent|
+        vis_list = (begin page.visible_entities.to_a rescue [] end) || []
+        vis_list.each do |ent|
           ent_pid = safe_persistent_id(ent)
           node_ref = "node:pid:#{ent_pid}"
           visible_overrides << node_ref unless visible_overrides.any? { |id| id.include?(ent_pid) }
         end
       end
 
-      [visible_overrides, hidden_overrides]
+      [visible_overrides.sort.uniq, hidden_overrides.sort.uniq]
     rescue StandardError
       [[], []]
     end
@@ -292,11 +301,6 @@ module BOMEngine
         return base_visible
       end
 
-      # Check explicit page query if available
-      if page.respond_to?(:layer_visible?)
-        return page.layer_visible?(layer)
-      end
-
       # Check layer folders if supported
       if layer.respond_to?(:folder) && layer.folder
         folder = layer.folder
@@ -304,20 +308,35 @@ module BOMEngine
           return false
         end
         if page.respond_to?(:layer_folders)
-          hidden_folders = (begin page.layer_folders rescue [] end) || []
+          hidden_folders = (begin page.layer_folders.to_a rescue [] end) || []
           return false if hidden_folders.include?(folder)
         end
       end
 
-      # Page#layers contains layers whose visibility is altered by the page
-      page_layers = (begin page.layers rescue [] end) || []
-      if page_layers.include?(layer)
-        # In SketchUp Page API, layers returned by page.layers are hidden layers on that page
-        # unless page specifies visible layers.
-        false
+      # Check explicit page query if available (SketchUp 2020+)
+      if page.respond_to?(:layer_visible?)
+        return page.layer_visible?(layer)
+      end
+
+      # In official SketchUp API:
+      # Page#layers returns layers whose visibility in this page differs from their default visibility.
+      # Bit 0x0001 in layer.page_behavior indicates hidden by default on new pages:
+      # LAYER_IS_VISIBLE_ON_NEW_PAGES = 0x0000
+      # LAYER_IS_HIDDEN_ON_NEW_PAGES  = 0x0001
+      page_layers = (begin page.layers.to_a rescue [] end) || []
+      in_page_layers = page_layers.include?(layer)
+
+      hidden_by_default = false
+      if layer.respond_to?(:page_behavior)
+        hidden_by_default = (layer.page_behavior.to_i & 0x0001) != 0
+      end
+
+      if hidden_by_default
+        # If hidden by default, being in page.layers means it was made VISIBLE on this page
+        in_page_layers
       else
-        # Not in page's hidden layer list => visible on page
-        true
+        # If visible by default, being in page.layers means it was made HIDDEN on this page
+        !in_page_layers
       end
     end
 
@@ -334,26 +353,34 @@ module BOMEngine
       base_hidden = entity.respond_to?(:hidden?) ? entity.hidden? : false
       return false if base_hidden || !base_visible if page.nil?
 
-      # 3. Page DrawingElement override
-      if page.respond_to?(:get_drawingelement_visibility)
-        flag = page.get_drawingelement_visibility(entity) rescue nil
-        # 1 = HIDDEN, 2 = VISIBLE, 0 = LAYER_VISIBLE (default)
-        return false if flag == 1
-        return true if flag == 2
-      end
+      stores_objects = page.respond_to?(:use_hidden_objects?) ? page.use_hidden_objects? : (page.respond_to?(:use_hidden?) ? page.use_hidden? : true)
+      stores_geometry = page.respond_to?(:use_hidden_geometry?) ? page.use_hidden_geometry? : false
 
-      # 4. Page hidden entities
-      if page.respond_to?(:hidden_entities)
-        hidden_list = page.hidden_entities rescue nil
-        return false if hidden_list && hidden_list.respond_to?(:include?) && hidden_list.include?(entity)
+      is_instance = entity.is_a?(Sketchup::ComponentInstance) || entity.is_a?(Sketchup::Group) rescue false
+      is_instance ||= (entity.respond_to?(:definition) || entity.respond_to?(:entities))
+
+      applies = is_instance ? stores_objects : stores_geometry
+
+      if applies
+        # 3. Page DrawingElement override (Boolean return: true = visible, false = hidden)
+        if page.respond_to?(:get_drawingelement_visibility)
+          flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
+          return false if flag == false
+          return true if flag == true
+        end
+
+        # 4. Page hidden entities
+        if page.respond_to?(:hidden_entities)
+          hidden_list = (begin page.hidden_entities.to_a rescue nil end)
+          return false if hidden_list && hidden_list.respond_to?(:include?) && hidden_list.include?(entity)
+        end
       end
 
       # 5. Hidden objects / geometry flags
-      stores_objects = page.respond_to?(:use_hidden_objects?) ? page.use_hidden_objects? : (page.respond_to?(:use_hidden?) ? page.use_hidden? : true)
-      if stores_objects && base_hidden
+      if applies && base_hidden
         return false
       end
-      if !stores_objects && (base_hidden || !base_visible)
+      if !applies && (base_hidden || !base_visible)
         return false
       end
 
@@ -452,14 +479,22 @@ module BOMEngine
       return default_camera if camera.nil?
 
       is_persp = camera.respond_to?(:perspective?) ? camera.perspective? : true
+      fov_val = is_persp && camera.respond_to?(:fov) ? camera.fov.to_f : nil
+      fov_is_height = is_persp && camera.respond_to?(:fov_is_height?) ? camera.fov_is_height? : true
+      ortho_height_m = !is_persp && camera.respond_to?(:height) ? (camera.height.to_f * Constants::IN_TO_M).round(9) : nil
+      aspect = camera.respond_to?(:aspect_ratio) ? camera.aspect_ratio.to_f : 0.0
+      is_2d = camera.respond_to?(:is_2d?) ? camera.is_2d? : false
+
       {
         projection: is_persp ? 'perspective' : 'orthographic',
         eye_m: point_array(camera.eye),
         target_m: point_array(camera.target),
         up: vector_array(camera.up),
-        field_of_view_degrees: is_persp && camera.respond_to?(:fov) ? camera.fov.to_f : nil,
-        orthographic_height_m: !is_persp && camera.respond_to?(:height) ? (camera.height.to_f * Constants::IN_TO_M).round(9) : nil,
-        aspect_ratio: camera.respond_to?(:aspect_ratio) ? camera.aspect_ratio.to_f : 0.0
+        field_of_view_degrees: fov_val,
+        fov_is_height: fov_is_height,
+        orthographic_height_m: ortho_height_m,
+        aspect_ratio: aspect,
+        is_2d: is_2d
       }
     rescue StandardError
       default_camera
@@ -471,14 +506,22 @@ module BOMEngine
       return default_camera if camera.nil?
 
       is_persp = camera.respond_to?(:perspective?) ? camera.perspective? : true
+      fov_val = is_persp && camera.respond_to?(:fov) ? camera.fov.to_f : nil
+      fov_is_height = is_persp && camera.respond_to?(:fov_is_height?) ? camera.fov_is_height? : true
+      ortho_height_m = !is_persp && camera.respond_to?(:height) ? (camera.height.to_f * Constants::IN_TO_M).round(9) : nil
+      aspect = camera.respond_to?(:aspect_ratio) ? camera.aspect_ratio.to_f : 0.0
+      is_2d = camera.respond_to?(:is_2d?) ? camera.is_2d? : false
+
       {
         projection: is_persp ? 'perspective' : 'orthographic',
         eye_m: point_array(camera.eye),
         target_m: point_array(camera.target),
         up: vector_array(camera.up),
-        field_of_view_degrees: is_persp && camera.respond_to?(:fov) ? camera.fov.to_f : nil,
-        orthographic_height_m: !is_persp && camera.respond_to?(:height) ? (camera.height.to_f * Constants::IN_TO_M).round(9) : nil,
-        aspect_ratio: camera.respond_to?(:aspect_ratio) ? camera.aspect_ratio.to_f : 0.0
+        field_of_view_degrees: fov_val,
+        fov_is_height: fov_is_height,
+        orthographic_height_m: ortho_height_m,
+        aspect_ratio: aspect,
+        is_2d: is_2d
       }
     rescue StandardError
       default_camera
@@ -491,16 +534,18 @@ module BOMEngine
         target_m: [0.0, 0.0, 0.0],
         up: [0.0, 0.0, 1.0],
         field_of_view_degrees: 35.0,
+        fov_is_height: true,
         orthographic_height_m: nil,
-        aspect_ratio: 0.0
+        aspect_ratio: 0.0,
+        is_2d: false
       }
     end
 
     def extract_active_section_planes(page)
       planes = []
       if page.respond_to?(:active_section_planes)
-        raw = (begin page.active_section_planes rescue [] end) || []
-        Array(raw).each do |plane|
+        raw = (begin page.active_section_planes.to_a rescue [] end) || []
+        raw.each do |plane|
           planes << "section:#{safe_persistent_id(plane)}"
         end
       end

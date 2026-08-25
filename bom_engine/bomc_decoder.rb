@@ -750,6 +750,8 @@ module BOMEngine
           stores_geometry = (flags & 0x10) != 0
           stores_sections = (flags & 0x20) != 0
           is_persp = (flags & 0x40) != 0
+          fov_is_height = (flags & 0x80) != 0
+          is_2d = (flags & 0x100) != 0
 
           bitset_bytes = bytes.byteslice(cursor, tag_bitset_bytes).unpack('C*')
           cursor += tag_bitset_bytes
@@ -801,8 +803,10 @@ module BOMEngine
               target_m: [tgt_x.round(6), tgt_y.round(6), tgt_z.round(6)],
               up: [up_x.round(6), up_y.round(6), up_z.round(6)],
               field_of_view_degrees: is_persp ? fov_or_height.round(4) : nil,
+              fov_is_height: fov_is_height,
               orthographic_height_m: !is_persp ? fov_or_height.round(6) : nil,
-              aspect_ratio: aspect_ratio.round(6)
+              aspect_ratio: aspect_ratio.round(6),
+              is_2d: is_2d
             },
             use_camera: use_camera,
             transition_time_seconds: trans_time.round(4),
