@@ -165,8 +165,13 @@ module SibamboHistory
       stores_objects = page.respond_to?(:use_hidden_objects?) ? page.use_hidden_objects? : (page.respond_to?(:use_hidden?) ? page.use_hidden? : true)
       stores_geometry = page.respond_to?(:use_hidden_geometry?) ? page.use_hidden_geometry? : false
 
+      hidden_entities_list = page.respond_to?(:hidden_entities) ? ((begin page.hidden_entities.to_a rescue [] end) || []) : []
+      hidden_entities_set = hidden_entities_list.to_set
+      hidden_pids_set = hidden_entities_list.map { |he| safe_persistent_id(he) }.to_set
+
       # 1. If nodes list is provided, inspect each node's underlying entity
       if nodes && !nodes.empty?
+        has_drawingelement_visibility = page.respond_to?(:get_drawingelement_visibility)
         nodes.each do |node|
           next if node[:kind] == 'root'
           node_id = node[:id]
@@ -179,7 +184,7 @@ module SibamboHistory
 
             applies = is_instance ? stores_objects : stores_geometry
             if applies
-              if page.respond_to?(:get_drawingelement_visibility)
+              if has_drawingelement_visibility
                 flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
                 if flag == false
                   hidden_overrides << node_id
@@ -192,35 +197,25 @@ module SibamboHistory
                 end
               end
 
-              if page.respond_to?(:hidden_entities)
-                hidden_list = (begin page.hidden_entities.to_a rescue [] end) || []
-                if hidden_list.include?(entity)
-                  hidden_overrides << node_id
-                  next
-                end
-              end
-            end
-          elsif pid
-            # Check by persistent id if entity object is not directly bound
-            if page.respond_to?(:hidden_entities)
-              hidden_list = (begin page.hidden_entities.to_a rescue [] end) || []
-              if hidden_list.any? { |he| safe_persistent_id(he) == pid.to_s }
+              if hidden_entities_set.include?(entity)
                 hidden_overrides << node_id
                 next
               end
+            end
+          elsif pid
+            if hidden_pids_set.include?(pid.to_s)
+              hidden_overrides << node_id
+              next
             end
           end
         end
       end
 
       # 2. Extract from page.hidden_entities for any items not covered
-      if page.respond_to?(:hidden_entities)
-        hidden_list = (begin page.hidden_entities.to_a rescue [] end) || []
-        hidden_list.each do |ent|
-          ent_pid = safe_persistent_id(ent)
-          node_ref = "node:pid:#{ent_pid}"
-          hidden_overrides << node_ref unless hidden_overrides.any? { |id| id.include?(ent_pid) }
-        end
+      hidden_entities_list.each do |ent|
+        ent_pid = safe_persistent_id(ent)
+        node_ref = "node:pid:#{ent_pid}"
+        hidden_overrides << node_ref unless hidden_overrides.any? { |id| id.include?(ent_pid) }
       end
 
       if page.respond_to?(:visible_entities)
@@ -271,7 +266,10 @@ module SibamboHistory
       end
 
       count = 0
+      visited = Set.new
       traverse = lambda do |definition_id|
+        return if visited.include?(definition_id)
+        visited.add(definition_id)
         defn = definitions_by_id[definition_id]
         return unless defn
         child_node_ids = defn[:node_ids] || []

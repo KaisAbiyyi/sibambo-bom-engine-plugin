@@ -1,7 +1,7 @@
 # Transform Report — SBE-2026.08.25-02
 
 **Engine**: [11] 2026-08-25 — Scene/Page BOMC — Verified SketchUp Semantics
-**Commit SHA**: `c2796544438d53aa9e6aba787b083b7bbc5e6740`
+**Commit SHA**: `6e8623d57e2931325ce86c7c93f2577818ebc389`
 **Isolated Module**: `SibamboHistory::V20260825_02`
 
 ## Applied Transformations

@@ -375,7 +375,8 @@ module EvolutionLabBuilder
       '07' => :cleanpkg,
       '08' => :bomc_v1,
       '09' => :bomc_scene,
-      '10' => :bomc_scene
+      '10' => :bomc_scene,
+      '11' => :bomc_scene
     }.fetch(id, :experimental)
   end
 

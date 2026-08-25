@@ -7,9 +7,9 @@ module SibamboHistory
   module V20260825_02
     DISPLAY_VERSION = "SBE-2026.08.25-02"
     LABEL = "[11] 2026-08-25 — Scene/Page BOMC — Verified SketchUp Semantics"
-    COMMIT_SHA = "c2796544438d53aa9e6aba787b083b7bbc5e6740"
+    COMMIT_SHA = "6e8623d57e2931325ce86c7c93f2577818ebc389"
     FORMAT_FAMILY = "bomc_compiled_v1_1_scenes"
-    EXPORT_KIND = :experimental
+    EXPORT_KIND = :bomc_scene
     PLUGIN_VERSION = "3.1.0" unless const_defined?(:PLUGIN_VERSION, false)
 
     def self.load_engine
