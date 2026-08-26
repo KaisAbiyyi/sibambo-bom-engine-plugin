@@ -3,6 +3,7 @@
 # Run in SketchUp Ruby Console:
 #   load 'full/path/to/bom_engine_plugin/tests/test_traversal.rb'
 
+require_relative 'sketchup_mock_helper' unless defined?(Sketchup)
 require_relative '../constants'
 require_relative '../traversal'
 

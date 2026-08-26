@@ -2,6 +2,8 @@
 # Recursive entity tree walker.
 # Converts all coordinates from SketchUp inches to meters (world-space absolute).
 
+require_relative 'classifier'
+
 module BOMEngine
   module Traversal
 
@@ -431,6 +433,14 @@ module BOMEngine
       entity.respond_to?(:layer) && entity.layer ? entity.layer.name : "Layer0"
     rescue
       "Layer0"
+    end
+
+    def self.valid_entity?(entity)
+      return false if entity.nil?
+      return false if entity.respond_to?(:deleted?) && entity.deleted?
+      true
+    rescue
+      false
     end
 
     def self.exportable_entity?(entity)

@@ -213,7 +213,7 @@ module BOMEngine
           exported_at: string_at(strings, source_row[3])
         }
         tag_index = tags.each_with_index.each_with_object({}) { |(tag, idx), h| h[tag[:stable_id]] = idx }
-        node_index = instances.each_with_index.each_with_object({}) { |(inst, idx), h| h[inst[:stable_id]] = idx }
+        node_index = index_node_ids(instances)
         scenes = adapt_scenes(payload[:scenes], tag_index, node_index)
         finalize(
           source: source,
@@ -242,8 +242,30 @@ module BOMEngine
 
           visible_tag_indices = visible_tag_ids.map { |id| tag_index[id] }.compact.uniq.sort
           hidden_tag_indices = hidden_tag_ids.map { |id| tag_index[id] }.compact.uniq.sort
-          visible_node_indices = visible_node_overrides.map { |id| node_index[id] }.compact.uniq.sort
-          hidden_node_indices = hidden_node_overrides.map { |id| node_index[id] }.compact.uniq.sort
+
+          unresolved_visible_overrides = []
+          visible_node_indices = []
+          visible_node_overrides.each do |id|
+            idx = node_index[id]
+            if idx
+              visible_node_indices << idx
+            else
+              unresolved_visible_overrides << id
+            end
+          end
+          visible_node_indices = visible_node_indices.uniq.sort
+
+          unresolved_hidden_overrides = []
+          hidden_node_indices = []
+          hidden_node_overrides.each do |id|
+            idx = node_index[id]
+            if idx
+              hidden_node_indices << idx
+            else
+              unresolved_hidden_overrides << id
+            end
+          end
+          hidden_node_indices = hidden_node_indices.uniq.sort
 
           {
             stable_id: scene[:id].to_s,
@@ -273,7 +295,15 @@ module BOMEngine
               visible_tag_indices: visible_tag_indices,
               hidden_tag_indices: hidden_tag_indices,
               visible_node_indices: visible_node_indices,
-              hidden_node_indices: hidden_node_indices
+              hidden_node_indices: hidden_node_indices,
+              source_visible_node_override_count: visible_node_overrides.length,
+              source_hidden_node_override_count: hidden_node_overrides.length,
+              resolved_visible_node_override_count: visible_node_indices.length,
+              resolved_hidden_node_override_count: hidden_node_indices.length,
+              unresolved_visible_node_overrides: unresolved_visible_overrides,
+              unresolved_hidden_node_overrides: unresolved_hidden_overrides,
+              unresolved_visible_node_override_count: unresolved_visible_overrides.length,
+              unresolved_hidden_node_override_count: unresolved_hidden_overrides.length
             },
             stores_tag_visibility: scene[:stores_tag_visibility] != false,
             stores_hidden_objects: scene[:stores_hidden_objects] != false,

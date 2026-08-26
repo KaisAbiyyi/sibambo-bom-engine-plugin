@@ -5,6 +5,7 @@
 require 'json'
 require 'tmpdir'
 require 'zlib'
+require_relative 'sketchup_mock_helper' unless defined?(Sketchup)
 require_relative '../constants'
 require_relative '../traversal'
 require_relative '../canonical_graph_builder'

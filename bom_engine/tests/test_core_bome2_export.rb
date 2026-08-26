@@ -3,6 +3,8 @@
 
 require 'fileutils'
 require 'tmpdir'
+require_relative 'sketchup_mock_helper' unless defined?(Sketchup)
+require_relative '../core'
 
 module BOMEngine
   module Tests

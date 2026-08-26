@@ -168,6 +168,9 @@ module BOMEngine
       hidden_entities_set = hidden_entities_list.to_set
       hidden_pids_set = hidden_entities_list.map { |he| safe_persistent_id(he) }.to_set
 
+      matched_entities = Set.new
+      matched_pids = Set.new
+
       # 1. If nodes list is provided, inspect each node's underlying entity
       if nodes && !nodes.empty?
         has_drawingelement_visibility = page.respond_to?(:get_drawingelement_visibility)
@@ -177,34 +180,41 @@ module BOMEngine
           entity = node[:_entity] || node[:entity]
           pid = node.dig(:source_identity, :persistent_id) || node[:persistent_id]
 
-          if entity
-            is_instance = entity.is_a?(Sketchup::ComponentInstance) || entity.is_a?(Sketchup::Group) rescue false
-            is_instance ||= (entity.respond_to?(:definition) || entity.respond_to?(:entities))
+          is_instance = (node[:kind].to_s =~ /instance|component|group|image|text/) ||
+                        (defined?(Sketchup::ComponentInstance) && entity.is_a?(Sketchup::ComponentInstance) rescue false) ||
+                        (defined?(Sketchup::Group) && entity.is_a?(Sketchup::Group) rescue false) ||
+                        (entity.respond_to?(:definition) || entity.respond_to?(:entities))
 
-            applies = is_instance ? stores_objects : stores_geometry
-            if applies
-              if has_drawingelement_visibility
-                flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
-                if flag == false
-                  hidden_overrides << node_id
-                  next
-                elsif flag == true
-                  # If entity is base-hidden, explicit true makes it visible override
-                  base_hidden = entity.respond_to?(:hidden?) ? entity.hidden? : false
-                  visible_overrides << node_id if base_hidden
-                  next
-                end
-              end
+          applies = is_instance ? stores_objects : stores_geometry
 
-              if hidden_entities_set.include?(entity)
+          if applies
+            matched = false
+            if entity && has_drawingelement_visibility
+              flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
+              if flag == false
                 hidden_overrides << node_id
-                next
+                matched = true
+              elsif flag == true
+                base_hidden = entity.respond_to?(:hidden?) ? entity.hidden? : false
+                visible_overrides << node_id if base_hidden
+                matched = true
               end
             end
-          elsif pid
-            if hidden_pids_set.include?(pid.to_s)
-              hidden_overrides << node_id
-              next
+
+            unless matched
+              if entity && hidden_entities_set.include?(entity)
+                hidden_overrides << node_id
+                matched = true
+              elsif pid && hidden_pids_set.include?(pid.to_s)
+                hidden_overrides << node_id
+                matched = true
+              end
+            end
+
+            if matched
+              matched_entities.add(entity) if entity
+              matched_pids.add(pid.to_s) if pid
+              matched_pids.add(safe_persistent_id(entity)) if entity
             end
           end
         end
@@ -212,17 +222,21 @@ module BOMEngine
 
       # 2. Extract from page.hidden_entities for any items not covered
       hidden_entities_list.each do |ent|
+        next if matched_entities.include?(ent)
         ent_pid = safe_persistent_id(ent)
+        next if matched_pids.include?(ent_pid)
         node_ref = "node:pid:#{ent_pid}"
-        hidden_overrides << node_ref unless hidden_overrides.any? { |id| id.include?(ent_pid) }
+        hidden_overrides << node_ref
       end
 
       if page.respond_to?(:visible_entities)
         vis_list = (begin page.visible_entities.to_a rescue [] end) || []
         vis_list.each do |ent|
+          next if matched_entities.include?(ent)
           ent_pid = safe_persistent_id(ent)
+          next if matched_pids.include?(ent_pid)
           node_ref = "node:pid:#{ent_pid}"
-          visible_overrides << node_ref unless visible_overrides.any? { |id| id.include?(ent_pid) }
+          visible_overrides << node_ref
         end
       end
 
@@ -338,7 +352,8 @@ module BOMEngine
       end
     end
 
-    def effective_entity_visibility(entity, page)
+    def effective_entity_visibility(entity, page, parent_visibility: true)
+      return false unless parent_visibility
       return false if entity.nil? || (entity.respond_to?(:deleted?) && entity.deleted?)
 
       # 1. Tag / Layer check
@@ -392,8 +407,9 @@ module BOMEngine
 
       pid = safe_persistent_id(entity)
       tag_id = entity.respond_to?(:layer) && entity.layer ? tag_stable_id(entity.layer) : nil
+      base_hidden = (entity.respond_to?(:hidden?) && entity.hidden?) || (entity.respond_to?(:visible?) && !entity.visible?)
 
-      if scope == 'active'
+      if scope.to_s == 'active' || scope.to_s == 'active_scene'
         active_scene = scenes.find { |s| s[:is_active_at_export] } || scenes.first
         return true if active_scene.nil?
 
@@ -403,6 +419,8 @@ module BOMEngine
         if visible_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
           return true
         end
+
+        return false if base_hidden
 
         if hidden_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
           return false
@@ -415,7 +433,7 @@ module BOMEngine
         return true
       end
 
-      # scope == 'all' (Union of visible across all exported scenes)
+      # scope == 'all' / 'union' / 'all_scenes' (Union of visible across all exported scenes)
       return true if scenes.nil? || scenes.empty?
 
       visible_in_any = scenes.any? do |scene|
@@ -423,10 +441,19 @@ module BOMEngine
         visible_nodes = scene.dig(:visibility, :visible_node_overrides) || []
 
         next true if visible_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
+        next false if base_hidden
         next false if hidden_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
 
         if tag_id
-          scene.dig(:visibility, :visible_tag_ids)&.include?(tag_id) != false
+          hidden_tags = scene.dig(:visibility, :hidden_tag_ids) || []
+          visible_tags = scene.dig(:visibility, :visible_tag_ids) || []
+          if hidden_tags.include?(tag_id)
+            false
+          elsif visible_tags.include?(tag_id)
+            true
+          else
+            true
+          end
         else
           true
         end

@@ -136,9 +136,9 @@ module BOMEngine
         flags = @profile == :debug ? BOMC::PROFILE_DEBUG : BOMC::PROFILE_PRODUCTION
         flags |= BOMC::FLAG_HAS_SCENES unless scenes.empty?
         scope = (@model.dig(:source, :scope) || '').to_s
-        if scope == 'active'
+        if scope == 'active' || scope == 'active_scene'
           flags |= BOMC::FLAG_SCOPE_ACTIVE
-        elsif scope == 'all' || !scenes.empty?
+        elsif scope == 'all' || scope == 'all_scenes' || !scenes.empty?
           flags |= BOMC::FLAG_SCOPE_ALL
         end
         bytes = BOMC::Container.pack(

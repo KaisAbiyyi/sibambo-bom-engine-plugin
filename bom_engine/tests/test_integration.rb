@@ -4,6 +4,9 @@
 #   load 'full/path/to/bom_engine_plugin/tests/test_integration.rb'
 
 require 'json'
+require 'tmpdir'
+require_relative 'sketchup_mock_helper' unless defined?(Sketchup)
+require_relative '../core'
 
 module BOMEngine
   module Tests

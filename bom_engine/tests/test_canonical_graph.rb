@@ -2,6 +2,7 @@
 # Run in SketchUp Ruby Console:
 #   load 'D:/projects/sibambo-bom-engine/bom_engine_plugin/bom_engine/tests/test_canonical_graph.rb'
 
+require_relative 'sketchup_mock_helper' unless defined?(Sketchup)
 require_relative '../constants'
 require_relative '../traversal'
 require_relative '../semantic_labeler'

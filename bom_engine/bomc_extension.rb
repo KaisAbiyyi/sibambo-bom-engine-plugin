@@ -164,6 +164,7 @@ module BOMEngine
           include_edges: true,
           export_textures: true,
           output_format: 'bomc_v1_1',
+          scene_scope: 'all',
           texture_directory: texture_directory
         },
         spatial: {},

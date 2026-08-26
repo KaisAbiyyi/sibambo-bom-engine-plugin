@@ -2,6 +2,8 @@
 # Builds the semantic, definition-local graph used by canonical JSON v3 and BOME2.
 
 require 'time'
+require_relative 'classifier'
+require_relative 'traversal'
 require_relative 'semantic_labeler'
 require_relative 'scene_visibility_resolver'
 
@@ -28,7 +30,7 @@ module BOMEngine
         @settings = settings || {}
         @spatial = spatial || {}
         @texture_writer = texture_writer
-        @scene_scope = (@settings[:scene_scope] || 'active').to_s
+        @scene_scope = (@settings[:scene_scope] || (@settings[:output_format].to_s =~ /bomc/ ? 'all' : 'active')).to_s
         @scenes = SceneVisibilityResolver.resolve_scenes(@model)
         @active_page = @model.respond_to?(:pages) && @model.pages.respond_to?(:selected_page) ? @model.pages.selected_page : nil
         @definitions = []
@@ -452,7 +454,7 @@ module BOMEngine
           sketchup_version: Sketchup.version.to_s,
           sketchup_locale: (Sketchup.get_locale rescue nil),
           exported_at: Time.now.utc.iso8601,
-          scope: @settings[:selection_only] ? 'selection' : 'model',
+          scope: @settings[:selection_only] ? 'selection' : (@scene_scope == 'all' ? 'all_scenes' : 'active_scene'),
           source_modified: @model.modified?
         }
       end
@@ -550,12 +552,23 @@ module BOMEngine
       def each_entity(entities)
         entities.each do |entity|
           checkpoint('Converting model entities')
-          unless SceneVisibilityResolver.exportable_universe?(entity, @scenes, scope: @scene_scope) && Traversal.exportable_entity?(entity)
+          unless valid_exportable_entity?(entity)
             @skipped['hidden_or_invalid_entity'] += 1
             next
           end
           yield entity
         end
+      end
+
+      def valid_exportable_entity?(entity)
+        return false unless Traversal.valid_entity?(entity)
+        return false unless SceneVisibilityResolver.exportable_universe?(entity, @scenes, scope: @scene_scope)
+        if @scene_scope == 'active'
+          return false unless Traversal.exportable_entity?(entity)
+        end
+        true
+      rescue StandardError
+        false
       end
 
       def bounds_for_entities(entities)

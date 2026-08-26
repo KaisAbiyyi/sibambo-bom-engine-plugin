@@ -134,6 +134,11 @@ module BOMEngine
           coverage: coverage,
           fallback: fallback,
           debug: debug,
+          container: {
+            flags: @container.dig(:header, :flags) || @container[:flags] || 0,
+            version_major: @container.dig(:header, :major) || @container[:version_major],
+            version_minor: @container.dig(:header, :minor) || @container[:version_minor]
+          },
           directory: @container[:sections].map { |section| section.reject { |key, _value| [:bytes, :stored_bytes].include?(key) } }
         }
       end
@@ -818,7 +823,15 @@ module BOMEngine
               visible_tag_indices: visible_tag_indices,
               hidden_tag_indices: hidden_tag_indices,
               visible_node_indices: visible_nodes,
-              hidden_node_indices: hidden_nodes
+              hidden_node_indices: hidden_nodes,
+              source_visible_node_override_count: visible_nodes.length,
+              source_hidden_node_override_count: hidden_nodes.length,
+              resolved_visible_node_override_count: visible_nodes.length,
+              resolved_hidden_node_override_count: hidden_nodes.length,
+              unresolved_visible_node_overrides: [],
+              unresolved_hidden_node_overrides: [],
+              unresolved_visible_node_override_count: 0,
+              unresolved_hidden_node_override_count: 0
             },
             stores_tag_visibility: stores_tags,
             stores_hidden_objects: stores_objects,
