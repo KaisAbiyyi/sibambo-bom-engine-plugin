@@ -562,7 +562,7 @@ module BOMEngine
 
       def valid_exportable_entity?(entity)
         return false unless Traversal.valid_entity?(entity)
-        return false unless SceneVisibilityResolver.exportable_universe?(entity, @scenes, scope: @scene_scope)
+        return false unless SceneVisibilityResolver.exportable_universe?(entity, @scenes, model: @model, scope: @scene_scope)
         if @scene_scope == 'active'
           return false unless Traversal.exportable_entity?(entity)
         end

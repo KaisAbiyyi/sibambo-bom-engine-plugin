@@ -735,7 +735,8 @@ module BOMEngine
       def decode_scenes(bytes, strings, tags, instances)
         return [] if bytes.nil? || bytes.empty?
 
-        _version, tag_count, scenes_count = bytes.byteslice(0, 6).unpack('CCV')
+        version, tag_count, scenes_count = bytes.byteslice(0, 6).unpack('CCV')
+        raise 'BOMC invalid: scenes section version.' unless version == 1 || version == 2
         tag_bitset_bytes = (tag_count + 7) / 8
         cursor = 6
 
@@ -787,10 +788,27 @@ module BOMEngine
             visible_nodes << node_idx
           end
 
+          unresolved_hidden_overrides = []
+          unresolved_visible_overrides = []
+
+          if version >= 2
+            unresolved_hidden_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+            unresolved_hidden_count.times do
+              str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+              unresolved_hidden_overrides << string_value(strings, str_idx)
+            end
+
+            unresolved_visible_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+            unresolved_visible_count.times do
+              str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+              unresolved_visible_overrides << string_value(strings, str_idx)
+            end
+          end
+
           visible_tag_ids = visible_tag_indices.map { |i| tags[i] ? tags[i][:stable_id] : "tag:#{i}" }
           hidden_tag_ids = hidden_tag_indices.map { |i| tags[i] ? tags[i][:stable_id] : "tag:#{i}" }
-          visible_node_overrides = visible_nodes.map { |i| instances[i] ? instances[i][:stable_id] : "node:#{i}" }
-          hidden_node_overrides = hidden_nodes.map { |i| instances[i] ? instances[i][:stable_id] : "node:#{i}" }
+          visible_node_overrides = visible_nodes.map { |i| instances[i] ? instances[i][:stable_id] : "node:#{i}" } + unresolved_visible_overrides
+          hidden_node_overrides = hidden_nodes.map { |i| instances[i] ? instances[i][:stable_id] : "node:#{i}" } + unresolved_hidden_overrides
 
           stable_id = strings[id_idx].to_s
           stable_id = "scene:doc:#{name_idx}" if stable_id.empty?
@@ -824,14 +842,14 @@ module BOMEngine
               hidden_tag_indices: hidden_tag_indices,
               visible_node_indices: visible_nodes,
               hidden_node_indices: hidden_nodes,
-              source_visible_node_override_count: visible_nodes.length,
-              source_hidden_node_override_count: hidden_nodes.length,
+              source_visible_node_override_count: visible_nodes.length + unresolved_visible_overrides.length,
+              source_hidden_node_override_count: hidden_nodes.length + unresolved_hidden_overrides.length,
               resolved_visible_node_override_count: visible_nodes.length,
               resolved_hidden_node_override_count: hidden_nodes.length,
-              unresolved_visible_node_overrides: [],
-              unresolved_hidden_node_overrides: [],
-              unresolved_visible_node_override_count: 0,
-              unresolved_hidden_node_override_count: 0
+              unresolved_visible_node_overrides: unresolved_visible_overrides,
+              unresolved_hidden_node_overrides: unresolved_hidden_overrides,
+              unresolved_visible_node_override_count: unresolved_visible_overrides.length,
+              unresolved_hidden_node_override_count: unresolved_hidden_overrides.length
             },
             stores_tag_visibility: stores_tags,
             stores_hidden_objects: stores_objects,

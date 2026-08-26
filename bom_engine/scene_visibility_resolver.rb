@@ -402,8 +402,22 @@ module BOMEngine
       true
     end
 
-    def exportable_universe?(entity, scenes, scope: 'active')
+    def exportable_universe?(entity, scenes, model: nil, scope: 'active')
       return false if entity.nil? || (entity.respond_to?(:deleted?) && entity.deleted?)
+
+      # If live model / pages are accessible, evaluate directly on pages
+      model ||= (entity.respond_to?(:model) ? entity.model : nil)
+      pages = model.respond_to?(:pages) ? (model.pages.respond_to?(:to_a) ? model.pages.to_a : Array(model.pages)) : []
+
+      if !pages.empty?
+        if scope.to_s == 'all' || scope.to_s == 'union' || scope.to_s == 'all_scenes'
+          # Visible if visible in ANY page in model
+          return pages.any? { |page| effective_entity_visibility(entity, page) }
+        else
+          active_page = model.pages.respond_to?(:selected_page) ? model.pages.selected_page : pages.first
+          return effective_entity_visibility(entity, active_page)
+        end
+      end
 
       pid = safe_persistent_id(entity)
       tag_id = entity.respond_to?(:layer) && entity.layer ? tag_stable_id(entity.layer) : nil
