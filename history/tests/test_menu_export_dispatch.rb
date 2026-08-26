@@ -70,11 +70,11 @@ lab = UI.extensions_menu.submenus.fetch('Sibambo BOM Engine Evolution Lab')
 major = lab.submenus.fetch('Major & Release Versions')
 
 version_items = major.items.select { |label, _callback| label.match?(/^\[\d{2}\]/) }
-raise "expected 9 version items, got #{version_items.length}" unless version_items.length == 9
+raise "expected 12 version items, got #{version_items.length}" unless version_items.length == 12
 
 version_items.each_value(&:call)
 
-expected_ids = (1..9).map { |number| format('%02d', number) }
+expected_ids = (1..12).map { |number| format('%02d', number) }
 actual = SibamboHistory::EvolutionLab.test_current_exports || []
 actual_ids = actual.map(&:first)
 raise "wrong current-model dispatch: #{actual_ids.inspect}" unless actual_ids == expected_ids
@@ -82,4 +82,4 @@ raise 'a version menu did not pass SketchUp.active_model' unless actual.all? { |
 
 raise 'obsolete multi-model batch menu is still visible' if lab.items.key?('Batch Export RUMAH + SBOOST ([01] to [09])')
 
-puts 'menu export dispatch: PASS (9 current-model entries; no multi-model batch menu)'
+puts "menu export dispatch: PASS (#{version_items.length} current-model entries; no multi-model batch menu)"

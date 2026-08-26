@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.14'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.15'.freeze
 
   def self.build
     puts "======================================================================"
@@ -376,7 +376,8 @@ module EvolutionLabBuilder
       '08' => :bomc_v1,
       '09' => :bomc_scene,
       '10' => :bomc_scene,
-      '11' => :bomc_scene
+      '11' => :bomc_scene,
+      '12' => :bomc_scene
     }.fetch(id, :experimental)
   end
 

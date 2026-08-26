@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>BOM Engine Export</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html {
+    height: 100%;
+    overflow: hidden;
+    background: #1e2229;
+  }
+
+  body {
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px;
+    background: #1e2229;
+    color: #e0e4ea;
+    padding: 20px;
+  }
+
+  h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #4fffb0;
+    margin-bottom: 18px;
+    letter-spacing: 0.02em;
+  }
+
+  .field { margin-bottom: 14px; }
+
+  label {
+    display: block;
+    font-size: 11px;
+    color: #8899aa;
+    margin-bottom: 5px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  input[type=text] {
+    width: 100%;
+    padding: 8px 10px;
+    background: #141720;
+    border: 1px solid #2e3340;
+    border-radius: 5px;
+    color: #e0e4ea;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input[type=text]:focus { border-color: #4fffb0; }
+
+  .path-row { display: flex; gap: 8px; }
+  .path-row input { flex: 1; }
+
+  .btn {
+    padding: 8px 14px;
+    border-radius: 5px;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    transition: background 0.15s;
+  }
+  .btn-browse { background: #2e3340; color: #aab; }
+  .btn-browse:hover { background: #3a4050; }
+
+  .section {
+    background: #151a22;
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 14px;
+  }
+  .section h3 {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: #4fffb0;
+    margin-bottom: 10px;
+    letter-spacing: 0.1em;
+  }
+
+  /* ── Level selector ── */
+  .level-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .level-card {
+    background: #1e2229;
+    border: 1.5px solid #2e3340;
+    border-radius: 7px;
+    padding: 10px 10px 8px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    position: relative;
+  }
+  .level-card:hover { border-color: #4fffb055; }
+  .level-card input[type=radio] {
+    position: absolute;
+    opacity: 0;
+    width: 0; height: 0;
+  }
+  .level-card.selected {
+    border-color: #4fffb0;
+    background: #1a2820;
+  }
+  .level-name {
+    font-size: 12px;
+    font-weight: 700;
+    color: #c0ccd8;
+    margin-bottom: 3px;
+  }
+  .level-card.selected .level-name { color: #4fffb0; }
+  .level-size {
+    font-size: 10px;
+    color: #556677;
+    margin-bottom: 5px;
+    font-family: monospace;
+  }
+  .level-card.selected .level-size { color: #3ab888; }
+  .level-desc {
+    font-size: 10px;
+    color: #445566;
+    line-height: 1.45;
+  }
+  .level-card.selected .level-desc { color: #7a9988; }
+
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .checkbox-row:last-child { margin-bottom: 0; }
+  .checkbox-row input[type=checkbox] {
+    width: 15px;
+    height: 15px;
+    cursor: pointer;
+    accent-color: #4fffb0;
+    flex-shrink: 0;
+  }
+  .checkbox-row label {
+    text-transform: none;
+    font-size: 13px;
+    color: #c0ccd8;
+    letter-spacing: 0;
+    cursor: pointer;
+  }
+
+  .info {
+    font-size: 11px;
+    color: #556677;
+    margin-top: 5px;
+    line-height: 1.5;
+  }
+
+  /* hide options that don't apply to visual level */
+  .full-only { transition: opacity 0.2s; }
+  .full-only.dimmed { opacity: 0.35; pointer-events: none; }
+
+  .actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 18px;
+  }
+  .btn-cancel {
+    background: #2e3340;
+    color: #778899;
+    padding: 10px 22px;
+    border-radius: 6px;
+  }
+  .btn-cancel:hover { background: #3a4050; }
+  .btn-export {
+    background: #4fffb0;
+    color: #111;
+    padding: 10px 24px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .btn-export:hover { background: #3de89d; }
+
+  .badge {
+    display: inline-block;
+    font-size: 10px;
+    background: #2e3340;
+    color: #4fffb0;
+    border-radius: 3px;
+    padding: 1px 5px;
+    margin-left: 5px;
+    vertical-align: middle;
+  }
+
+  @media (max-width: 430px) {
+    body { padding: 14px; }
+    .level-grid { grid-template-columns: 1fr; }
+    .path-row { flex-wrap: wrap; }
+    .path-row input { flex-basis: 100%; }
+    .btn-browse { width: 100%; }
+    .actions { justify-content: stretch; }
+    .actions .btn { flex: 1; }
+  }
+  .evolution-batch-panel { background: #151a22; border: 1px solid #2e4050; border-radius: 8px; padding: 14px; margin: 14px 0; }
+  .evolution-batch-panel h3 { color: #4fffb0; font-size: 11px; letter-spacing: .08em; margin: 0 0 9px; text-transform: uppercase; }
+  .evolution-batch-modes { display: flex; gap: 16px; margin-bottom: 10px; }
+  .evolution-batch-modes label { color: #c0ccd8; cursor: pointer; font-size: 12px; text-transform: none; }
+  .evolution-batch-row { align-items: center; display: flex; gap: 10px; }
+  .evolution-batch-row select { background: #141720; border: 1px solid #405064; border-radius: 5px; color: #e0e4ea; padding: 7px 9px; }
+  .evolution-batch-help { color: #778899; font-size: 11px; line-height: 1.45; margin-top: 9px; }
+</style>
+</head>
+<body>
+
+  <h2>&#11041; BOM Engine Export <span class="badge">v3 / BOME2</span></h2>
+
+  <div class="field">
+    <label>Output Path</label>
+    <div class="path-row">
+      <input type="text" id="outputPath" placeholder="/path/to/name_canonical.json">
+      <button class="btn btn-browse" onclick="sketchup.browse()">Browse</button>
+    </div>
+    <p class="info">Suffix format ditambahkan otomatis. File sumber SKP tidak diubah.</p>
+  </div>
+
+  <div class="field">
+    <label for="outputFormat">Format Output</label>
+    <select id="outputFormat" onchange="selectFormat(this.value)" style="width:100%;padding:9px 10px;background:#111923;color:#d9e5ee;border:1px solid #324253;border-radius:5px">
+      <option value="canonical_v3" selected>Canonical JSON v3 — semantic/readable</option>
+      <option value="bome2">BOME2 Runtime — indexed, instanced, quantized</option>
+      <option value="legacy">Legacy v2/BOME1 — compatibility</option>
+    </select>
+    <p class="info" id="formatInfo">Sumber analisis readable: hierarchy, definitions, instances, holes, metadata, rooms, dan source identity.</p>
+  </div>
+
+  <!-- ── Export Level ── -->
+  <div class="section dimmed" id="legacyLevelSection">
+    <h3>Legacy Export Level</h3>
+    <div class="level-grid">
+
+      <label class="level-card selected" id="card-visual" onclick="selectLevel('visual')">
+        <input type="radio" name="exportLevel" value="visual" checked>
+        <div class="level-name">&#9679; Visual</div>
+        <div class="level-size">~1–10 MB gzip</div>
+        <div class="level-desc">Compact mesh untuk viewer 3D. Default paling cepat.</div>
+      </label>
+
+      <label class="level-card" id="card-standard" onclick="selectLevel('standard')">
+        <input type="radio" name="exportLevel" value="standard">
+        <div class="level-name">&#9679; Standard</div>
+        <div class="level-size">~5–20 MB gzip</div>
+        <div class="level-desc">Compact mesh + metadata dasar.</div>
+      </label>
+
+      <label class="level-card" id="card-full" onclick="selectLevel('full')">
+        <input type="radio" name="exportLevel" value="full">
+        <div class="level-name">&#9679; Full BIM</div>
+        <div class="level-size">~45–50 MB</div>
+        <div class="level-desc">Semua data: UV, atribut, analisis spasial.</div>
+      </label>
+
+    </div>
+  </div>
+
+  <!-- ── Opsi Export (beberapa hanya relevan untuk Full) ── -->
+  <div class="section">
+    <h3>Opsi Tambahan</h3>
+    <div class="checkbox-row full-only" id="opt-textures">
+      <input type="checkbox" id="exportTextures">
+      <label for="exportTextures">Export tekstur ke subfolder /textures</label>
+    </div>
+    <div class="checkbox-row full-only" id="opt-edges">
+      <input type="checkbox" id="includeEdges">
+      <label for="includeEdges">Sertakan edge entities (memperbesar ukuran file)</label>
+    </div>
+    <div class="checkbox-row full-only" id="opt-materials">
+      <input type="checkbox" id="includeMaterials" checked>
+      <label for="includeMaterials">Sertakan library material lengkap</label>
+    </div>
+    <div class="checkbox-row" id="legacyCompact">
+      <input type="checkbox" id="compactGeometry" checked disabled>
+      <label for="compactGeometry">Compact mesh untuk Visual/Standard (wajib)</label>
+    </div>
+    <div class="checkbox-row" id="legacyBinary">
+      <input type="checkbox" id="binaryGeometry" checked disabled>
+      <label for="binaryGeometry">Simpan geometry sebagai .bome.gz binary (wajib untuk viewer)</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="prettyPrint" checked>
+      <label for="prettyPrint">Pretty-print Canonical JSON</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="compressOutput">
+      <label for="compressOutput">Kompres output sebagai .gz</label>
+    </div>
+    <p class="info" style="margin-top:-4px;margin-bottom:6px">&#9888; Pretty-print hanya untuk Canonical JSON debug dan bisa membuat file jauh lebih besar.</p>
+  </div>
+
+  <div class="section">
+    <h3>Cakupan Export</h3>
+    <div class="checkbox-row" id="selectionRow">
+      <input type="checkbox" id="selectionOnly">
+      <label for="selectionOnly" id="selectionLabel">Hanya objek yang diseleksi</label>
+    </div>
+    <p class="info" id="selectionInfo">Pilih objek di SketchUp terlebih dahulu untuk mengaktifkan opsi ini.</p>
+  </div>
+
+  <div class="evolution-batch-panel" id="evolution-batch-options">
+    <h3>Batch Pemrosesan Model</h3>
+    <div class="evolution-batch-modes">
+      <label><input type="radio" name="batch-mode" value="auto" checked onchange="refreshBatchMode()"> Auto</label>
+      <label><input type="radio" name="batch-mode" value="manual" onchange="refreshBatchMode()"> Manual</label>
+    </div>
+    <div class="evolution-batch-row">
+      <span>Entity per giliran</span>
+      <select id="batch-size" disabled>
+        <option value="96">96 — paling ringan</option>
+        <option value="128">128</option>
+        <option value="256">256</option>
+        <option value="512" selected>512 — seimbang</option>
+        <option value="1024">1024</option>
+        <option value="2048">2048</option>
+        <option value="4096">4096</option>
+        <option value="8192">8192 — paling cepat</option>
+      </select>
+    </div>
+    <div class="evolution-batch-help" id="batch-help">Auto memilih ukuran dari jumlah logical CPU. Nilai kecil lebih responsif; nilai besar lebih cepat tetapi menahan UI lebih lama.</div>
+  </div>
+  <div class="actions">
+    <button class="btn btn-cancel" onclick="sketchup.cancel()">Batal</button>
+    <button class="btn btn-export" onclick="doExport()">Export Model</button>
+  </div>
+
+<script>
+  var currentLevel = 'visual';
+  var currentFormat = 'canonical_v3';
+
+  function selectLevel(level) {
+    currentLevel = level;
+    ['visual','standard','full'].forEach(function(l) {
+      var card = document.getElementById('card-' + l);
+      card.classList.toggle('selected', currentFormat === 'legacy' && l === level);
+      card.querySelector('input[type=radio]').checked = (l === level);
+    });
+    updateOptionState();
+    var compact = document.getElementById('compactGeometry');
+    var binary = document.getElementById('binaryGeometry');
+    var viewerFormat = level !== 'full';
+    compact.checked = viewerFormat;
+    binary.checked = viewerFormat;
+    compact.disabled = true;
+    binary.disabled = true;
+  }
+
+  function selectFormat(format) {
+    currentFormat = format;
+    document.getElementById('outputFormat').value = format;
+    var legacy = format === 'legacy';
+    document.getElementById('legacyLevelSection').classList.toggle('dimmed', !legacy);
+    document.querySelectorAll('input[name=exportLevel]').forEach(function(input) { input.disabled = !legacy; });
+    selectLevel(legacy ? currentLevel : 'full');
+    var info = document.getElementById('formatInfo');
+    if (format === 'bome2') info.textContent = 'Runtime Three.js teroptimasi: indexed buffers, instancing, quantization terukur, section directory.';
+    else if (format === 'canonical_v3') info.textContent = 'Sumber analisis lossless: hierarchy, definitions, instances, holes, metadata, rooms, source identity.';
+    else info.textContent = 'Format v2/BOME1 lama untuk consumer yang belum migrasi.';
+    updateOptionState();
+  }
+
+  function updateOptionState() {
+    var fullOptions = currentFormat !== 'legacy' || currentLevel === 'full';
+    document.querySelectorAll('.full-only').forEach(function(el) { el.classList.toggle('dimmed', !fullOptions); });
+    var pretty = document.getElementById('prettyPrint');
+    pretty.disabled = currentFormat !== 'canonical_v3';
+    if (pretty.disabled) pretty.checked = false;
+    document.getElementById('legacyCompact').classList.toggle('dimmed', currentFormat !== 'legacy');
+    document.getElementById('legacyBinary').classList.toggle('dimmed', currentFormat !== 'legacy');
+  }
+
+  function setDefaultPath(path) {
+    document.getElementById('outputPath').value = path;
+  }
+
+  function setPath(path) {
+    document.getElementById('outputPath').value = path;
+  }
+
+  function setSelectionState(hasSelection, forceSelection) {
+    var cb    = document.getElementById('selectionOnly');
+    var info  = document.getElementById('selectionInfo');
+    var label = document.getElementById('selectionLabel');
+
+    if (hasSelection) {
+      cb.disabled = false;
+      label.style.color = '#c0ccd8';
+      if (forceSelection) {
+        cb.checked  = true;
+        cb.disabled = true;
+        info.textContent = 'Hanya komponen yang sedang diseleksi yang akan diekspor.';
+        info.style.color = '#4fffb0';
+      } else {
+        info.textContent = 'Ada seleksi aktif. Centang untuk mengekspor seleksi saja.';
+      }
+    } else {
+      cb.disabled = true;
+      cb.checked  = false;
+      label.style.color = '#445566';
+      info.textContent  = 'Tidak ada objek yang diseleksi — akan mengekspor seluruh model.';
+    }
+  }
+
+  function recommendedBatchSize() {
+    var cores = Number(navigator.hardwareConcurrency || 4);
+    if (cores <= 4) return 128;
+    if (cores <= 8) return 256;
+    if (cores <= 16) return 512;
+    return 1024;
+  }
+
+  function selectedBatchSize() {
+    var mode = document.querySelector('input[name="batch-mode"]:checked').value;
+    return mode === 'auto' ? recommendedBatchSize() : Number(document.getElementById('batch-size').value);
+  }
+
+  function refreshBatchMode() {
+    var manual = document.querySelector('input[name="batch-mode"]:checked').value === 'manual';
+    var select = document.getElementById('batch-size');
+    select.disabled = !manual;
+    if (!manual) select.value = String(recommendedBatchSize());
+  }
+
+  function doExport() {
+    var outputPath = document.getElementById('outputPath').value.trim();
+    if (!outputPath) {
+      alert('Harap tentukan path output terlebih dahulu.');
+      return;
+    }
+    var settings = {
+      output_path:       outputPath,
+      output_format:     currentFormat,
+      export_level:      currentLevel,
+      export_textures:   document.getElementById('exportTextures').checked,
+      include_edges:     document.getElementById('includeEdges').checked,
+      include_materials: document.getElementById('includeMaterials').checked,
+      pretty_print:      document.getElementById('prettyPrint').checked,
+      compress_output:   document.getElementById('compressOutput').checked,
+      compact_geometry:  document.getElementById('compactGeometry').checked,
+      binary_geometry:   document.getElementById('binaryGeometry').checked,
+      selection_only:    document.getElementById('selectionOnly').checked
+    };
+    settings.batch_size = selectedBatchSize();
+    sketchup.export(JSON.stringify(settings));
+  }
+
+  window.onload = function() {
+    refreshBatchMode();
+    sketchup.onReady();
+    selectFormat('canonical_v3');
+  };
+</script>
+
+</body>
+</html>

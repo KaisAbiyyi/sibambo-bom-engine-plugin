@@ -321,8 +321,36 @@ versions:
     analysis_payload: "manifest_records_with_scene_profiles"
     approximate_historical_intent: "Preserve authoritative SketchUp Scene/Page semantics with official boolean get_drawingelement_visibility, page_behavior tag visibility, and robust camera metadata (fov_is_height, is_2d, aspect_ratio)."
     predecessor: "SBE-2026.08.25-01"
-    successor: null
+    successor: "SBE-2026.08.26-01"
     selection_reason: "Authoritative Scene/Page BOMC exporter verified with official SketchUp API semantics and enhanced camera attributes."
     build_strategy: "git_archive"
     install_enabled: true
     isolated_module: "SibamboHistory::V20260825_02"
+
+  - sequence: 13
+    display_version: "SBE-2026.08.26-01"
+    label: "[12] 2026-08-26 — Scene/Page BOMC — Shared-Universe Geometry & Stable Node Overrides"
+    date: "2026-08-26T16:30:00+07:00"
+    source_repository: "https://github.com/KaisAbiyyi/sibambo-bom-engine-plugin"
+    commit_sha: "0dd9ca42ab94e3416551f8fc12701ee2e9315285"
+    commit_message: "fix(scene): implement shared-universe geometry export and stable node override resolution for BOMC"
+    classification: "RELEASE"
+    format_family: "bomc_compiled_v1_1_scenes"
+    format_version: "1.1"
+    output_extensions: [".bomc"]
+    compression: "per_section_deflate_or_store"
+    geometry_representation: "bit_packed_varint_quantized_octahedral"
+    definition_instance_model: "compact_definition_instance_table"
+    textures: "embedded_png_jpg_webp_in_section_table"
+    uv: "quantized_or_float32_block"
+    source_edges: "exact_source_edge_sets_with_flags"
+    scenes: "full_visibility_bitsets_and_overrides_section_19"
+    analysis_payload: "manifest_records_with_scene_profiles"
+    approximate_historical_intent: "Export true shared geometry universe containing union of entities visible across all exported scenes, distinguish structural validity from presentation visibility, resolve DrawingElement node overrides to canonical stable node IDs, and record comprehensive override diagnostics."
+    predecessor: "SBE-2026.08.25-02"
+    successor: null
+    selection_reason: "Production Scene/Page BOMC exporter supporting true shared-universe multi-scene exports with zero geometry rebuild on scene switch."
+    build_strategy: "git_archive"
+    install_enabled: true
+    isolated_module: "SibamboHistory::V20260826_01"
+

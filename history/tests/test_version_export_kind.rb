@@ -11,7 +11,10 @@ EXPECTED = {
   '06' => :bome2,
   '07' => :cleanpkg,
   '08' => :bomc_v1,
-  '09' => :bomc_scene
+  '09' => :bomc_scene,
+  '10' => :bomc_scene,
+  '11' => :bomc_scene,
+  '12' => :bomc_scene
 }.freeze
 
 root = File.expand_path('../..', __dir__)
