@@ -314,11 +314,17 @@ module BOMEngine
           candidates << material[:name]
           candidates << material[:display_name]
         end
-        @model[:tags].each { |tag| candidates << tag[:name] }
+        @model[:tags].each do |tag|
+          candidates << tag[:name]
+          candidates << tag[:id]
+          candidates << tag[:stable_id]
+        end
         @model[:definitions].each { |definition| candidates << definition[:name] }
         @model[:instances].each_with_index do |instance, index|
           notify(:compile_metadata, index + 1, @model[:instances].length)
           candidates << instance[:name]
+          candidates << instance[:id]
+          candidates << instance[:stable_id]
           candidates << instance[:semantic_label]
         end
         @model[:meshes].each do |mesh|
@@ -330,6 +336,10 @@ module BOMEngine
           candidates << scene[:stable_id]
           candidates << scene[:visibility_signature]
           vis = scene[:visibility] || {}
+          Array(vis[:visible_node_overrides]).each { |id| candidates << id }
+          Array(vis[:hidden_node_overrides]).each { |id| candidates << id }
+          Array(vis[:visible_tag_ids]).each { |id| candidates << id }
+          Array(vis[:hidden_tag_ids]).each { |id| candidates << id }
           Array(vis[:unresolved_hidden_node_overrides]).each { |id| candidates << id }
           Array(vis[:unresolved_visible_node_overrides]).each { |id| candidates << id }
         end
@@ -349,7 +359,9 @@ module BOMEngine
           data << encoded
           offsets << data.bytesize
         end
-        [1, 0, 0, 0, @strings.length, data.bytesize].pack('CCCCVV') + offsets.pack('V*') + data
+        offsets_data = offsets.pack('V*')
+        header = [1, 0, 0, 0, @strings.length, data.bytesize].pack('CCCCVV')
+        header + offsets_data + data
       end
 
       def build_model_section(geometry)
@@ -641,11 +653,20 @@ module BOMEngine
 
       def build_scenes_section
         scenes = Array(@model[:scenes])
-        tag_count = @model[:tags].length
+        tags = Array(@model[:tags])
+        instances = Array(@model[:instances])
+        tag_count = tags.length
         tag_bitset_bytes = (tag_count + 7) / 8
 
-        # Section 19 Version 2 supports truthful unresolved override serialization
-        data = [2, tag_count, scenes.length].pack('CCV')
+        # Section 19 Version 3 supports stable tag and node override identities
+        data = [3, tag_count, scenes.length].pack('CCV')
+
+        # Tag stable ID string indices
+        tags.each_with_index do |tag, idx|
+          tag_id = tag[:stable_id] || tag[:id] || "tag:#{idx}"
+          str_idx = @string_index[tag_id.to_s] || @string_index[tag[:name].to_s] || 0
+          data << BOMC::Binary.write_varuint(str_idx)
+        end
 
         scenes.each do |scene|
           camera = scene[:camera] || {}
@@ -700,12 +721,24 @@ module BOMEngine
 
           hidden_nodes = Array(visibility[:hidden_node_indices])
           visible_nodes = Array(visibility[:visible_node_indices])
+          hidden_node_ids = Array(visibility[:hidden_node_overrides])
+          visible_node_ids = Array(visibility[:visible_node_overrides])
 
           data << BOMC::Binary.write_varuint(hidden_nodes.length)
-          hidden_nodes.each { |idx| data << BOMC::Binary.write_varuint(idx) }
+          hidden_nodes.each_with_index do |idx, i|
+            data << BOMC::Binary.write_varuint(idx)
+            node_id = hidden_node_ids[i] || instances[idx]&.dig(:stable_id) || instances[idx]&.dig(:id) || "node:#{idx}"
+            str_idx = @string_index[node_id.to_s] || @string_index[instances[idx]&.dig(:name).to_s] || 0
+            data << BOMC::Binary.write_varuint(str_idx)
+          end
 
           data << BOMC::Binary.write_varuint(visible_nodes.length)
-          visible_nodes.each { |idx| data << BOMC::Binary.write_varuint(idx) }
+          visible_nodes.each_with_index do |idx, i|
+            data << BOMC::Binary.write_varuint(idx)
+            node_id = visible_node_ids[i] || instances[idx]&.dig(:stable_id) || instances[idx]&.dig(:id) || "node:#{idx}"
+            str_idx = @string_index[node_id.to_s] || @string_index[instances[idx]&.dig(:name).to_s] || 0
+            data << BOMC::Binary.write_varuint(str_idx)
+          end
 
           unresolved_hidden = Array(visibility[:unresolved_hidden_node_overrides])
           data << BOMC::Binary.write_varuint(unresolved_hidden.length)

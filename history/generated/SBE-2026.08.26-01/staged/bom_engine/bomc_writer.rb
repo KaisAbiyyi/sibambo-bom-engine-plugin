@@ -330,9 +330,6 @@ module SibamboHistory
           candidates << scene[:description]
           candidates << scene[:stable_id]
           candidates << scene[:visibility_signature]
-          vis = scene[:visibility] || {}
-          Array(vis[:unresolved_hidden_node_overrides]).each { |id| candidates << id }
-          Array(vis[:unresolved_visible_node_overrides]).each { |id| candidates << id }
         end
         if @profile == :debug
           each_debug_string { |value| candidates << value }
@@ -645,8 +642,7 @@ module SibamboHistory
         tag_count = @model[:tags].length
         tag_bitset_bytes = (tag_count + 7) / 8
 
-        # Section 19 Version 2 supports truthful unresolved override serialization
-        data = [2, tag_count, scenes.length].pack('CCV')
+        data = [1, tag_count, scenes.length].pack('CCV')
 
         scenes.each do |scene|
           camera = scene[:camera] || {}
@@ -707,20 +703,6 @@ module SibamboHistory
 
           data << BOMC::Binary.write_varuint(visible_nodes.length)
           visible_nodes.each { |idx| data << BOMC::Binary.write_varuint(idx) }
-
-          unresolved_hidden = Array(visibility[:unresolved_hidden_node_overrides])
-          data << BOMC::Binary.write_varuint(unresolved_hidden.length)
-          unresolved_hidden.each do |id|
-            str_idx = @string_index[id.to_s] || 0
-            data << BOMC::Binary.write_varuint(str_idx)
-          end
-
-          unresolved_visible = Array(visibility[:unresolved_visible_node_overrides])
-          data << BOMC::Binary.write_varuint(unresolved_visible.length)
-          unresolved_visible.each do |id|
-            str_idx = @string_index[id.to_s] || 0
-            data << BOMC::Binary.write_varuint(str_idx)
-          end
         end
 
         data

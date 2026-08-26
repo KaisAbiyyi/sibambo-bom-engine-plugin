@@ -348,9 +348,36 @@ versions:
     analysis_payload: "manifest_records_with_scene_profiles"
     approximate_historical_intent: "Export true shared geometry universe containing union of entities visible across all exported scenes, distinguish structural validity from presentation visibility, resolve DrawingElement node overrides to canonical stable node IDs, and record comprehensive override diagnostics."
     predecessor: "SBE-2026.08.25-02"
-    successor: null
+    successor: "SBE-2026.08.26-02"
     selection_reason: "Production Scene/Page BOMC exporter supporting true shared-universe multi-scene exports with zero geometry rebuild on scene switch."
     build_strategy: "git_archive"
     install_enabled: true
     isolated_module: "SibamboHistory::V20260826_01"
+
+  - sequence: 14
+    display_version: "SBE-2026.08.26-02"
+    label: "[13] 2026-08-26 — Scene/Page BOMC — Final Shared-Universe & Stable Identity Overrides"
+    date: "2026-08-26T21:00:00+07:00"
+    source_repository: "https://github.com/KaisAbiyyi/sibambo-bom-engine-plugin"
+    commit_sha: "0b6d507c28101c5fa6b46decff8fa1a98cc17acf"
+    commit_message: "fix(scenes): resolve shared-universe cycle, preserve truthful unresolved overrides in BOMC v2"
+    classification: "RELEASE"
+    format_family: "bomc_compiled_v1_1_scenes"
+    format_version: "1.1"
+    output_extensions: [".bomc"]
+    compression: "per_section_deflate_or_store"
+    geometry_representation: "bit_packed_varint_quantized_octahedral"
+    definition_instance_model: "compact_definition_instance_table"
+    textures: "embedded_png_jpg_webp_in_section_table"
+    uv: "quantized_or_float32_block"
+    source_edges: "exact_source_edge_sets_with_flags"
+    scenes: "full_visibility_bitsets_and_overrides_section_19"
+    analysis_payload: "manifest_records_with_scene_profiles"
+    approximate_historical_intent: "Production Scene/Page BOMC exporter supporting true shared-universe multi-scene exports with zero geometry rebuild on scene switch, pruning cycle resolution, truthful unresolved override diagnostics, and stable identity retention."
+    predecessor: "SBE-2026.08.26-01"
+    successor: null
+    selection_reason: "Final production Scene/Page BOMC exporter resolving shared-universe pruning cycles and supporting truthful unresolved override preservation."
+    build_strategy: "git_archive"
+    install_enabled: true
+    isolated_module: "SibamboHistory::V20260826_02"
 

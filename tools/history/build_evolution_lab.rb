@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.15'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.16'.freeze
 
   def self.build
     puts "======================================================================"
@@ -114,17 +114,7 @@ module EvolutionLabBuilder
     puts "\n[SUCCESS] Evolution Lab build completed cleanly!"
   end
 
-  def self.extract_git_snapshot(sha, raw_dir, ver)
-    if ver['display_version'] == 'SBE-2026.08.26-01'
-      # Current milestone SBE-2026.08.26-01 source matches current production bom_engine
-      FileUtils.cp_r(File.join(ROOT_DIR, 'bom_engine'), File.join(raw_dir, 'bom_engine'))
-      FileUtils.cp_r(File.join(ROOT_DIR, 'schema'), File.join(raw_dir, 'schema')) if Dir.exist?(File.join(ROOT_DIR, 'schema'))
-      FileUtils.cp_r(File.join(ROOT_DIR, 'ui'), File.join(raw_dir, 'ui')) if Dir.exist?(File.join(ROOT_DIR, 'ui'))
-      Dir.glob(File.join(ROOT_DIR, '*.rb')).each { |rb| FileUtils.cp(rb, raw_dir) }
-      Dir.glob(File.join(ROOT_DIR, '*.md')).each { |md| FileUtils.cp(md, raw_dir) }
-      return
-    end
-
+  def self.extract_git_snapshot(sha, raw_dir, _ver)
     temp_zip = File.join(raw_dir, 'temp_archive.zip')
     cmd = "git archive --format=zip #{sha} -o \"#{temp_zip}\""
     stdout, stderr, status = Open3.capture3(cmd, chdir: ROOT_DIR)
@@ -170,6 +160,10 @@ module EvolutionLabBuilder
         FileUtils.cp(item, dest)
       end
     end
+
+    # Exclude non-runnable development unit test suites from runtime plugin distribution packages
+    FileUtils.rm_rf(File.join(staged_dir, 'bom_engine', 'tests'))
+    FileUtils.rm_rf(File.join(staged_dir, 'tests'))
 
     # Transform all Ruby files in staged_dir
     ruby_files = Dir.glob(File.join(staged_dir, '**', '*.rb'))
@@ -387,7 +381,8 @@ module EvolutionLabBuilder
       '09' => :bomc_scene,
       '10' => :bomc_scene,
       '11' => :bomc_scene,
-      '12' => :bomc_scene
+      '12' => :bomc_scene,
+      '13' => :bomc_scene
     }.fetch(id, :experimental)
   end
 
@@ -1357,7 +1352,7 @@ module EvolutionLabBuilder
     md = +<<~MARKDOWN
       # Sibambo BOM Engine Evolution Lab — Package Manifest
 
-      **Generated At**: `2026-08-25`
+      **Generated At**: `#{Time.now.strftime('%Y-%m-%d')}`
       **Master RBZ**: [`#{File.basename(master_rbz)}`](file:///#{master_rbz.gsub('\\', '/')})
       **Master SHA256**: `#{master_sha256}`
 

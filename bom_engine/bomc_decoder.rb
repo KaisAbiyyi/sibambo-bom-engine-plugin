@@ -736,9 +736,17 @@ module BOMEngine
         return [] if bytes.nil? || bytes.empty?
 
         version, tag_count, scenes_count = bytes.byteslice(0, 6).unpack('CCV')
-        raise 'BOMC invalid: scenes section version.' unless version == 1 || version == 2
+        raise 'BOMC invalid: scenes section version.' unless version == 1 || version == 2 || version == 3
         tag_bitset_bytes = (tag_count + 7) / 8
         cursor = 6
+
+        tag_stable_ids = []
+        if version >= 3
+          tag_count.times do
+            str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+            tag_stable_ids << string_value(strings, str_idx)
+          end
+        end
 
         scenes_count.times.map do
           scene_header = bytes.byteslice(cursor, 68)
@@ -776,16 +784,26 @@ module BOMEngine
 
           hidden_nodes_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
           hidden_nodes = []
+          resolved_hidden_node_ids = []
           hidden_nodes_count.times do
             node_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
             hidden_nodes << node_idx
+            if version >= 3
+              str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+              resolved_hidden_node_ids << string_value(strings, str_idx)
+            end
           end
 
           visible_nodes_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
           visible_nodes = []
+          resolved_visible_node_ids = []
           visible_nodes_count.times do
             node_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
             visible_nodes << node_idx
+            if version >= 3
+              str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+              resolved_visible_node_ids << string_value(strings, str_idx)
+            end
           end
 
           unresolved_hidden_overrides = []
@@ -805,10 +823,20 @@ module BOMEngine
             end
           end
 
-          visible_tag_ids = visible_tag_indices.map { |i| tags[i] ? tags[i][:stable_id] : "tag:#{i}" }
-          hidden_tag_ids = hidden_tag_indices.map { |i| tags[i] ? tags[i][:stable_id] : "tag:#{i}" }
-          visible_node_overrides = visible_nodes.map { |i| instances[i] ? instances[i][:stable_id] : "node:#{i}" } + unresolved_visible_overrides
-          hidden_node_overrides = hidden_nodes.map { |i| instances[i] ? instances[i][:stable_id] : "node:#{i}" } + unresolved_hidden_overrides
+          visible_tag_ids = visible_tag_indices.map do |i|
+            (version >= 3 && tag_stable_ids[i]) ? tag_stable_ids[i] : (tags[i] ? tags[i][:stable_id] : "tag:#{i}")
+          end
+          hidden_tag_ids = hidden_tag_indices.map do |i|
+            (version >= 3 && tag_stable_ids[i]) ? tag_stable_ids[i] : (tags[i] ? tags[i][:stable_id] : "tag:#{i}")
+          end
+
+          if version >= 3
+            visible_node_overrides = resolved_visible_node_ids + unresolved_visible_overrides
+            hidden_node_overrides = resolved_hidden_node_ids + unresolved_hidden_overrides
+          else
+            visible_node_overrides = visible_nodes.map { |i| instances[i] ? instances[i][:stable_id] : "node:#{i}" } + unresolved_visible_overrides
+            hidden_node_overrides = hidden_nodes.map { |i| instances[i] ? instances[i][:stable_id] : "node:#{i}" } + unresolved_hidden_overrides
+          end
 
           stable_id = strings[id_idx].to_s
           stable_id = "scene:doc:#{name_idx}" if stable_id.empty?

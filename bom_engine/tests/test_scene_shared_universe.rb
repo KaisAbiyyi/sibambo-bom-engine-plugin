@@ -373,6 +373,90 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     assert_equal 1, decoded[:meshes].length
   end
 
+  # 8. Stable tag and node override identities survive Section 19 v3 roundtrip
+  def test_stable_tag_and_node_override_identities_survive_v3_roundtrip
+    tags = [
+      { id: 'tag:arch_walls', stable_id: 'tag:arch_walls', name: 'Walls', visible: true },
+      { id: 'tag:arch_doors', stable_id: 'tag:arch_doors', name: 'Doors', visible: false }
+    ]
+    instances = [
+      { id: 'node:root_0', stable_id: 'node:root_0', name: 'Root', kind: 'root', definition_id: 'def:0', transform_id: 0, visible: true },
+      { id: 'node:custom_wall_123', stable_id: 'node:custom_wall_123', name: 'Wall_Instance', kind: 'component_instance', definition_id: 'def:1', owner_definition_id: 'def:0', transform_id: 0, visible: true },
+      { id: 'node:custom_door_456', stable_id: 'node:custom_door_456', name: 'Door_Instance', kind: 'component_instance', definition_id: 'def:2', owner_definition_id: 'def:0', transform_id: 0, visible: true }
+    ]
+    scenes = [{
+      id: 'scene:doc:plan_view',
+      name: 'Plan View',
+      description: 'Ground floor plan',
+      stable_id: 'scene:doc:plan_view',
+      is_active_at_export: true,
+      use_camera: true,
+      camera: {
+        projection: 'orthographic',
+        eye_m: [0, 0, 100],
+        target_m: [0, 0, 0],
+        up: [0, 1, 0],
+        orthographic_height_m: 50.0,
+        aspect_ratio: 1.5
+      },
+      transition_time_seconds: 0.0,
+      visibility: {
+        visible_tag_ids: ['tag:arch_walls'],
+        hidden_tag_ids: ['tag:arch_doors'],
+        visible_node_overrides: ['node:custom_door_456', 'node:external_proxy'],
+        hidden_node_overrides: ['node:custom_wall_123', 'node:unloaded_xref']
+      }
+    }]
+
+    identity = BOMEngine::BOMC::ModelAdapter::IDENTITY
+    graph = {
+      format: { name: 'BOM Engine Canonical', version: '3.0.0' },
+      source: { file_name: 'stable_ids.skp', model_name: 'Stable IDs', scope: 'all' },
+      coordinate_system: { units: 'm', handedness: 'right', up_axis: 'Z' },
+      materials: [],
+      tags: tags,
+      transforms: [identity.dup],
+      meshes: [{
+        id: 'mesh:0', definition_id: 'def:1',
+        positions_m: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0],
+        faces: [{ id: 'f:0', outer: [0, 1, 2], holes: [], triangles: [0, 1, 2], normal: [0.0, 0.0, 1.0] }],
+        edges: []
+      }],
+      definitions: [
+        { id: 'def:0', name: 'Root', kind: 'model_definition', node_ids: ['node:custom_wall_123', 'node:custom_door_456'] },
+        { id: 'def:1', name: 'Wall', kind: 'component_definition', mesh_id: 'mesh:0', node_ids: [] },
+        { id: 'def:2', name: 'Door', kind: 'component_definition', mesh_id: 'mesh:0', node_ids: [] }
+      ],
+      nodes: instances,
+      scenes: scenes
+    }
+
+    pack_result = BOMEngine::BOMCWriter.pack(graph, profile: :production)
+    decoded = BOMEngine::BOMCDecoder.decode(pack_result[:bytes])
+    decoded_scene = decoded[:scenes].first
+    vis = decoded_scene[:visibility]
+
+    # Exact survival of stable tag IDs
+    assert_equal ['tag:arch_walls'], vis[:visible_tag_ids]
+    assert_equal ['tag:arch_doors'], vis[:hidden_tag_ids]
+    assert_equal [0], vis[:visible_tag_indices]
+    assert_equal [1], vis[:hidden_tag_indices]
+
+    # Exact survival of stable node override IDs
+    assert_equal ['node:custom_door_456', 'node:external_proxy'], vis[:visible_node_overrides]
+    assert_equal ['node:custom_wall_123', 'node:unloaded_xref'], vis[:hidden_node_overrides]
+    assert_equal [2], vis[:visible_node_indices]
+    assert_equal [1], vis[:hidden_node_indices]
+
+    # Truthful counts
+    assert_equal 2, vis[:source_visible_node_override_count]
+    assert_equal 2, vis[:source_hidden_node_override_count]
+    assert_equal 1, vis[:resolved_visible_node_override_count]
+    assert_equal 1, vis[:resolved_hidden_node_override_count]
+    assert_equal ['node:external_proxy'], vis[:unresolved_visible_node_overrides]
+    assert_equal ['node:unloaded_xref'], vis[:unresolved_hidden_node_overrides]
+  end
+
   # 8. Relevant baseline rendering/edge semantics are unchanged
   def test_baseline_rendering_edge_semantics_unchanged
     def1 = @model.definitions.add('EdgeTestDef')

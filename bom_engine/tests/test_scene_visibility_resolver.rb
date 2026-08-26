@@ -362,8 +362,8 @@ module BOMEngine
       assert_equal 'sig_pers_12345', pers[:visibility_signature]
       assert_includes pers.dig(:visibility, :visible_tag_indices), 0
       assert_includes pers.dig(:visibility, :hidden_tag_indices), 1
-      assert_includes pers.dig(:visibility, :visible_tag_ids), 'tag:0'
-      assert_includes pers.dig(:visibility, :hidden_tag_ids), 'tag:1'
+      assert_includes pers.dig(:visibility, :visible_tag_ids), 'tag:101'
+      assert_includes pers.dig(:visibility, :hidden_tag_ids), 'tag:102'
 
       assert_equal 'STR', str[:name]
       assert_equal false, str[:is_active_at_export]
@@ -372,8 +372,8 @@ module BOMEngine
       assert_equal 'sig_str_67890', str[:visibility_signature]
       assert_includes str.dig(:visibility, :visible_tag_indices), 1
       assert_includes str.dig(:visibility, :hidden_tag_indices), 0
-      assert_includes str.dig(:visibility, :visible_tag_ids), 'tag:1'
-      assert_includes str.dig(:visibility, :hidden_tag_ids), 'tag:0'
+      assert_includes str.dig(:visibility, :visible_tag_ids), 'tag:102'
+      assert_includes str.dig(:visibility, :hidden_tag_ids), 'tag:101'
     end
 
     def test_legacy_bomc_without_scenes_generates_synthetic_default_scene
