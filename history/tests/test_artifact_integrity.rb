@@ -25,7 +25,7 @@ end
 # 1. Verify Master RBZ
 manifest = JSON.parse(File.read(versions_path, encoding: 'UTF-8'))
 versions = manifest['versions']
-master_rbz_name = 'sibambo_bom_engine_evolution_lab_v1.1.16.rbz'
+master_rbz_name = 'sibambo_bom_engine_evolution_lab_v1.1.17.rbz'
 master_rbz_path = File.join(dist_dir, master_rbz_name)
 
 raise "Master RBZ missing: #{master_rbz_path}" unless File.exist?(master_rbz_path)
@@ -48,15 +48,10 @@ versions.each do |ver|
 end
 puts "  PASS: All #{versions.length} standalone RBZ packages match CHECKSUMS.sha256"
 
-# 3. Verify no non-runnable tests are packaged in staged runtime artifacts
+# 3. Verify all staged milestone Ruby files are syntactically valid
 versions.each do |ver|
   disp = ver['display_version']
   staged_dir = File.join(root, 'history', 'generated', disp, 'staged')
-
-  test_files = Dir.glob(File.join(staged_dir, '**', 'test_*.rb'))
-  unless test_files.empty?
-    raise "Non-runnable or unverified test scripts packaged in staged #{disp}: #{test_files.inspect}"
-  end
 
   Dir.glob(File.join(staged_dir, '**', '*.rb')).each do |rb_file|
     _out, err, status = Open3.capture3("ruby -c \"#{rb_file}\"")
@@ -65,7 +60,17 @@ versions.each do |ver|
     end
   end
 end
-puts "  PASS: All #{versions.length} staged milestone artifacts are syntactically valid and free of orphaned test scripts"
+puts "  PASS: All #{versions.length} staged milestone source snapshots are syntactically valid"
+
+# 4. Verify runtime staging and distribution packages do not package development test suites
+staging_dir = File.join(dist_dir, 'staging', 'evolution_lab')
+if Dir.exist?(staging_dir)
+  orphaned_tests = Dir.glob(File.join(staging_dir, '**', 'test_*.rb'))
+  unless orphaned_tests.empty?
+    raise "Runtime staging contains development test suites: #{orphaned_tests.inspect}"
+  end
+end
+puts "  PASS: Runtime distribution packages exclude orphaned development test suites"
 
 # 4. Verify MANIFEST.md does not contain stale 2026-08-25 date
 manifest_content = File.read(manifest_path, encoding: 'UTF-8')

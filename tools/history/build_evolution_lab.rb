@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.16'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.17'.freeze
 
   def self.build
     puts "======================================================================"
@@ -80,9 +80,11 @@ module EvolutionLabBuilder
       generate_origin_md(ver_gen_dir, ver)
       generate_transform_report(ver_gen_dir, raw_dir, staged_dir, ver)
 
-      # 5. Copy to Master Evolution Lab directory
+      # 5. Copy to Master Evolution Lab directory (strip test suites from runtime package only)
       target_dir_in_master = File.join(evolution_lab_dir, "engine_#{key.downcase}")
       FileUtils.cp_r(staged_dir, target_dir_in_master)
+      FileUtils.rm_rf(File.join(target_dir_in_master, 'bom_engine', 'tests'))
+      FileUtils.rm_rf(File.join(target_dir_in_master, 'tests'))
 
       # 6. Package Standalone RBZ
       standalone_rbz = File.join(STANDALONE_DIR, "sibambo_bom_engine_#{key.downcase}.rbz")
@@ -160,10 +162,6 @@ module EvolutionLabBuilder
         FileUtils.cp(item, dest)
       end
     end
-
-    # Exclude non-runnable development unit test suites from runtime plugin distribution packages
-    FileUtils.rm_rf(File.join(staged_dir, 'bom_engine', 'tests'))
-    FileUtils.rm_rf(File.join(staged_dir, 'tests'))
 
     # Transform all Ruby files in staged_dir
     ruby_files = Dir.glob(File.join(staged_dir, '**', '*.rb'))
@@ -382,7 +380,8 @@ module EvolutionLabBuilder
       '10' => :bomc_scene,
       '11' => :bomc_scene,
       '12' => :bomc_scene,
-      '13' => :bomc_scene
+      '13' => :bomc_scene,
+      '14' => :bomc_scene
     }.fetch(id, :experimental)
   end
 
@@ -1280,7 +1279,10 @@ module EvolutionLabBuilder
     standalone_folder_name = "sibambo_bom_engine_#{key.downcase}"
     isolated_submodule = ver['isolated_module'].split('::').last
 
-    FileUtils.cp_r(staged_dir, File.join(temp_zip_dir, standalone_folder_name))
+    standalone_staged = File.join(temp_zip_dir, standalone_folder_name)
+    FileUtils.cp_r(staged_dir, standalone_staged)
+    FileUtils.rm_rf(File.join(standalone_staged, 'bom_engine', 'tests'))
+    FileUtils.rm_rf(File.join(standalone_staged, 'tests'))
 
     loader_code = <<~RUBY
       # frozen_string_literal: true

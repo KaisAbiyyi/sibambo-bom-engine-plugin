@@ -70,11 +70,11 @@ lab = UI.extensions_menu.submenus.fetch('Sibambo BOM Engine Evolution Lab')
 major = lab.submenus.fetch('Major & Release Versions')
 
 version_items = major.items.select { |label, _callback| label.match?(/^\[\d{2}\]/) }
-raise "expected 13 version items, got #{version_items.length}" unless version_items.length == 13
+raise "expected 14 version items, got #{version_items.length}" unless version_items.length == 14
 
 version_items.each_value(&:call)
 
-expected_ids = (1..13).map { |number| format('%02d', number) }
+expected_ids = (1..14).map { |number| format('%02d', number) }
 actual = SibamboHistory::EvolutionLab.test_current_exports || []
 actual_ids = actual.map(&:first)
 raise "wrong current-model dispatch: #{actual_ids.inspect}" unless actual_ids == expected_ids
