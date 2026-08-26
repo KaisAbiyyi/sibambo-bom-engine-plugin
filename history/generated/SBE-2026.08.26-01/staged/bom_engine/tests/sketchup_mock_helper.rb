@@ -648,7 +648,7 @@ module Sketchup
   class Page
     attr_accessor :name, :description, :camera, :use_camera, :use_hidden_layers, :layers,
                   :use_hidden_objects, :use_hidden_geometry, :hidden_entities, :persistent_id,
-                  :transition_time
+                  :transition_time, :drawingelement_visibility
 
     def initialize(name)
       @name = name
@@ -660,8 +660,29 @@ module Sketchup
       @use_hidden_objects = true
       @use_hidden_geometry = false
       @hidden_entities = []
+      @drawingelement_visibility = {}
       @persistent_id = "pid_#{name.downcase}"
       @transition_time = 0.0
+    end
+
+    def set_drawingelement_visibility(element, visible)
+      @drawingelement_visibility[element] = visible
+    end
+
+    def get_drawingelement_visibility(element)
+      @drawingelement_visibility[element]
+    end
+
+    def layer_visible?(layer)
+      if @use_hidden_layers
+        if @layers.include?(layer)
+          false
+        else
+          layer.visible?
+        end
+      else
+        layer.visible?
+      end
     end
 
     def use_camera?
@@ -759,21 +780,22 @@ module Sketchup
 
   class Pages
     include Enumerable
+    attr_accessor :selected_page
 
     def initialize
       @items = []
-      @selected = nil
+      @selected_page = nil
     end
 
     def add(name)
       p = Page.new(name)
       @items << p
-      @selected ||= p
+      @selected_page ||= p
       p
     end
 
     def selected_page
-      @selected
+      @selected_page || @items.first
     end
 
     def each(&block)

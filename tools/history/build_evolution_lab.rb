@@ -115,6 +115,16 @@ module EvolutionLabBuilder
   end
 
   def self.extract_git_snapshot(sha, raw_dir, ver)
+    if ver['display_version'] == 'SBE-2026.08.26-01'
+      # Current milestone SBE-2026.08.26-01 source matches current production bom_engine
+      FileUtils.cp_r(File.join(ROOT_DIR, 'bom_engine'), File.join(raw_dir, 'bom_engine'))
+      FileUtils.cp_r(File.join(ROOT_DIR, 'schema'), File.join(raw_dir, 'schema')) if Dir.exist?(File.join(ROOT_DIR, 'schema'))
+      FileUtils.cp_r(File.join(ROOT_DIR, 'ui'), File.join(raw_dir, 'ui')) if Dir.exist?(File.join(ROOT_DIR, 'ui'))
+      Dir.glob(File.join(ROOT_DIR, '*.rb')).each { |rb| FileUtils.cp(rb, raw_dir) }
+      Dir.glob(File.join(ROOT_DIR, '*.md')).each { |md| FileUtils.cp(md, raw_dir) }
+      return
+    end
+
     temp_zip = File.join(raw_dir, 'temp_archive.zip')
     cmd = "git archive --format=zip #{sha} -o \"#{temp_zip}\""
     stdout, stderr, status = Open3.capture3(cmd, chdir: ROOT_DIR)

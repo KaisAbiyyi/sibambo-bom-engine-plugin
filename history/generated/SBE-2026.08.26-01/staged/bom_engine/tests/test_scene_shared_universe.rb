@@ -25,26 +25,31 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     # PERS scene (active) hides Tag_STR
     scene_pers = @model.pages.add('PERS')
     scene_pers.use_hidden_layers = true
+    scene_pers.layers = [tag_str]
+    @model.pages.selected_page = scene_pers
 
     # STR scene (inactive) hides Tag_PERS
     scene_str = @model.pages.add('STR')
     scene_str.use_hidden_layers = true
+    scene_str.layers = [tag_pers]
 
-    # Create element on Tag_STR
+    # Create element on Tag_STR (base-hidden, but explicitly shown in STR page)
     def_str = @model.definitions.add('Structure_Column')
     face_str = def_str.entities.add_face([0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0])
     face_str.layer = tag_str
     inst_str = @model.entities.add_instance(def_str, Geom::Transformation.new)
     inst_str.layer = tag_str
+    inst_str.hidden = true
+    scene_str.set_drawingelement_visibility(inst_str, true)
 
-    # Create element on Tag_PERS
+    # Create element on Tag_PERS (visible in PERS, hidden in STR)
     def_pers = @model.definitions.add('Pers_Furniture')
     face_pers = def_pers.entities.add_face([0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0])
     face_pers.layer = tag_pers
     inst_pers = @model.entities.add_instance(def_pers, Geom::Transformation.new)
     inst_pers.layer = tag_pers
 
-    # With scene_scope: 'all', both definitions and instances are exported in the shared universe
+    # With scene_scope: 'all', both definitions and instances survive canonical graph
     graph_all = SibamboHistory::V20260826_01::CanonicalGraphBuilder.build(
       model: @model,
       entities: @model.entities,
@@ -61,6 +66,27 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     node_names = graph_all[:nodes].map { |n| n[:name] }
     assert_include node_names, 'Structure_Column', 'Structure instance node must be in shared universe'
     assert_include node_names, 'Pers_Furniture', 'Furniture instance node must be in shared universe'
+
+    # Pack to BOMC and decode
+    pack_result = SibamboHistory::V20260826_01::BOMCWriter.pack(graph_all, profile: :production)
+    decoded = SibamboHistory::V20260826_01::BOMCDecoder.decode(pack_result[:bytes])
+
+    # Shared universe contains each geometry-bearing definition and instance exactly once
+    decoded_defs = decoded[:definitions].map { |d| d[:name] }
+    assert_include decoded_defs, 'Structure_Column'
+    assert_include decoded_defs, 'Pers_Furniture'
+
+    # Verify differing effective scene visibility
+    pers_scene = decoded[:scenes].find { |s| s[:name] == 'PERS' }
+    str_scene = decoded[:scenes].find { |s| s[:name] == 'STR' }
+    assert_not_nil pers_scene
+    assert_not_nil str_scene
+
+    # PERS hides Tag_STR, STR hides Tag_PERS
+    tag_str_idx = decoded[:tags].index { |t| t[:name] == 'Tag_STR' }
+    tag_pers_idx = decoded[:tags].index { |t| t[:name] == 'Tag_PERS' }
+    assert_include pers_scene.dig(:visibility, :hidden_tag_indices), tag_str_idx
+    assert_include str_scene.dig(:visibility, :hidden_tag_indices), tag_pers_idx
   end
 
   # 2. Two Scenes yield meaningfully different effective occurrence masks
@@ -182,22 +208,34 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     assert_equal [1], vis[:hidden_node_indices]
   end
 
-  # 5. Unresolved overrides are counted/reported
+  # 5. Unresolved overrides are counted/reported and preserved on-disk
   def test_unresolved_overrides_counted_and_reported
-    node_index = { 'node:valid' => 0 }
-    tag_index = { 'tag:valid' => 0 }
+    def1 = @model.definitions.add('UnresolvedBox')
+    def1.entities.add_face([0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0])
+    @model.entities.add_instance(def1, Geom::Transformation.new)
+    graph = SibamboHistory::V20260826_01::CanonicalGraphBuilder.build(
+      model: @model,
+      entities: @model.entities,
+      parent_transform: Geom::Transformation.new,
+      settings: { scene_scope: 'all', output_format: 'bomc_v1_1' },
+      spatial: {},
+      texture_writer: nil
+    )
 
+    valid_node_id = graph[:nodes].last[:id]
     raw_scenes = [{
       id: 'sc_unresolved',
       name: 'Unresolved Scene',
       visibility: {
-        visible_tag_ids: ['tag:valid', 'tag:missing_1'],
+        visible_tag_ids: [],
         hidden_tag_ids: [],
         visible_node_overrides: ['node:missing_node_a', 'node:missing_node_b'],
-        hidden_node_overrides: ['node:valid', 'node:missing_node_c']
+        hidden_node_overrides: [valid_node_id, 'node:missing_node_c']
       }
     }]
 
+    tag_index = {}
+    node_index = { valid_node_id => 1 }
     adapted = SibamboHistory::V20260826_01::BOMC::ModelAdapter.send(:adapt_scenes, raw_scenes, tag_index, node_index)
     vis = adapted.first[:visibility]
 
@@ -209,6 +247,69 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     assert_equal 1, vis[:unresolved_hidden_node_override_count]
     assert_equal ['node:missing_node_a', 'node:missing_node_b'], vis[:unresolved_visible_node_overrides]
     assert_equal ['node:missing_node_c'], vis[:unresolved_hidden_node_overrides]
+
+    # Pack and decode to verify on-disk preservation in Section 19 v2
+    graph[:scenes] = raw_scenes
+    pack_result = SibamboHistory::V20260826_01::BOMCWriter.pack(graph, profile: :production)
+    decoded = SibamboHistory::V20260826_01::BOMCDecoder.decode(pack_result[:bytes])
+    decoded_vis = decoded[:scenes].first[:visibility]
+
+    assert_equal 2, decoded_vis[:source_visible_node_override_count]
+    assert_equal 2, decoded_vis[:source_hidden_node_override_count]
+    assert_equal 0, decoded_vis[:resolved_visible_node_override_count]
+    assert_equal 1, decoded_vis[:resolved_hidden_node_override_count]
+    assert_equal ['node:missing_node_a', 'node:missing_node_b'], decoded_vis[:unresolved_visible_node_overrides]
+    assert_equal ['node:missing_node_c'], decoded_vis[:unresolved_hidden_node_overrides]
+  end
+
+  # 5b. Backward compatibility for v1 scenes section
+  def test_backward_compatible_v1_scenes_section_decoded
+    # Construct a raw binary v1 scene section (version 1)
+    tag_count = 2
+    tag_bitset_bytes = (tag_count + 7) / 8
+    scenes_count = 1
+
+    # v1 header: version 1, tag_count 2, scenes_count 1
+    data = [1, tag_count, scenes_count].pack('CCV')
+
+    # scene header (68 bytes)
+    id_idx, name_idx, desc_idx, sig_idx = 0, 1, 0, 0
+    flags = 0x01 | 0x02 | 0x04 | 0x08 | 0x40 # active, camera, tags, objects, persp
+    eye = [10.0, -10.0, 10.0]
+    tgt = [0.0, 0.0, 0.0]
+    up = [0.0, 0.0, 1.0]
+    fov = 35.0
+    aspect = 1.33
+    trans = 0.0
+
+    data << [id_idx, name_idx, desc_idx, sig_idx, flags,
+             eye[0], eye[1], eye[2], tgt[0], tgt[1], tgt[2], up[0], up[1], up[2],
+             fov, aspect, trans].pack('VVVVVe3e3e3e3')
+
+    # bitset
+    data << [0x03].pack('C*') # both tags visible
+
+    # hidden nodes: 1 node (node index 0)
+    data << SibamboHistory::V20260826_01::BOMC::Binary.write_varuint(1)
+    data << SibamboHistory::V20260826_01::BOMC::Binary.write_varuint(0)
+
+    # visible nodes: 0 nodes
+    data << SibamboHistory::V20260826_01::BOMC::Binary.write_varuint(0)
+
+    strings = ['scene:doc:v1_test', 'V1 Scene']
+    tags = [{ stable_id: 'tag:0' }, { stable_id: 'tag:1' }]
+    instances = [{ stable_id: 'node:0' }]
+
+    decoder = SibamboHistory::V20260826_01::BOMCDecoder::Decoder.allocate
+    decoded_scenes = decoder.send(:decode_scenes, data, strings, tags, instances)
+    assert_equal 1, decoded_scenes.length
+    vis = decoded_scenes.first[:visibility]
+    assert_equal 0, vis[:source_visible_node_override_count]
+    assert_equal 1, vis[:source_hidden_node_override_count]
+    assert_equal 0, vis[:resolved_visible_node_override_count]
+    assert_equal 1, vis[:resolved_hidden_node_override_count]
+    assert_equal [], vis[:unresolved_visible_node_overrides]
+    assert_equal [], vis[:unresolved_hidden_node_overrides]
   end
 
   # 6. No per-Scene geometry duplication
