@@ -26,10 +26,14 @@ jobs:
             ruby -I . "$f"
           done
 
+      - name: Build Evolution Lab Packages
+        run: ruby tools/history/build_evolution_lab.rb
+
       - name: Run History & Provenance Tests
         run: |
           for f in history/tests/test_*.rb; do
             echo "Running $f..."
             ruby "$f"
           done
+
 

@@ -25,7 +25,7 @@ end
 # 1. Verify Master RBZ
 manifest = JSON.parse(File.read(versions_path, encoding: 'UTF-8'))
 versions = manifest['versions']
-master_rbz_name = 'sibambo_bom_engine_evolution_lab_v1.1.17.rbz'
+master_rbz_name = 'sibambo_bom_engine_evolution_lab_v1.1.18.rbz'
 master_rbz_path = File.join(dist_dir, master_rbz_name)
 
 raise "Master RBZ missing: #{master_rbz_path}" unless File.exist?(master_rbz_path)
@@ -62,7 +62,7 @@ versions.each do |ver|
 end
 puts "  PASS: All #{versions.length} staged milestone source snapshots are syntactically valid"
 
-# 4. Verify runtime distribution packages exclude development test suites and include all 15 engines
+# 4. Verify runtime distribution packages exclude development test suites and include all 16 engines
 stdout, stderr, status = Open3.capture3("tar -tf \"#{master_rbz_path}\"")
 if status.success?
   entries = stdout.lines.map(&:strip)
@@ -78,7 +78,7 @@ if status.success?
       raise "Master RBZ package missing engine entry: #{expected_entry}"
     end
   end
-  puts "  PASS: Master RBZ archive verified directly (#{entries.length} entries; 0 test suites, all 15 engines present)"
+  puts "  PASS: Master RBZ archive verified directly (#{entries.length} entries; 0 test suites, all #{versions.length} engines present)"
 else
   staging_dir = File.join(dist_dir, 'staging', 'evolution_lab')
   if Dir.exist?(staging_dir)
@@ -90,7 +90,52 @@ else
   puts "  PASS: Runtime distribution packages exclude orphaned development test suites"
 end
 
-# 4. Verify MANIFEST.md does not contain stale 2026-08-25 date
+# 5. Verify specialized dialog provenance and menu routing for SBE-2026.08.27-01
+latest_ver = versions.last
+raise "Latest version must be SBE-2026.08.27-01" unless latest_ver['display_version'] == 'SBE-2026.08.27-01'
+latest_staged = File.join(root, 'history', 'generated', latest_ver['display_version'], 'staged')
+latest_entry = File.join(latest_staged, 'entry_sbe_2026_08_27_01.rb')
+latest_html = File.join(latest_staged, 'bom_engine', 'ui', 'export_dialog.html')
+latest_ui_dialog = File.join(latest_staged, 'bom_engine', 'ui_dialog.rb')
+
+raise "Entry file missing for SBE-2026.08.27-01" unless File.exist?(latest_entry)
+raise "Export HTML missing for SBE-2026.08.27-01" unless File.exist?(latest_html)
+
+entry_src = File.read(latest_entry, encoding: 'UTF-8')
+html_src = File.read(latest_html, encoding: 'UTF-8')
+ui_dialog_src = File.read(latest_ui_dialog, encoding: 'UTF-8')
+
+raise "Entry must declare EXPORT_KIND = :bomc_scene" unless entry_src.include?('EXPORT_KIND = :bomc_scene')
+raise "Entry must suffix with __SBE-2026.08.27-01.bomc" unless entry_src.include?('"__SBE-2026.08.27-01.bomc"')
+raise "HTML dialog must lock export kind to bomc_scene" unless html_src.include?('data-evolution-export-kind="bomc_scene"')
+raise "HTML dialog must lock suffix to __SBE-2026.08.27-01.bomc" unless html_src.include?('__SBE-2026.08.27-01.bomc')
+raise "UI dialog bridge must not have default canonical title" if ui_dialog_src.include?('BOM Engine — Export Settings')
+puts "  PASS: Milestone [15] SBE-2026.08.27-01 specialized dialog provenance verified"
+
+# 6. Verify output_with_suffix normalization table across formats
+test_paths = {
+  'model.json' => 'model__SBE-2026.08.27-01.bomc',
+  'model_canonical.json' => 'model__SBE-2026.08.27-01.bomc',
+  'model_runtime.bome2' => 'model__SBE-2026.08.27-01.bomc',
+  'model.cleanpkg' => 'model__SBE-2026.08.27-01.bomc',
+  'model.bomc' => 'model__SBE-2026.08.27-01.bomc',
+  'model__SBE-2026.08.26-03.bomc' => 'model__SBE-2026.08.27-01.bomc'
+}
+
+eval_script = <<~RUBY
+  #{entry_src}
+  test_paths = #{test_paths.inspect}
+  test_paths.each do |input, expected|
+    actual = SibamboHistory::V20260827_01.output_with_suffix(input, '__SBE-2026.08.27-01.bomc')
+    raise "Suffix normalization failure: \#{input} -> got \#{actual}, expected \#{expected}" unless actual == expected
+  end
+RUBY
+
+eval_ok = system("ruby -e #{eval_script.inspect}")
+raise "Suffix normalization table tests failed" unless eval_ok
+puts "  PASS: Suffix normalization table-driven tests passed for all input extensions"
+
+# 7. Verify MANIFEST.md does not contain stale date
 manifest_content = File.read(manifest_path, encoding: 'UTF-8')
 if manifest_content.include?('Generated At: `2026-08-25`')
   raise 'MANIFEST.md has stale generated date: 2026-08-25'

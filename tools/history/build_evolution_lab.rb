@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.17'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.18'.freeze
 
   def self.build
     puts "======================================================================"
@@ -57,28 +57,32 @@ module EvolutionLabBuilder
       raw_dir = File.join(ver_gen_dir, 'raw')
       staged_dir = File.join(ver_gen_dir, 'staged')
 
-      FileUtils.rm_rf(ver_gen_dir)
-      FileUtils.mkdir_p(raw_dir)
-      FileUtils.mkdir_p(staged_dir)
+      if File.exist?(staged_dir) && disp != 'SBE-2026.08.27-01'
+        puts "  Reusing committed historical milestone snapshot for #{disp}"
+      else
+        FileUtils.rm_rf(ver_gen_dir)
+        FileUtils.mkdir_p(raw_dir)
+        FileUtils.mkdir_p(staged_dir)
 
-      # 1. Extract files from Git
-      extract_git_snapshot(sha, raw_dir, ver)
+        # 1. Extract files from Git
+        extract_git_snapshot(sha, raw_dir, ver)
 
-      # 2. Transform into isolated namespace
-      transform_snapshot(raw_dir, staged_dir, ver, key, mod_name)
+        # 2. Transform into isolated namespace
+        transform_snapshot(raw_dir, staged_dir, ver, key, mod_name)
 
-      # 2.5. Backport runtime-only responsiveness fixes. These do not change
-      # historical schemas or output ordering; they only memoize pure counts
-      # and add cooperative checkpoints used by the serial batch runner.
-      apply_runtime_hardening(staged_dir, ver)
+        # 2.5. Backport runtime-only responsiveness fixes. These do not change
+        # historical schemas or output ordering; they only memoize pure counts
+        # and add cooperative checkpoints used by the serial batch runner.
+        apply_runtime_hardening(staged_dir, ver)
 
-      # 3. Verify Ruby syntax
-      syntax_ok = verify_ruby_syntax(staged_dir)
-      raise "Syntax error in transformed Ruby files for #{disp}" unless syntax_ok
+        # 3. Verify Ruby syntax
+        syntax_ok = verify_ruby_syntax(staged_dir)
+        raise "Syntax error in transformed Ruby files for #{disp}" unless syntax_ok
 
-      # 4. Generate Origin and Transform Report
-      generate_origin_md(ver_gen_dir, ver)
-      generate_transform_report(ver_gen_dir, raw_dir, staged_dir, ver)
+        # 4. Generate Origin and Transform Report
+        generate_origin_md(ver_gen_dir, ver)
+        generate_transform_report(ver_gen_dir, raw_dir, staged_dir, ver)
+      end
 
       # 5. Copy to Master Evolution Lab directory (strip test suites from runtime package only)
       target_dir_in_master = File.join(evolution_lab_dir, "engine_#{key.downcase}")
@@ -216,152 +220,268 @@ module EvolutionLabBuilder
     engine_version = historical_plugin_version(staged_dir)
     export_kind = historical_export_kind(ver)
     create_cooperative_job(staged_dir, sub_mod)
-    code = <<~RUBY
-      # frozen_string_literal: true
-      # Entry point for #{ver['label']} (#{ver['display_version']})
 
-      module SibamboHistory
-        EVOLUTION_LAB_EMBEDDED = true unless const_defined?(:EVOLUTION_LAB_EMBEDDED, false)
+    if ver['display_version'] == 'SBE-2026.08.27-01'
+      code = <<~RUBY
+        # frozen_string_literal: true
+        # Entry point for #{ver['label']} (#{ver['display_version']})
 
-        module #{sub_mod}
-          DISPLAY_VERSION = #{ver['display_version'].inspect}
-          LABEL = #{ver['label'].inspect}
-          COMMIT_SHA = #{ver['commit_sha'].inspect}
-          FORMAT_FAMILY = #{ver['format_family'].inspect}
-          EXPORT_KIND = #{export_kind.inspect}
-          PLUGIN_VERSION = #{engine_version.inspect} unless const_defined?(:PLUGIN_VERSION, false)
+        module SibamboHistory
+          EVOLUTION_LAB_EMBEDDED = true unless const_defined?(:EVOLUTION_LAB_EMBEDDED, false)
 
-          def self.load_engine
-            # Load all sub-components relative to this directory
-            loader_path = File.join(__dir__, 'bom_engine', 'core.rb')
-            loader_path = File.join(__dir__, 'core.rb') unless File.exist?(loader_path)
-            loader_path = File.join(__dir__, 'clean_analysis', 'exporter.rb') unless File.exist?(loader_path)
+          module #{sub_mod}
+            DISPLAY_VERSION = #{ver['display_version'].inspect}
+            LABEL = #{ver['label'].inspect}
+            COMMIT_SHA = #{ver['commit_sha'].inspect}
+            FORMAT_FAMILY = #{ver['format_family'].inspect}
+            EXPORT_KIND = #{export_kind.inspect}
+            PLUGIN_VERSION = #{engine_version.inspect} unless const_defined?(:PLUGIN_VERSION, false)
 
-            if File.exist?(loader_path)
-              require loader_path
-            else
-              # Fallback to loading all ruby files in directory
-              Dir.glob(File.join(__dir__, '**', '*.rb')).each do |f|
-                next if f == __FILE__
-                require f
-            end
-          end
+            def self.load_engine
+              loader_path = File.join(__dir__, 'bom_engine', 'core.rb')
+              loader_path = File.join(__dir__, 'core.rb') unless File.exist?(loader_path)
+              loader_path = File.join(__dir__, 'clean_analysis', 'exporter.rb') unless File.exist?(loader_path)
 
-          require File.join(__dir__, 'evolution_cooperative_job.rb')
-          install_batch_wrapper
-        end
-
-        def self.install_batch_wrapper
-          return if @batch_wrapper_installed
-          return unless defined?(Core) && Core.respond_to?(:run_export)
-
-          original_run_export = Core.method(:run_export)
-          job = EvolutionCooperativeJob
-          label = LABEL
-          Core.define_singleton_method(:run_export) do |settings|
-            selected = settings.is_a?(Hash) ? settings.dup : {}
-            batch_size = selected.fetch(:batch_size, 512).to_i
-            batch_size = 512 if batch_size < 1
-            job.start(title: label, batch_size: batch_size) do |progress|
-              original_run_export.call(selected.merge(progress: progress, batch_size: batch_size))
-            end
-          end
-          @batch_wrapper_installed = true
-        end
-
-        def self.launch(model = Sketchup.active_model)
-          load_engine
-          load_format_adapter
-          UIDialog.show do |settings|
-            export_current_model(model, settings)
-          end
-          rescue => e
-            UI.messagebox("Error launching \#{LABEL}:\\n\#{e.message}\\n\#{e.backtrace&.first}", MB_OK)
-          end
-
-          def self.load_format_adapter
-            case EXPORT_KIND
-            when :cleanpkg
-              require File.join(__dir__, 'bom_engine', 'clean_analysis.rb')
-            when :bomc_v1, :bomc_scene
-              require File.join(__dir__, 'bom_engine', 'bomc_extension.rb')
-            end
-          end
-
-          def self.export_current_model(model, settings)
-            selected = settings.is_a?(Hash) ? settings.dup : {}
-            batch_size = [selected.fetch(:batch_size, 512).to_i, 1].max
-            case EXPORT_KIND
-            when :legacy_json, :experimental
-              Core.run_export(selected.merge(output_format: 'legacy', batch_size: batch_size))
-            when :tiered_json
-              Core.run_export(selected.merge(output_format: 'legacy', batch_size: batch_size))
-            when :minified_visual_json
-              Core.run_export(selected.merge(output_format: 'legacy', export_level: 'visual', pretty_print: false, batch_size: batch_size))
-            when :canonical_v3
-              Core.run_export(selected.merge(output_format: 'canonical_v3', compress_output: true, batch_size: batch_size))
-            when :model_eval_json
-              output = output_with_suffix(selected[:output_path], '_model-eval.json')
-              run_direct_export(output, batch_size, 'Model-Eval JSON') do |progress|
-                Core.export_model_eval_json(model, output, progress: progress, batch_size: batch_size)
+              if File.exist?(loader_path)
+                require loader_path
+              else
+                Dir.glob(File.join(__dir__, '**', '*.rb')).each do |f|
+                  next if f == __FILE__
+                  require f
+                end
               end
-            when :bome2
-              Core.run_export(selected.merge(output_format: 'bome2', compress_output: false, batch_size: batch_size))
-            when :cleanpkg
-              output = output_with_suffix(selected[:output_path], '.cleanpkg')
-              run_direct_export(output, batch_size, 'CleanPKG') do |progress|
-                CleanAnalysis::Exporter.export_package(
-                  model: model,
-                  roots: model.entities,
-                  parent_transform: Geom::Transformation.new,
-                  output_path: output,
-                  settings: { scope_mode: 'model' },
-                  progress: progress,
-                  batch_size: batch_size
+
+              require File.join(__dir__, 'evolution_cooperative_job.rb')
+              install_batch_wrapper
+            end
+
+            def self.install_batch_wrapper
+              return if @batch_wrapper_installed
+              return unless defined?(Core) && Core.respond_to?(:run_export)
+
+              original_run_export = Core.method(:run_export)
+              job = EvolutionCooperativeJob
+              label = LABEL
+              Core.define_singleton_method(:run_export) do |settings|
+                selected = settings.is_a?(Hash) ? settings.dup : {}
+                batch_size = selected.fetch(:batch_size, 512).to_i
+                batch_size = 512 if batch_size < 1
+                job.start(title: label, batch_size: batch_size) do |progress|
+                  original_run_export.call(selected.merge(progress: progress, batch_size: batch_size))
+                end
+              end
+              @batch_wrapper_installed = true
+            end
+
+            def self.launch(model = Sketchup.active_model)
+              load_engine
+              load_format_adapter
+              UIDialog.show do |settings|
+                export_current_model(model, settings)
+              end
+            rescue => e
+              UI.messagebox("Error launching \#{LABEL}:\\n\#{e.message}\\n\#{e.backtrace&.first}", MB_OK)
+            end
+
+            def self.load_format_adapter
+              case EXPORT_KIND
+              when :cleanpkg
+                require File.join(__dir__, 'bom_engine', 'clean_analysis.rb')
+              when :bomc_v1, :bomc_scene
+                require File.join(__dir__, 'bom_engine', 'bomc_extension.rb')
+              end
+            end
+
+            def self.export_current_model(model, settings)
+              selected = settings.is_a?(Hash) ? settings.dup : {}
+              batch_size = [selected.fetch(:batch_size, 512).to_i, 1].max
+              case EXPORT_KIND
+              when :bomc_scene
+                output = output_with_suffix(selected[:output_path], "__SBE-2026.08.27-01.bomc")
+                processing = BOMCProcessing.settings(
+                  :custom,
+                  custom: { max_items: batch_size, max_items_limit: 8_192, min_items: 1, max_ms: 24.0 }
                 )
+                run_direct_export(output, batch_size, 'BOMC Scene/Page') do |progress|
+                  BOMCExtension.export(
+                    model,
+                    output_path: output,
+                    profile: BOMCExtension::DEFAULT_PROFILE,
+                    progress: progress,
+                    settings: processing
+                  )
+                end
+              else
+                raise "Unsupported Evolution Lab export kind: \#{EXPORT_KIND.inspect}"
               end
-            when :bomc_v1
-              output = output_with_suffix(selected[:output_path], '.bomc')
-              run_direct_export(output, batch_size, 'BOMC 1.0') do |progress|
-                BOMCExtension.export(model, output_path: output, profile: BOMCExtension::DEFAULT_PROFILE, progress: progress, batch_size: batch_size)
-              end
-            when :bomc_scene
-              output = output_with_suffix(selected[:output_path], '.bomc')
-              processing = BOMCProcessing.settings(
-                :custom,
-                custom: { max_items: batch_size, max_items_limit: 8_192, min_items: 1, max_ms: 24.0 }
-              )
-              run_direct_export(output, batch_size, 'BOMC Scene/Page') do |progress|
-                BOMCExtension.export(
-                  model,
-                  output_path: output,
-                  profile: BOMCExtension::DEFAULT_PROFILE,
-                  progress: progress,
-                  settings: processing
-                )
-              end
-            else
-              raise "Unsupported Evolution Lab export kind: \#{EXPORT_KIND.inspect}"
             end
-          end
 
-          def self.run_direct_export(output, batch_size, format_name, &work)
-            EvolutionCooperativeJob.start(title: LABEL, batch_size: batch_size) do |progress|
-              result = work.call(progress)
-              path = result.is_a?(Hash) ? (result[:path] || output) : output
-              UI.messagebox("Export \#{format_name} selesai!\\n\\nFile: \#{path}", MB_OK)
-              result
+            def self.run_direct_export(output, batch_size, format_name, &work)
+              EvolutionCooperativeJob.start(title: LABEL, batch_size: batch_size) do |progress|
+                result = work.call(progress)
+                path = result.is_a?(Hash) ? (result[:path] || output) : output
+                UI.messagebox("Export \#{format_name} selesai!\\n\\nFile: \#{path}", MB_OK)
+                result
+              end
             end
-          end
 
-          def self.output_with_suffix(path, suffix)
-            base = path.to_s.sub(/\.(?:json|bome2|cleanpkg|bomc)(?:\.gz)?\z/i, '')
-            base = base.sub(/_(?:bom|canonical|model-eval|runtime)\z/i, '')
-            "\#{base}\#{suffix}"
+            def self.output_with_suffix(path, suffix)
+              base = path.to_s.sub(/\\.(?:json|bome2|cleanpkg|bomc)(?:\\.gz)?\\z/i, '')
+              base = base.sub(/_(?:bom|canonical|model-eval|runtime)\\z/i, '')
+              base = base.sub(/__SBE-[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}-[0-9A-Z]+\\z/i, '')
+              "\#{base}\#{suffix}"
+            end
           end
         end
-      end
-    RUBY
+      RUBY
+    else
+      code = <<~RUBY
+        # frozen_string_literal: true
+        # Entry point for #{ver['label']} (#{ver['display_version']})
+
+        module SibamboHistory
+          EVOLUTION_LAB_EMBEDDED = true unless const_defined?(:EVOLUTION_LAB_EMBEDDED, false)
+
+          module #{sub_mod}
+            DISPLAY_VERSION = #{ver['display_version'].inspect}
+            LABEL = #{ver['label'].inspect}
+            COMMIT_SHA = #{ver['commit_sha'].inspect}
+            FORMAT_FAMILY = #{ver['format_family'].inspect}
+            EXPORT_KIND = #{export_kind.inspect}
+            PLUGIN_VERSION = #{engine_version.inspect} unless const_defined?(:PLUGIN_VERSION, false)
+
+            def self.load_engine
+              # Load all sub-components relative to this directory
+              loader_path = File.join(__dir__, 'bom_engine', 'core.rb')
+              loader_path = File.join(__dir__, 'core.rb') unless File.exist?(loader_path)
+              loader_path = File.join(__dir__, 'clean_analysis', 'exporter.rb') unless File.exist?(loader_path)
+
+              if File.exist?(loader_path)
+                require loader_path
+              else
+                # Fallback to loading all ruby files in directory
+                Dir.glob(File.join(__dir__, '**', '*.rb')).each do |f|
+                  next if f == __FILE__
+                  require f
+              end
+            end
+
+            require File.join(__dir__, 'evolution_cooperative_job.rb')
+            install_batch_wrapper
+          end
+
+          def self.install_batch_wrapper
+            return if @batch_wrapper_installed
+            return unless defined?(Core) && Core.respond_to?(:run_export)
+
+            original_run_export = Core.method(:run_export)
+            job = EvolutionCooperativeJob
+            label = LABEL
+            Core.define_singleton_method(:run_export) do |settings|
+              selected = settings.is_a?(Hash) ? settings.dup : {}
+              batch_size = selected.fetch(:batch_size, 512).to_i
+              batch_size = 512 if batch_size < 1
+              job.start(title: label, batch_size: batch_size) do |progress|
+                original_run_export.call(selected.merge(progress: progress, batch_size: batch_size))
+              end
+            end
+            @batch_wrapper_installed = true
+          end
+
+          def self.launch(model = Sketchup.active_model)
+            load_engine
+            load_format_adapter
+            UIDialog.show do |settings|
+              export_current_model(model, settings)
+            end
+            rescue => e
+              UI.messagebox("Error launching \#{LABEL}:\\n\#{e.message}\\n\#{e.backtrace&.first}", MB_OK)
+            end
+
+            def self.load_format_adapter
+              case EXPORT_KIND
+              when :cleanpkg
+                require File.join(__dir__, 'bom_engine', 'clean_analysis.rb')
+              when :bomc_v1, :bomc_scene
+                require File.join(__dir__, 'bom_engine', 'bomc_extension.rb')
+              end
+            end
+
+            def self.export_current_model(model, settings)
+              selected = settings.is_a?(Hash) ? settings.dup : {}
+              batch_size = [selected.fetch(:batch_size, 512).to_i, 1].max
+              case EXPORT_KIND
+              when :legacy_json, :experimental
+                Core.run_export(selected.merge(output_format: 'legacy', batch_size: batch_size))
+              when :tiered_json
+                Core.run_export(selected.merge(output_format: 'legacy', batch_size: batch_size))
+              when :minified_visual_json
+                Core.run_export(selected.merge(output_format: 'legacy', export_level: 'visual', pretty_print: false, batch_size: batch_size))
+              when :canonical_v3
+                Core.run_export(selected.merge(output_format: 'canonical_v3', compress_output: true, batch_size: batch_size))
+              when :model_eval_json
+                output = output_with_suffix(selected[:output_path], '_model-eval.json')
+                run_direct_export(output, batch_size, 'Model-Eval JSON') do |progress|
+                  Core.export_model_eval_json(model, output, progress: progress, batch_size: batch_size)
+                end
+              when :bome2
+                Core.run_export(selected.merge(output_format: 'bome2', compress_output: false, batch_size: batch_size))
+              when :cleanpkg
+                output = output_with_suffix(selected[:output_path], '.cleanpkg')
+                run_direct_export(output, batch_size, 'CleanPKG') do |progress|
+                  CleanAnalysis::Exporter.export_package(
+                    model: model,
+                    roots: model.entities,
+                    parent_transform: Geom::Transformation.new,
+                    output_path: output,
+                    settings: { scope_mode: 'model' },
+                    progress: progress,
+                    batch_size: batch_size
+                  )
+                end
+              when :bomc_v1
+                output = output_with_suffix(selected[:output_path], '.bomc')
+                run_direct_export(output, batch_size, 'BOMC 1.0') do |progress|
+                  BOMCExtension.export(model, output_path: output, profile: BOMCExtension::DEFAULT_PROFILE, progress: progress, batch_size: batch_size)
+                end
+              when :bomc_scene
+                output = output_with_suffix(selected[:output_path], '.bomc')
+                processing = BOMCProcessing.settings(
+                  :custom,
+                  custom: { max_items: batch_size, max_items_limit: 8_192, min_items: 1, max_ms: 24.0 }
+                )
+                run_direct_export(output, batch_size, 'BOMC Scene/Page') do |progress|
+                  BOMCExtension.export(
+                    model,
+                    output_path: output,
+                    profile: BOMCExtension::DEFAULT_PROFILE,
+                    progress: progress,
+                    settings: processing
+                  )
+                end
+              else
+                raise "Unsupported Evolution Lab export kind: \#{EXPORT_KIND.inspect}"
+              end
+            end
+
+            def self.run_direct_export(output, batch_size, format_name, &work)
+              EvolutionCooperativeJob.start(title: LABEL, batch_size: batch_size) do |progress|
+                result = work.call(progress)
+                path = result.is_a?(Hash) ? (result[:path] || output) : output
+                UI.messagebox("Export \#{format_name} selesai!\\n\\nFile: \#{path}", MB_OK)
+                result
+              end
+            end
+
+            def self.output_with_suffix(path, suffix)
+              base = path.to_s.sub(/\.(?:json|bome2|cleanpkg|bomc)(?:\.gz)?\z/i, '')
+              base = base.sub(/_(?:bom|canonical|model-eval|runtime)\z/i, '')
+              "\#{base}\#{suffix}"
+            end
+          end
+        end
+      RUBY
+    end
     File.write(entry_file, code, encoding: 'UTF-8')
   end
 
@@ -381,7 +501,8 @@ module EvolutionLabBuilder
       '11' => :bomc_scene,
       '12' => :bomc_scene,
       '13' => :bomc_scene,
-      '14' => :bomc_scene
+      '14' => :bomc_scene,
+      '15' => :bomc_scene
     }.fetch(id, :experimental)
   end
 
@@ -772,6 +893,11 @@ module EvolutionLabBuilder
         kind: 'bomc_scene', title: 'Scene/Page BOMC — Verified SketchUp Semantics', badge: 'BOMC SCENE V3',
         description: 'BOMC dengan semantik visibilitas DrawingElement resmi, layer page_behavior, dan metadata kamera lengkap.',
         suffix: '.bomc', button: 'Export Scene BOMC'
+      },
+      '15' => {
+        kind: 'bomc_scene', title: "BOM Engine — Scene/Page BOMC Exporter (#{ver['display_version']})", badge: 'BOMC SCENE V4',
+        description: 'BOMC Scene/Page exporter dengan semantik DrawingElement, shared universe, dan Section 19 stable identities.',
+        suffix: "__#{ver['display_version']}.bomc", button: 'Export BOMC'
       }
     }.fetch(id, nil)
   end
