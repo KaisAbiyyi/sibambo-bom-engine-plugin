@@ -62,15 +62,33 @@ versions.each do |ver|
 end
 puts "  PASS: All #{versions.length} staged milestone source snapshots are syntactically valid"
 
-# 4. Verify runtime staging and distribution packages do not package development test suites
-staging_dir = File.join(dist_dir, 'staging', 'evolution_lab')
-if Dir.exist?(staging_dir)
-  orphaned_tests = Dir.glob(File.join(staging_dir, '**', 'test_*.rb'))
+# 4. Verify runtime distribution packages exclude development test suites and include all 15 engines
+stdout, stderr, status = Open3.capture3("tar -tf \"#{master_rbz_path}\"")
+if status.success?
+  entries = stdout.lines.map(&:strip)
+  orphaned_tests = entries.select { |e| e =~ /test_.*\.rb\z/ || e =~ %r{/tests/} }
   unless orphaned_tests.empty?
-    raise "Runtime staging contains development test suites: #{orphaned_tests.inspect}"
+    raise "Master RBZ package contains development test suites: #{orphaned_tests.inspect}"
   end
+
+  versions.each do |ver|
+    key = ver['display_version'].gsub(/[^A-Za-z0-9_]/, '_').downcase
+    expected_entry = "evolution_lab/engine_#{key}/entry_#{key}.rb"
+    unless entries.any? { |e| e.include?(expected_entry) }
+      raise "Master RBZ package missing engine entry: #{expected_entry}"
+    end
+  end
+  puts "  PASS: Master RBZ archive verified directly (#{entries.length} entries; 0 test suites, all 15 engines present)"
+else
+  staging_dir = File.join(dist_dir, 'staging', 'evolution_lab')
+  if Dir.exist?(staging_dir)
+    orphaned_tests = Dir.glob(File.join(staging_dir, '**', 'test_*.rb'))
+    unless orphaned_tests.empty?
+      raise "Runtime staging contains development test suites: #{orphaned_tests.inspect}"
+    end
+  end
+  puts "  PASS: Runtime distribution packages exclude orphaned development test suites"
 end
-puts "  PASS: Runtime distribution packages exclude orphaned development test suites"
 
 # 4. Verify MANIFEST.md does not contain stale 2026-08-25 date
 manifest_content = File.read(manifest_path, encoding: 'UTF-8')

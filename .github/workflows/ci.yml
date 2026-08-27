@@ -1,0 +1,35 @@
+name: Producer CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+
+      - name: Run BOM Engine Production Tests
+        run: |
+          for f in bom_engine/tests/test_*.rb; do
+            echo "Running $f..."
+            ruby -I . "$f"
+          done
+
+      - name: Run History & Provenance Tests
+        run: |
+          for f in history/tests/test_*.rb; do
+            echo "Running $f..."
+            ruby "$f"
+          done
+
