@@ -166,13 +166,24 @@ module BOMEngine
 
       hidden_entities_list = page.respond_to?(:hidden_entities) ? ((begin page.hidden_entities.to_a rescue [] end) || []) : []
       hidden_entities_set = hidden_entities_list.to_set
-      hidden_pids_set = hidden_entities_list.map { |he| safe_persistent_id(he) }.to_set
+      hidden_pids_set = hidden_entities_list.map { |he| safe_persistent_id(he).to_s }.to_set
 
-      matched_entities = Set.new
-      matched_pids = Set.new
+      visible_entities_list = page.respond_to?(:visible_entities) ? ((begin page.visible_entities.to_a rescue [] end) || []) : []
+      visible_entities_set = visible_entities_list.to_set
+      visible_pids_set = visible_entities_list.map { |ve| safe_persistent_id(ve).to_s }.to_set
 
-      # 1. If nodes list is provided, inspect each node's underlying entity
+      nodes_by_entity = {}
+      nodes_by_pid = {}
+
       if nodes && !nodes.empty?
+        nodes.each do |node|
+          next if node[:kind] == 'root'
+          entity = node[:_entity] || node[:entity]
+          pid = node.dig(:source_identity, :persistent_id) || node[:persistent_id]
+          nodes_by_entity[entity] = node[:id] if entity
+          nodes_by_pid[pid.to_s] = node[:id] if pid
+        end
+
         has_drawingelement_visibility = page.respond_to?(:get_drawingelement_visibility)
         nodes.each do |node|
           next if node[:kind] == 'root'
@@ -188,61 +199,38 @@ module BOMEngine
           applies = is_instance ? stores_objects : stores_geometry
 
           if applies
-            matched = false
             if entity && has_drawingelement_visibility
               flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
               if flag == false
                 hidden_overrides << node_id
-                matched = true
               elsif flag == true
                 base_hidden = entity.respond_to?(:hidden?) ? entity.hidden? : false
                 visible_overrides << node_id if base_hidden
-                matched = true
               end
-            end
-
-            unless matched
-              if entity && hidden_entities_set.include?(entity)
+            else
+              if (entity && hidden_entities_set.include?(entity)) || (pid && hidden_pids_set.include?(pid.to_s))
                 hidden_overrides << node_id
-                matched = true
-              elsif pid && hidden_pids_set.include?(pid.to_s)
-                hidden_overrides << node_id
-                matched = true
+              elsif (entity && visible_entities_set.include?(entity)) || (pid && visible_pids_set.include?(pid.to_s))
+                base_hidden = entity.respond_to?(:hidden?) ? entity.hidden? : false
+                visible_overrides << node_id if base_hidden
               end
-            end
-
-            if matched
-              matched_entities.add(entity) if entity
-              matched_pids.add(pid.to_s) if pid
-              matched_pids.add(safe_persistent_id(entity)) if entity
             end
           end
         end
       end
 
-      # 2. Extract from page.hidden_entities for any items not covered
+      # 2. Match any remaining hidden/visible entities that correspond to known instance nodes
       hidden_entities_list.each do |ent|
-        next if matched_entities.include?(ent)
-        ent_pid = safe_persistent_id(ent)
-        next if matched_pids.include?(ent_pid)
-        node_ref = "node:pid:#{ent_pid}"
-        hidden_overrides << node_ref
+        node_id = nodes_by_entity[ent] || nodes_by_pid[safe_persistent_id(ent).to_s]
+        hidden_overrides << node_id if node_id
       end
 
-      if page.respond_to?(:visible_entities)
-        vis_list = (begin page.visible_entities.to_a rescue [] end) || []
-        vis_list.each do |ent|
-          next if matched_entities.include?(ent)
-          ent_pid = safe_persistent_id(ent)
-          next if matched_pids.include?(ent_pid)
-          node_ref = "node:pid:#{ent_pid}"
-          visible_overrides << node_ref
-        end
+      visible_entities_list.each do |ent|
+        node_id = nodes_by_entity[ent] || nodes_by_pid[safe_persistent_id(ent).to_s]
+        visible_overrides << node_id if node_id
       end
 
       [visible_overrides.sort.uniq, hidden_overrides.sort.uniq]
-    rescue StandardError
-      [[], []]
     end
 
     def calculate_effective_visible_occurrences(nodes, definitions, scene)
@@ -279,10 +267,7 @@ module BOMEngine
       end
 
       count = 0
-      visited = Set.new
-      traverse = lambda do |definition_id|
-        return if visited.include?(definition_id)
-        visited.add(definition_id)
+      traverse = lambda do |definition_id, path_stack|
         defn = definitions_by_id[definition_id]
         return unless defn
         child_node_ids = defn[:node_ids] || []
@@ -291,12 +276,16 @@ module BOMEngine
           next unless child_node
           if node_visible.call(child_node)
             count += 1
-            traverse.call(child_node[:definition_id]) if child_node[:definition_id]
+            child_def_id = child_node[:definition_id]
+            if child_def_id && !path_stack.include?(child_def_id)
+              traverse.call(child_def_id, path_stack + [child_def_id])
+            end
           end
         end
       end
 
-      traverse.call(root_node[:definition_id])
+      root_def_id = root_node[:definition_id]
+      traverse.call(root_def_id, [root_def_id]) if root_def_id
       count
     rescue StandardError
       0

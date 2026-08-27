@@ -479,4 +479,62 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     assert_equal 0.0, normal.y.round(4)
     assert_equal 1.0, normal.z.round(4)
   end
+
+  # 9. Effective visible occurrences counts all hierarchy paths for repeated definitions
+  def test_effective_visible_occurrences_counts_all_hierarchy_paths
+    nodes = [
+      { id: 'node:root', kind: 'root', definition_id: 'def:root' },
+      { id: 'node:parent_1', kind: 'component_instance', definition_id: 'def:chair', visible: true },
+      { id: 'node:parent_2', kind: 'component_instance', definition_id: 'def:chair', visible: true },
+      { id: 'node:chair_leg', kind: 'component_instance', definition_id: 'def:leg', visible: true },
+      { id: 'node:leg_cap', kind: 'component_instance', definition_id: nil, visible: true }
+    ]
+    definitions = [
+      { id: 'def:root', node_ids: ['node:parent_1', 'node:parent_2'] },
+      { id: 'def:chair', node_ids: ['node:chair_leg'] },
+      { id: 'def:leg', node_ids: ['node:leg_cap'] }
+    ]
+    scene = {
+      stores_tag_visibility: true,
+      visibility: {
+        visible_tag_ids: [],
+        hidden_tag_ids: [],
+        visible_node_overrides: [],
+        hidden_node_overrides: []
+      }
+    }
+
+    count = BOMEngine::SceneVisibilityResolver.calculate_effective_visible_occurrences(nodes, definitions, scene)
+    # def:root contains 2 chairs
+    # each chair contains 1 leg (2 legs total)
+    # each leg contains 1 cap (2 caps total)
+    # Total occurrences = 2 + 2 + 2 = 6
+    assert_equal 6, count, 'Occurrence count must evaluate all instances through the full occurrence hierarchy'
+  end
+
+  # 10. Non-node drawing elements (faces, edges, section planes) are not emitted as fake node overrides
+  def test_non_node_drawingelements_not_emitted_as_fake_node_overrides
+    def1 = @model.definitions.add('RoomDef')
+    face = def1.entities.add_face([0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0])
+    edge = def1.entities.add_edge([0, 0, 0], [4, 0, 0])
+    inst = @model.entities.add_instance(def1, Geom::Transformation.new)
+
+    page = @model.pages.add('Scene_FaceHidden')
+    # Hidden entities includes a face and an edge (which are not instance nodes in canonical graph)
+    page.hidden_entities = [face, edge]
+
+    graph = BOMEngine::CanonicalGraphBuilder.build(
+      model: @model,
+      entities: @model.entities,
+      parent_transform: Geom::Transformation.new,
+      settings: { scene_scope: 'all', output_format: 'bomc_v1_1' },
+      spatial: {},
+      texture_writer: nil
+    )
+
+    scene = graph[:scenes].find { |s| s[:name] == 'Scene_FaceHidden' }
+    assert_not_nil scene
+    hidden_nodes = scene[:visibility][:hidden_node_overrides]
+    assert_equal [], hidden_nodes, 'Faces and edges must not be emitted as fake node:pid references'
+  end
 end

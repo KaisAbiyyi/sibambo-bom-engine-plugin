@@ -429,10 +429,37 @@ versions:
     analysis_payload: "manifest_records_with_scene_profiles"
     approximate_historical_intent: "Dedicated Evolution Lab Scene/Page BOMC exporter with format-locked UI dialog, exact milestone suffixing, and Section 19 Version 3 binary encoding preserving stable tag and resolved node identities."
     predecessor: "SBE-2026.08.26-03"
-    successor: null
+    successor: "SBE-2026.08.27-02"
     selection_reason: "Dedicated Evolution Lab Scene/Page BOMC exporter with format-locked UI dialog, exact milestone suffixing, and Section 19 Version 3 binary encoding."
     build_strategy: "git_archive"
     install_enabled: true
     isolated_module: "SibamboHistory::V20260827_01"
+
+  - sequence: 17
+    display_version: "SBE-2026.08.27-02"
+    label: "[16] 2026-08-27 — Scene/Page BOMC — Occurrence-Hierarchy Visibility & Stable Overrides"
+    date: "2026-08-27T17:30:00+07:00"
+    source_repository: "https://github.com/KaisAbiyyi/sibambo-bom-engine-plugin"
+    commit_sha: "fbc104dc0e9345f7a62ba4d4126fb3cc4aa2005f"
+    commit_message: "fix(scenes): occurrence-hierarchy visibility traversal and non-node override filtering"
+    classification: "RELEASE"
+    format_family: "bomc_compiled_v1_1_scenes"
+    format_version: "1.1"
+    output_extensions: [".bomc"]
+    compression: "per_section_deflate_or_store"
+    geometry_representation: "bit_packed_varint_quantized_octahedral"
+    definition_instance_model: "compact_definition_instance_table"
+    textures: "embedded_png_jpg_webp_in_section_table"
+    uv: "quantized_or_float32_block"
+    source_edges: "exact_source_edge_sets_with_flags"
+    scenes: "full_visibility_bitsets_and_overrides_section_19_v3"
+    analysis_payload: "manifest_records_with_scene_profiles"
+    approximate_historical_intent: "Production Scene/Page BOMC exporter with full occurrence-hierarchy visibility counting, non-node drawing element override filtering, and Section 19 Version 3 binary encoding."
+    predecessor: "SBE-2026.08.27-01"
+    successor: null
+    selection_reason: "Production Scene/Page BOMC exporter with full occurrence hierarchy traversal and zero unresolved fake node overrides."
+    build_strategy: "git_archive"
+    install_enabled: true
+    isolated_module: "SibamboHistory::V20260827_02"
 
 

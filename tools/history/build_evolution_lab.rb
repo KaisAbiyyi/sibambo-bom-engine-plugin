@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.18'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.19'.freeze
 
   def self.build
     puts "======================================================================"
@@ -57,7 +57,7 @@ module EvolutionLabBuilder
       raw_dir = File.join(ver_gen_dir, 'raw')
       staged_dir = File.join(ver_gen_dir, 'staged')
 
-      if File.exist?(staged_dir) && disp != 'SBE-2026.08.27-01'
+      if File.exist?(staged_dir) && disp != 'SBE-2026.08.27-02'
         puts "  Reusing committed historical milestone snapshot for #{disp}"
       else
         FileUtils.rm_rf(ver_gen_dir)
@@ -221,7 +221,7 @@ module EvolutionLabBuilder
     export_kind = historical_export_kind(ver)
     create_cooperative_job(staged_dir, sub_mod)
 
-    if ver['display_version'] == 'SBE-2026.08.27-01'
+    if ver['display_version'] == 'SBE-2026.08.27-01' || ver['display_version'] == 'SBE-2026.08.27-02'
       code = <<~RUBY
         # frozen_string_literal: true
         # Entry point for #{ver['label']} (#{ver['display_version']})
@@ -297,7 +297,7 @@ module EvolutionLabBuilder
               batch_size = [selected.fetch(:batch_size, 512).to_i, 1].max
               case EXPORT_KIND
               when :bomc_scene
-                output = output_with_suffix(selected[:output_path], "__SBE-2026.08.27-01.bomc")
+                output = output_with_suffix(selected[:output_path], "__#{ver['display_version']}.bomc")
                 processing = BOMCProcessing.settings(
                   :custom,
                   custom: { max_items: batch_size, max_items_limit: 8_192, min_items: 1, max_ms: 24.0 }
@@ -502,7 +502,8 @@ module EvolutionLabBuilder
       '12' => :bomc_scene,
       '13' => :bomc_scene,
       '14' => :bomc_scene,
-      '15' => :bomc_scene
+      '15' => :bomc_scene,
+      '16' => :bomc_scene
     }.fetch(id, :experimental)
   end
 
@@ -897,6 +898,11 @@ module EvolutionLabBuilder
       '15' => {
         kind: 'bomc_scene', title: "BOM Engine — Scene/Page BOMC Exporter (#{ver['display_version']})", badge: 'BOMC SCENE V4',
         description: 'BOMC Scene/Page exporter dengan semantik DrawingElement, shared universe, dan Section 19 stable identities.',
+        suffix: "__#{ver['display_version']}.bomc", button: 'Export BOMC'
+      },
+      '16' => {
+        kind: 'bomc_scene', title: "BOM Engine — Scene/Page BOMC Exporter (#{ver['display_version']})", badge: 'BOMC SCENE V5',
+        description: 'BOMC Scene/Page exporter dengan semantik DrawingElement, occurrence-hierarchy visibility, dan Section 19 stable identities.',
         suffix: "__#{ver['display_version']}.bomc", button: 'Export BOMC'
       }
     }.fetch(id, nil)

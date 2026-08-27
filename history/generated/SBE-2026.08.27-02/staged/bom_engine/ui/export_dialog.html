@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BOM Engine — Scene/Page BOMC Exporter (SBE-2026.08.27-02)</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; margin: 0; overflow: auto; }
+    body { background: #10151d; color: #e7edf3; font: 13px/1.45 system-ui, "Segoe UI", sans-serif; padding: 20px; }
+    .shell { margin: 0 auto; max-width: 620px; }
+    .header { border-bottom: 1px solid #293645; margin-bottom: 18px; padding-bottom: 15px; }
+    .title-row { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
+    h1 { color: #53ffc1; font-size: 19px; margin: 0; }
+    .badge { background: #253443; border-radius: 4px; color: #9fd9ff; font-size: 10px; font-weight: 700; padding: 3px 7px; }
+    .description { color: #93a4b6; margin: 8px 0 0; }
+    label, h2 { color: #64ffd0; display: block; font-size: 11px; font-weight: 700; letter-spacing: .07em; margin: 0 0 7px; text-transform: uppercase; }
+    .path-row { display: flex; gap: 9px; }
+    input[type=text], select { background: #151c26; border: 1px solid #344456; border-radius: 6px; color: #edf5fb; min-width: 0; padding: 9px 10px; }
+    input[type=text] { flex: 1; }
+    button { background: #263545; border: 1px solid #3a4d60; border-radius: 6px; color: #e6eef5; cursor: pointer; padding: 9px 14px; }
+    button.primary { background: #0fa572; border-color: #20d49a; color: white; font-weight: 700; }
+    .panel { background: #151c26; border: 1px solid #293746; border-radius: 9px; margin-top: 17px; padding: 14px; }
+    .modes { display: flex; gap: 20px; margin-bottom: 11px; }
+    .modes label { color: #cbd6e0; cursor: pointer; font-size: 12px; font-weight: 400; letter-spacing: 0; margin: 0; text-transform: none; }
+    .batch-row { align-items: center; display: flex; gap: 12px; }
+    .help { color: #8191a2; font-size: 11px; margin-top: 9px; }
+    .suffix { color: #9fb1c3; font-family: Consolas, monospace; margin-top: 7px; }
+    .actions { display: flex; gap: 9px; justify-content: flex-end; margin-top: 20px; padding-bottom: 8px; }
+  </style>
+</head>
+<body data-evolution-export-kind="bomc_scene">
+  <main class="shell">
+    <header class="header">
+      <div class="title-row"><h1>BOM Engine — Scene/Page BOMC Exporter (SBE-2026.08.27-02)</h1><span class="badge">BOMC SCENE V5</span></div>
+      <p class="description">BOMC Scene/Page exporter dengan semantik DrawingElement, occurrence-hierarchy visibility, dan Section 19 stable identities.</p>
+    </header>
+
+    <section>
+      <label for="outputPath">Output file</label>
+      <div class="path-row"><input id="outputPath" type="text"><button type="button" onclick="sketchup.browse()">Browse</button></div>
+      <div class="suffix">Format terkunci: __SBE-2026.08.27-02.bomc</div>
+    </section>
+
+    <section class="panel" id="evolution-batch-options">
+      <h2>Batch Pemrosesan Model</h2>
+      <div class="modes">
+        <label><input type="radio" name="batch-mode" value="auto" checked onchange="refreshBatchMode()"> Auto</label>
+        <label><input type="radio" name="batch-mode" value="manual" onchange="refreshBatchMode()"> Manual</label>
+      </div>
+      <div class="batch-row">
+        <span>Entity per giliran</span>
+        <select id="batch-size" disabled>
+          <option value="96">96 — paling ringan</option>
+          <option value="128">128</option>
+          <option value="256">256</option>
+          <option value="512" selected>512 — seimbang</option>
+          <option value="1024">1024</option>
+          <option value="2048">2048</option>
+          <option value="4096">4096</option>
+          <option value="8192">8192 — paling cepat</option>
+        </select>
+      </div>
+      <div class="help">Nilai kecil menjaga SketchUp lebih responsif; nilai besar memproses lebih cepat tetapi menahan UI lebih lama.</div>
+    </section>
+
+    <div class="actions"><button type="button" onclick="sketchup.cancel()">Cancel</button><button class="primary" type="button" onclick="doExport()">Export BOMC</button></div>
+  </main>
+  <script>
+    var OUTPUT_SUFFIX = "__SBE-2026.08.27-02.bomc";
+
+    function normalizeOutputPath(path) {
+      path = String(path || '').trim();
+      if (!path) return path;
+      return path.replace(/(?:_(?:bom|canonical|model-eval|runtime))?.(?:json|bome2|cleanpkg|bomc)(?:.gz)?$/i, '') + OUTPUT_SUFFIX;
+    }
+
+    function setDefaultPath(path) { document.getElementById('outputPath').value = normalizeOutputPath(path); }
+    function setPath(path) { document.getElementById('outputPath').value = normalizeOutputPath(path); }
+    function setSelectionState() {}
+
+    function recommendedBatchSize() {
+      var cores = Number(navigator.hardwareConcurrency || 4);
+      if (cores <= 4) return 128;
+      if (cores <= 8) return 256;
+      if (cores <= 16) return 512;
+      return 1024;
+    }
+
+    function selectedBatchSize() {
+      var mode = document.querySelector('input[name="batch-mode"]:checked').value;
+      return mode === 'auto' ? recommendedBatchSize() : Number(document.getElementById('batch-size').value);
+    }
+
+    function refreshBatchMode() {
+      var manual = document.querySelector('input[name="batch-mode"]:checked').value === 'manual';
+      var select = document.getElementById('batch-size');
+      select.disabled = !manual;
+      if (!manual) select.value = String(recommendedBatchSize());
+    }
+
+    function doExport() {
+      var outputPath = normalizeOutputPath(document.getElementById('outputPath').value);
+      if (!outputPath) { alert('Pilih output file terlebih dahulu.'); return; }
+      document.getElementById('outputPath').value = outputPath;
+      var settings = { output_path: outputPath };
+      settings.batch_size = selectedBatchSize();
+      sketchup.export(JSON.stringify(settings));
+    }
+
+    window.onload = function() { refreshBatchMode(); sketchup.onReady(); };
+  </script>
+</body>
+</html>
