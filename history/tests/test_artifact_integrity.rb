@@ -25,7 +25,7 @@ end
 # 1. Verify Master RBZ
 manifest = JSON.parse(File.read(versions_path, encoding: 'UTF-8'))
 versions = manifest['versions']
-master_rbz_name = 'sibambo_bom_engine_evolution_lab_v1.1.20.rbz'
+master_rbz_name = 'sibambo_bom_engine_evolution_lab_v1.1.21.rbz'
 master_rbz_path = File.join(dist_dir, master_rbz_name)
 
 raise "Master RBZ missing: #{master_rbz_path}" unless File.exist?(master_rbz_path)

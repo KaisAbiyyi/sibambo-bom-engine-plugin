@@ -25,13 +25,15 @@ end
 
 module UI
   class << self
-    attr_reader :extensions_menu
+    attr_reader :extensions_menu, :last_message
 
     def menu(_label)
       @extensions_menu ||= FakeMenu.new
     end
 
-    def messagebox(*); end
+    def messagebox(message, *)
+      @last_message = message
+    end
   end
 end
 
@@ -81,5 +83,10 @@ raise "wrong current-model dispatch: #{actual_ids.inspect}" unless actual_ids ==
 raise 'a version menu did not pass SketchUp.active_model' unless actual.all? { |_id, model| model.equal?(Sketchup::CURRENT_MODEL) }
 
 raise 'obsolete multi-model batch menu is still visible' if lab.items.key?('Batch Export RUMAH + SBOOST ([01] to [09])')
+
+lab.items.fetch('About Evolution Lab').call
+about = UI.last_message.to_s
+raise 'About dialog missing Evolution Lab version' unless about.include?('Evolution Lab version: v1.1.21')
+raise 'About dialog missing latest milestone' unless about.include?('SBE-2026.08.28-01')
 
 puts "menu export dispatch: PASS (#{version_items.length} current-model entries; no multi-model batch menu)"

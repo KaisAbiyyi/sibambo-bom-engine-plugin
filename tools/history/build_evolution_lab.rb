@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.20'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.21'.freeze
 
   def self.build
     puts "======================================================================"
@@ -1374,7 +1374,9 @@ module EvolutionLabBuilder
             lab_menu.add_item('About Evolution Lab') do
               UI.messagebox(
                 "Sibambo BOM Engine Evolution Lab\\n\\n" +
-                "Side-by-side historical exporter suite spanning 2026-05-11 to 2026-08-25.\\n" +
+                "Evolution Lab version: v#{EVOLUTION_LAB_VERSION}\\n" +
+                "Latest milestone: #{versions.last['label']} (#{versions.last['display_version']})\\n" +
+                "Historical range: 2026-05-11 to #{versions.last['date'][0, 10]}.\\n" +
                 "Total historical engines: #{versions.length}\\n\\n" +
                 "Preserved for reproducible format archaeology and benchmark analysis.",
                 MB_OK
