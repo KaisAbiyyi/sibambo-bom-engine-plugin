@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.19'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.20'.freeze
 
   def self.build
     puts "======================================================================"
@@ -57,7 +57,7 @@ module EvolutionLabBuilder
       raw_dir = File.join(ver_gen_dir, 'raw')
       staged_dir = File.join(ver_gen_dir, 'staged')
 
-      if File.exist?(staged_dir) && disp != 'SBE-2026.08.27-02'
+      if File.exist?(staged_dir)
         puts "  Reusing committed historical milestone snapshot for #{disp}"
       else
         FileUtils.rm_rf(ver_gen_dir)
@@ -221,7 +221,7 @@ module EvolutionLabBuilder
     export_kind = historical_export_kind(ver)
     create_cooperative_job(staged_dir, sub_mod)
 
-    if ver['display_version'] == 'SBE-2026.08.27-01' || ver['display_version'] == 'SBE-2026.08.27-02'
+    if ['SBE-2026.08.27-01', 'SBE-2026.08.27-02', 'SBE-2026.08.28-01'].include?(ver['display_version'])
       code = <<~RUBY
         # frozen_string_literal: true
         # Entry point for #{ver['label']} (#{ver['display_version']})
@@ -503,7 +503,8 @@ module EvolutionLabBuilder
       '13' => :bomc_scene,
       '14' => :bomc_scene,
       '15' => :bomc_scene,
-      '16' => :bomc_scene
+      '16' => :bomc_scene,
+      '17' => :bomc_scene
     }.fetch(id, :experimental)
   end
 
@@ -904,6 +905,11 @@ module EvolutionLabBuilder
         kind: 'bomc_scene', title: "BOM Engine — Scene/Page BOMC Exporter (#{ver['display_version']})", badge: 'BOMC SCENE V5',
         description: 'BOMC Scene/Page exporter dengan semantik DrawingElement, occurrence-hierarchy visibility, dan Section 19 stable identities.',
         suffix: "__#{ver['display_version']}.bomc", button: 'Export BOMC'
+      },
+      '17' => {
+        kind: 'bomc_scene', title: "BOM Engine — Scene/Page BOMC Exporter (#{ver['display_version']})", badge: 'BOMC SCENE V6',
+        description: 'BOMC shared-universe dengan Section 19 v4 untuk mask Face/Edge Scene yang terkompilasi.',
+        suffix: "__#{ver['display_version']}.bomc", button: 'Export BOMC'
       }
     }.fetch(id, nil)
   end
@@ -918,7 +924,7 @@ module EvolutionLabBuilder
     raise "Specialized UI bridge missing: #{dialog_path}" unless File.file?(dialog_path)
 
     suffix_json = JSON.generate(spec.fetch(:suffix))
-    html = <<~HTML
+    html = +<<~HTML
       <!doctype html>
       <html lang="id">
       <head>
@@ -1034,6 +1040,15 @@ module EvolutionLabBuilder
       </body>
       </html>
     HTML
+    if ver['display_version'] == 'SBE-2026.08.28-01'
+      html.sub!(
+        "return path.replace(/(?:_(?:bom|canonical|model-eval|runtime))?.(?:json|bome2|cleanpkg|bomc)(?:.gz)?$/i, '') + OUTPUT_SUFFIX;",
+        "path = path.replace(/(?:_(?:bom|canonical|model-eval|runtime))?.(?:json|bome2|cleanpkg|bomc)(?:.gz)?$/i, '');\n" \
+        "      path = path.replace(/__SBE-[0-9]{4}.[0-9]{2}.[0-9]{2}-[0-9A-Z]+$/i, '');\n" \
+        "      return path + OUTPUT_SUFFIX;"
+      )
+      html.gsub!("\r\n", "\n")
+    end
     File.write(html_path, html, encoding: 'UTF-8')
 
     dialog = File.read(dialog_path, encoding: 'UTF-8')
@@ -1042,6 +1057,9 @@ module EvolutionLabBuilder
 
     dialog.sub!(generic_title, "dialog_title: #{spec.fetch(:title).inspect}")
     dialog.gsub!(/_canonical\.json/, spec.fetch(:suffix))
+    if ver['display_version'] == 'SBE-2026.08.28-01'
+      dialog.gsub!(/(?:__SBE-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9A-Z]+)+\.bomc/i, spec.fetch(:suffix))
+    end
     File.write(dialog_path, dialog, encoding: 'UTF-8')
   end
 
