@@ -512,22 +512,22 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     assert_equal 6, count, 'Occurrence count must evaluate all instances through the full occurrence hierarchy'
   end
 
-  # 10. Non-node drawing elements (faces, edges, section planes) are not emitted as fake node overrides
-  def test_non_node_drawingelements_not_emitted_as_fake_node_overrides
-    def1 = @model.definitions.add('RoomDef')
-    face = def1.entities.add_face([0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0])
-    edge = def1.entities.add_edge([0, 0, 0], [4, 0, 0])
-    inst = @model.entities.add_instance(def1, Geom::Transformation.new)
+  # 10. Non-node drawing elements retain their own stable visibility overrides.
+  def test_non_node_drawingelements_compile_as_face_and_edge_overrides
+    face = @model.entities.add_face([0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0])
+    edge = @model.entities.add_edge([0, 0, 0], [4, 0, 0])
 
     page = @model.pages.add('Scene_FaceHidden')
-    # Hidden entities includes a face and an edge (which are not instance nodes in canonical graph)
+    page.use_hidden_geometry = true
+    # Hidden entities includes a face and an edge (which are not instance nodes in canonical graph).
     page.hidden_entities = [face, edge]
+    @model.pages.add('Scene_FaceVisible')
 
     graph = BOMEngine::CanonicalGraphBuilder.build(
       model: @model,
       entities: @model.entities,
       parent_transform: Geom::Transformation.new,
-      settings: { scene_scope: 'all', output_format: 'bomc_v1_1' },
+      settings: { scene_scope: 'all', output_format: 'bomc_v1_1', include_edges: true },
       spatial: {},
       texture_writer: nil
     )
@@ -536,5 +536,14 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     assert_not_nil scene
     hidden_nodes = scene[:visibility][:hidden_node_overrides]
     assert_equal [], hidden_nodes, 'Faces and edges must not be emitted as fake node:pid references'
+    assert_equal ["face:#{face.persistent_id}"], scene[:visibility][:hidden_face_overrides]
+    assert_equal ["edge:#{edge.persistent_id}"], scene[:visibility][:hidden_edge_overrides]
+
+    packed = BOMEngine::BOMCWriter.pack(graph, profile: :production)
+    decoded = BOMEngine::BOMCDecoder.decode(packed[:bytes])
+    decoded_scene = decoded[:scenes].find { |candidate| candidate[:name] == 'Scene_FaceHidden' }
+    assert_equal ["face:#{face.persistent_id}"], decoded_scene[:visibility][:hidden_face_overrides]
+    assert_equal ["edge:#{edge.persistent_id}"], decoded_scene[:visibility][:hidden_edge_overrides]
+    assert_equal 0, decoded_scene[:visibility][:unresolved_hidden_primitive_override_count]
   end
 end

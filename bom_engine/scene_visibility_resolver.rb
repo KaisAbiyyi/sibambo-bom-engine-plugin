@@ -10,26 +10,26 @@ module BOMEngine
   module SceneVisibilityResolver
     module_function
 
-    def resolve_scenes(model, active_page: nil, nodes: nil, definitions: nil)
+    def resolve_scenes(model, active_page: nil, nodes: nil, definitions: nil, meshes: nil)
       pages = model.respond_to?(:pages) ? model.pages : nil
       active = active_page || (pages.respond_to?(:selected_page) ? pages.selected_page : nil)
       pages_list = pages.respond_to?(:to_a) ? pages.to_a : Array(pages)
 
       if pages_list.empty?
-        [build_scene_profile(nil, is_active: true, model: model, nodes: nodes, definitions: definitions)]
+        [build_scene_profile(nil, is_active: true, model: model, nodes: nodes, definitions: definitions, meshes: meshes)]
       else
         pages_list.map do |page|
           is_active = (page == active)
-          build_scene_profile(page, is_active: is_active, model: model, nodes: nodes, definitions: definitions)
+          build_scene_profile(page, is_active: is_active, model: model, nodes: nodes, definitions: definitions, meshes: meshes)
         end
       end
     end
 
-    def resolve_effective_scene_visibility(page, model: nil, nodes: nil, definitions: nil, is_active: false)
-      build_scene_profile(page, is_active: is_active, model: model, nodes: nodes, definitions: definitions)
+    def resolve_effective_scene_visibility(page, model: nil, nodes: nil, definitions: nil, meshes: nil, is_active: false)
+      build_scene_profile(page, is_active: is_active, model: model, nodes: nodes, definitions: definitions, meshes: meshes)
     end
 
-    def build_scene_profile(page, is_active: false, model: nil, nodes: nil, definitions: nil)
+    def build_scene_profile(page, is_active: false, model: nil, nodes: nil, definitions: nil, meshes: nil)
       if page.nil?
         camera_data = current_view_camera(model)
         visible_tag_ids = []
@@ -49,6 +49,8 @@ module BOMEngine
           hidden_tag_ids: hidden_tag_ids,
           visible_node_overrides: [],
           hidden_node_overrides: [],
+          visible_face_overrides: [], hidden_face_overrides: [],
+          visible_edge_overrides: [], hidden_edge_overrides: [],
           active_section_plane_ids: []
         )
         profile = {
@@ -68,7 +70,10 @@ module BOMEngine
             visible_tag_ids: visible_tag_ids.sort.uniq,
             hidden_tag_ids: hidden_tag_ids.sort.uniq,
             visible_node_overrides: [],
-            hidden_node_overrides: []
+            hidden_node_overrides: [],
+            visible_face_overrides: [], hidden_face_overrides: [],
+            visible_edge_overrides: [], hidden_edge_overrides: [],
+            unresolved_primitive_overrides: []
           },
           stores_tag_visibility: true,
           stores_hidden_objects: true,
@@ -108,7 +113,9 @@ module BOMEngine
       end
 
       # DrawingElement visibility overrides
-      visible_node_overrides, hidden_node_overrides = extract_node_overrides(page, model, nodes)
+      overrides = extract_visibility_overrides(page, nodes, meshes)
+      visible_node_overrides = overrides[:visible_nodes]
+      hidden_node_overrides = overrides[:hidden_nodes]
       active_section_plane_ids = extract_active_section_planes(page)
 
       signature = compute_visibility_signature(
@@ -116,6 +123,10 @@ module BOMEngine
         hidden_tag_ids: hidden_tag_ids,
         visible_node_overrides: visible_node_overrides,
         hidden_node_overrides: hidden_node_overrides,
+        visible_face_overrides: overrides[:visible_faces],
+        hidden_face_overrides: overrides[:hidden_faces],
+        visible_edge_overrides: overrides[:visible_edges],
+        hidden_edge_overrides: overrides[:hidden_edges],
         active_section_plane_ids: active_section_plane_ids
       )
 
@@ -136,7 +147,12 @@ module BOMEngine
           visible_tag_ids: visible_tag_ids.sort.uniq,
           hidden_tag_ids: hidden_tag_ids.sort.uniq,
           visible_node_overrides: visible_node_overrides.sort.uniq,
-          hidden_node_overrides: hidden_node_overrides.sort.uniq
+          hidden_node_overrides: hidden_node_overrides.sort.uniq,
+          visible_face_overrides: overrides[:visible_faces],
+          hidden_face_overrides: overrides[:hidden_faces],
+          visible_edge_overrides: overrides[:visible_edges],
+          hidden_edge_overrides: overrides[:hidden_edges],
+          unresolved_primitive_overrides: overrides[:unresolved]
         },
         stores_tag_visibility: stores_tags,
         stores_hidden_objects: stores_objects,
@@ -157,9 +173,18 @@ module BOMEngine
     end
 
     def extract_node_overrides(page, model, nodes = nil)
+      overrides = extract_visibility_overrides(page, nodes, nil)
+      [overrides[:visible_nodes], overrides[:hidden_nodes]]
+    end
+
+    def extract_visibility_overrides(page, nodes = nil, meshes = nil)
       visible_overrides = []
       hidden_overrides = []
-      return [[], []] if page.nil?
+      result = {
+        visible_nodes: visible_overrides, hidden_nodes: hidden_overrides,
+        visible_faces: [], hidden_faces: [], visible_edges: [], hidden_edges: [], unresolved: []
+      }
+      return result if page.nil?
 
       stores_objects = page.respond_to?(:use_hidden_objects?) ? page.use_hidden_objects? : (page.respond_to?(:use_hidden?) ? page.use_hidden? : true)
       stores_geometry = page.respond_to?(:use_hidden_geometry?) ? page.use_hidden_geometry? : false
@@ -174,6 +199,24 @@ module BOMEngine
 
       nodes_by_entity = {}
       nodes_by_pid = {}
+      primitives_by_entity = {}
+      primitives_by_pid = {}
+      Array(meshes).each do |mesh|
+        Array(mesh[:faces]).each do |face|
+          entity = face[:_entity] || face[:entity]
+          pid = face.dig(:source_identity, :persistent_id) || face[:persistent_id]
+          record = [:face, face[:id]]
+          primitives_by_entity[entity] = record if entity
+          primitives_by_pid[pid.to_s] = record if pid
+        end
+        Array(mesh[:edges]).each do |edge|
+          entity = edge[:_entity] || edge[:entity]
+          pid = edge.dig(:source_identity, :persistent_id) || edge[:persistent_id]
+          record = [:edge, edge[:id]]
+          primitives_by_entity[entity] = record if entity
+          primitives_by_pid[pid.to_s] = record if pid
+        end
+      end
 
       if nodes && !nodes.empty?
         nodes.each do |node|
@@ -221,16 +264,31 @@ module BOMEngine
 
       # 2. Match any remaining hidden/visible entities that correspond to known instance nodes
       hidden_entities_list.each do |ent|
-        node_id = nodes_by_entity[ent] || nodes_by_pid[safe_persistent_id(ent).to_s]
-        hidden_overrides << node_id if node_id
+        node_id = stores_objects ? (nodes_by_entity[ent] || nodes_by_pid[safe_persistent_id(ent).to_s]) : nil
+        primitive = stores_geometry ? (primitives_by_entity[ent] || primitives_by_pid[safe_persistent_id(ent).to_s]) : nil
+        if node_id
+          hidden_overrides << node_id
+        elsif primitive
+          (primitive[0] == :face ? result[:hidden_faces] : result[:hidden_edges]) << primitive[1]
+        elsif (stores_objects || stores_geometry) && ent.class.to_s !~ /SectionPlane/
+          result[:unresolved] << "drawingelement:#{safe_persistent_id(ent)}"
+        end
       end
 
       visible_entities_list.each do |ent|
-        node_id = nodes_by_entity[ent] || nodes_by_pid[safe_persistent_id(ent).to_s]
-        visible_overrides << node_id if node_id
+        node_id = stores_objects ? (nodes_by_entity[ent] || nodes_by_pid[safe_persistent_id(ent).to_s]) : nil
+        primitive = stores_geometry ? (primitives_by_entity[ent] || primitives_by_pid[safe_persistent_id(ent).to_s]) : nil
+        if node_id
+          visible_overrides << node_id
+        elsif primitive
+          (primitive[0] == :face ? result[:visible_faces] : result[:visible_edges]) << primitive[1]
+        elsif (stores_objects || stores_geometry) && ent.class.to_s !~ /SectionPlane/
+          result[:unresolved] << "drawingelement:#{safe_persistent_id(ent)}"
+        end
       end
 
-      [visible_overrides.sort.uniq, hidden_overrides.sort.uniq]
+      result.each_value { |values| values.replace(values.compact.map(&:to_s).sort.uniq) }
+      result
     end
 
     def calculate_effective_visible_occurrences(nodes, definitions, scene)
@@ -467,12 +525,16 @@ module BOMEngine
       true
     end
 
-    def compute_visibility_signature(visible_tag_ids:, hidden_tag_ids:, visible_node_overrides:, hidden_node_overrides:, active_section_plane_ids:)
+    def compute_visibility_signature(visible_tag_ids:, hidden_tag_ids:, visible_node_overrides:, hidden_node_overrides:, active_section_plane_ids:, visible_face_overrides: [], hidden_face_overrides: [], visible_edge_overrides: [], hidden_edge_overrides: [])
       payload = [
         Array(visible_tag_ids).map(&:to_s).sort.uniq,
         Array(hidden_tag_ids).map(&:to_s).sort.uniq,
         Array(visible_node_overrides).map(&:to_s).sort.uniq,
         Array(hidden_node_overrides).map(&:to_s).sort.uniq,
+        Array(visible_face_overrides).map(&:to_s).sort.uniq,
+        Array(hidden_face_overrides).map(&:to_s).sort.uniq,
+        Array(visible_edge_overrides).map(&:to_s).sort.uniq,
+        Array(hidden_edge_overrides).map(&:to_s).sort.uniq,
         Array(active_section_plane_ids).map(&:to_s).sort.uniq
       ]
       Digest::SHA256.hexdigest(JSON.generate(payload))

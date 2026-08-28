@@ -89,7 +89,8 @@ module BOMEngine
         root_node = instances.index { |node| node[:kind] == 'root' }
         raise 'BOMC source invalid: exactly one root instance is required.' if root_node.nil? || instances.count { |node| node[:kind] == 'root' } != 1
 
-        scenes = adapt_scenes(payload[:scenes], tag_index, node_index)
+        face_index, edge_index = index_primitive_ids(meshes)
+        scenes = adapt_scenes(payload[:scenes], tag_index, node_index, face_index, edge_index)
 
         finalize(
           source: payload[:source] || {},
@@ -214,7 +215,8 @@ module BOMEngine
         }
         tag_index = tags.each_with_index.each_with_object({}) { |(tag, idx), h| h[tag[:stable_id]] = idx }
         node_index = index_node_ids(instances)
-        scenes = adapt_scenes(payload[:scenes], tag_index, node_index)
+        face_index, edge_index = index_primitive_ids(meshes)
+        scenes = adapt_scenes(payload[:scenes], tag_index, node_index, face_index, edge_index)
         finalize(
           source: source,
           coordinate_system: payload[:coordinate_system] || {},
@@ -229,7 +231,7 @@ module BOMEngine
         )
       end
 
-      def adapt_scenes(raw_scenes, tag_index, node_index)
+      def adapt_scenes(raw_scenes, tag_index, node_index, face_index = {}, edge_index = {})
         return [] if raw_scenes.nil? || raw_scenes.empty?
 
         raw_scenes.map do |scene|
@@ -239,6 +241,10 @@ module BOMEngine
           hidden_tag_ids = Array(visibility[:hidden_tag_ids]).map(&:to_s)
           visible_node_overrides = Array(visibility[:visible_node_overrides]).map(&:to_s)
           hidden_node_overrides = Array(visibility[:hidden_node_overrides]).map(&:to_s)
+          visible_face_overrides = Array(visibility[:visible_face_overrides]).map(&:to_s)
+          hidden_face_overrides = Array(visibility[:hidden_face_overrides]).map(&:to_s)
+          visible_edge_overrides = Array(visibility[:visible_edge_overrides]).map(&:to_s)
+          hidden_edge_overrides = Array(visibility[:hidden_edge_overrides]).map(&:to_s)
 
           visible_tag_indices = visible_tag_ids.map { |id| tag_index[id] }.compact.uniq.sort
           hidden_tag_indices = hidden_tag_ids.map { |id| tag_index[id] }.compact.uniq.sort
@@ -266,6 +272,21 @@ module BOMEngine
             end
           end
           hidden_node_indices = hidden_node_indices.uniq.sort
+
+          compile_primitives = lambda do |ids, index|
+            resolved = []
+            unresolved = []
+            ids.each do |id|
+              idx = index[id]
+              idx.nil? ? unresolved << id : resolved << idx
+            end
+            [resolved.uniq.sort, unresolved.uniq.sort]
+          end
+          visible_face_indices, unresolved_visible_faces = compile_primitives.call(visible_face_overrides, face_index)
+          hidden_face_indices, unresolved_hidden_faces = compile_primitives.call(hidden_face_overrides, face_index)
+          visible_edge_indices, unresolved_visible_edges = compile_primitives.call(visible_edge_overrides, edge_index)
+          hidden_edge_indices, unresolved_hidden_edges = compile_primitives.call(hidden_edge_overrides, edge_index)
+          unresolved_primitives = Array(visibility[:unresolved_primitive_overrides]).map(&:to_s).uniq.sort
 
           {
             stable_id: scene[:id].to_s,
@@ -303,7 +324,25 @@ module BOMEngine
               unresolved_visible_node_overrides: unresolved_visible_overrides,
               unresolved_hidden_node_overrides: unresolved_hidden_overrides,
               unresolved_visible_node_override_count: unresolved_visible_overrides.length,
-              unresolved_hidden_node_override_count: unresolved_hidden_overrides.length
+              unresolved_hidden_node_override_count: unresolved_hidden_overrides.length,
+              visible_face_overrides: visible_face_overrides,
+              hidden_face_overrides: hidden_face_overrides,
+              visible_edge_overrides: visible_edge_overrides,
+              hidden_edge_overrides: hidden_edge_overrides,
+              visible_face_indices: visible_face_indices,
+              hidden_face_indices: hidden_face_indices,
+              visible_edge_indices: visible_edge_indices,
+              hidden_edge_indices: hidden_edge_indices,
+              unresolved_visible_face_overrides: unresolved_visible_faces,
+              unresolved_hidden_face_overrides: unresolved_hidden_faces,
+              unresolved_visible_edge_overrides: unresolved_visible_edges,
+              unresolved_hidden_edge_overrides: unresolved_hidden_edges,
+              unresolved_primitive_overrides: unresolved_primitives,
+              resolved_visible_primitive_override_count: visible_face_indices.length + visible_edge_indices.length,
+              resolved_hidden_primitive_override_count: hidden_face_indices.length + hidden_edge_indices.length,
+              unresolved_visible_primitive_override_count: unresolved_visible_faces.length + unresolved_visible_edges.length,
+              unresolved_hidden_primitive_override_count: unresolved_hidden_faces.length + unresolved_hidden_edges.length + unresolved_primitives.length,
+              unresolved_primitive_override_count: unresolved_visible_faces.length + unresolved_hidden_faces.length + unresolved_visible_edges.length + unresolved_hidden_edges.length + unresolved_primitives.length
             },
             stores_tag_visibility: scene[:stores_tag_visibility] != false,
             stores_hidden_objects: scene[:stores_hidden_objects] != false,
@@ -315,6 +354,27 @@ module BOMEngine
         end
       end
       private_class_method :adapt_scenes
+
+      def index_primitive_ids(meshes)
+        face_index = {}
+        edge_index = {}
+        face_cursor = 0
+        edge_cursor = 0
+        Array(meshes).each do |mesh|
+          Array(mesh[:faces]).each do |face|
+            face_index[face[:stable_id].to_s] = face_cursor
+            face_index[face[:persistent_id].to_s] = face_cursor unless face[:persistent_id].nil?
+            face_cursor += 1
+          end
+          Array(mesh[:edges]).each do |edge|
+            edge_index[edge[:stable_id].to_s] = edge_cursor
+            edge_index[edge[:persistent_id].to_s] = edge_cursor unless edge[:persistent_id].nil?
+            edge_cursor += 1
+          end
+        end
+        [face_index, edge_index]
+      end
+      private_class_method :index_primitive_ids
 
       def canonical_material(material, base_path)
         color = material[:color] || {}

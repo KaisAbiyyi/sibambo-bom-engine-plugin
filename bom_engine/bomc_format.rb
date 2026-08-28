@@ -66,12 +66,17 @@ module BOMEngine
       '' => 0, 'unknown' => 0, 'wall' => 1, 'floor' => 2, 'ceiling' => 3,
       'roof' => 4, 'opening' => 5, 'window' => 6, 'door' => 7,
       'railing' => 8, 'room' => 9, 'facade' => 10, 'column' => 11,
-      'beam' => 12, 'stair' => 13
+      'beam' => 12, 'stair' => 13, 'furniture' => 14, 'fixture' => 15,
+      'site' => 16, 'landscape' => 17, 'equipment' => 18, 'foundation' => 19,
+      'structure' => 20, 'room_boundary' => 21, 'exterior_wall' => 22, 'interior_wall' => 23
     }.freeze
     SEMANTIC_ROLE_NAMES = {
       0 => 'unknown', 1 => 'wall', 2 => 'floor', 3 => 'ceiling', 4 => 'roof',
       5 => 'opening', 6 => 'window', 7 => 'door', 8 => 'railing', 9 => 'room',
-      10 => 'facade', 11 => 'column', 12 => 'beam', 13 => 'stair'
+      10 => 'facade', 11 => 'column', 12 => 'beam', 13 => 'stair',
+      14 => 'furniture', 15 => 'fixture', 16 => 'site', 17 => 'landscape',
+      18 => 'equipment', 19 => 'foundation', 20 => 'structure', 21 => 'room_boundary',
+      22 => 'exterior_wall', 23 => 'interior_wall'
     }.freeze
     TEXTURE_MEDIA = { binary: 0, png: 1, jpeg: 2, webp: 3, avif: 4, ktx2: 5 }.freeze
     TEXTURE_MEDIA_NAMES = TEXTURE_MEDIA.each_with_object({}) { |(name, value), result| result[value] = name }.freeze

@@ -106,7 +106,9 @@ module BOMEngine
         scenes = nil
         measure(timings, :scenes_ms) do
           scenes = if @sections[BOMC::SECTION_SCENES]
-                     decode_scenes(section_bytes(BOMC::SECTION_SCENES), strings, tags, instances)
+                     decode_scenes(section_bytes(BOMC::SECTION_SCENES), strings, tags, instances,
+                                   meshes.sum { |mesh| Array(mesh[:faces]).length },
+                                   meshes.sum { |mesh| Array(mesh[:edges]).length })
                    else
                      synthetic_default_scenes(tags, instances)
                    end
@@ -732,11 +734,11 @@ module BOMEngine
         { units: 'm', handedness: (flags & 1).zero? ? 'left' : 'right', up_axis: axis }
       end
 
-      def decode_scenes(bytes, strings, tags, instances)
+      def decode_scenes(bytes, strings, tags, instances, face_count = nil, edge_count = nil)
         return [] if bytes.nil? || bytes.empty?
 
         version, tag_count, scenes_count = bytes.byteslice(0, 6).unpack('CCV')
-        raise 'BOMC invalid: scenes section version.' unless version == 1 || version == 2 || version == 3
+        raise 'BOMC invalid: scenes section version.' unless [1, 2, 3, 4].include?(version)
         tag_bitset_bytes = (tag_count + 7) / 8
         cursor = 6
 
@@ -823,6 +825,47 @@ module BOMEngine
             end
           end
 
+          primitive = {
+            hidden_face_indices: [], visible_face_indices: [], hidden_edge_indices: [], visible_edge_indices: [],
+            hidden_face_overrides: [], visible_face_overrides: [], hidden_edge_overrides: [], visible_edge_overrides: [],
+            unresolved_hidden_face_overrides: [], unresolved_visible_face_overrides: [],
+            unresolved_hidden_edge_overrides: [], unresolved_visible_edge_overrides: [],
+            unresolved_primitive_overrides: [], active_section_plane_ids: []
+          }
+          if version >= 4
+            read_primitive_rows = lambda do |index_key, id_key, unresolved_key, limit|
+              count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+              count.times do
+                idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+                raise 'BOMC invalid: scene primitive index.' if !limit.nil? && idx >= limit
+                str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+                primitive[index_key] << idx
+                primitive[id_key] << string_value(strings, str_idx)
+              end
+              unresolved_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+              unresolved_count.times do
+                str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+                id = string_value(strings, str_idx)
+                primitive[id_key] << id
+                primitive[unresolved_key] << id
+              end
+            end
+            read_primitive_rows.call(:hidden_face_indices, :hidden_face_overrides, :unresolved_hidden_face_overrides, face_count)
+            read_primitive_rows.call(:visible_face_indices, :visible_face_overrides, :unresolved_visible_face_overrides, face_count)
+            read_primitive_rows.call(:hidden_edge_indices, :hidden_edge_overrides, :unresolved_hidden_edge_overrides, edge_count)
+            read_primitive_rows.call(:visible_edge_indices, :visible_edge_overrides, :unresolved_visible_edge_overrides, edge_count)
+            unresolved_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+            unresolved_count.times do
+              str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+              primitive[:unresolved_primitive_overrides] << string_value(strings, str_idx)
+            end
+            section_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+            section_count.times do
+              str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+              primitive[:active_section_plane_ids] << string_value(strings, str_idx)
+            end
+          end
+
           visible_tag_ids = visible_tag_indices.map do |i|
             (version >= 3 && tag_stable_ids[i]) ? tag_stable_ids[i] : (tags[i] ? tags[i][:stable_id] : "tag:#{i}")
           end
@@ -877,13 +920,19 @@ module BOMEngine
               unresolved_visible_node_overrides: unresolved_visible_overrides,
               unresolved_hidden_node_overrides: unresolved_hidden_overrides,
               unresolved_visible_node_override_count: unresolved_visible_overrides.length,
-              unresolved_hidden_node_override_count: unresolved_hidden_overrides.length
+              unresolved_hidden_node_override_count: unresolved_hidden_overrides.length,
+              **primitive.reject { |key, _| key == :active_section_plane_ids },
+              resolved_visible_primitive_override_count: primitive[:visible_face_indices].length + primitive[:visible_edge_indices].length,
+              resolved_hidden_primitive_override_count: primitive[:hidden_face_indices].length + primitive[:hidden_edge_indices].length,
+              unresolved_visible_primitive_override_count: primitive[:unresolved_visible_face_overrides].length + primitive[:unresolved_visible_edge_overrides].length,
+              unresolved_hidden_primitive_override_count: primitive[:unresolved_hidden_face_overrides].length + primitive[:unresolved_hidden_edge_overrides].length + primitive[:unresolved_primitive_overrides].length,
+              unresolved_primitive_override_count: primitive[:unresolved_hidden_face_overrides].length + primitive[:unresolved_visible_face_overrides].length + primitive[:unresolved_hidden_edge_overrides].length + primitive[:unresolved_visible_edge_overrides].length + primitive[:unresolved_primitive_overrides].length
             },
             stores_tag_visibility: stores_tags,
             stores_hidden_objects: stores_objects,
             stores_hidden_geometry: stores_geometry,
             stores_section_planes: stores_sections,
-            section_state: { active_section_plane_ids: [], rendering_support: 'metadata-only' },
+            section_state: { active_section_plane_ids: primitive[:active_section_plane_ids], rendering_support: 'metadata-only' },
             visibility_signature: strings[sig_idx].to_s
           }
         end

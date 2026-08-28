@@ -342,6 +342,13 @@ module BOMEngine
           Array(vis[:hidden_tag_ids]).each { |id| candidates << id }
           Array(vis[:unresolved_hidden_node_overrides]).each { |id| candidates << id }
           Array(vis[:unresolved_visible_node_overrides]).each { |id| candidates << id }
+          [:visible_face_overrides, :hidden_face_overrides, :visible_edge_overrides, :hidden_edge_overrides,
+           :unresolved_visible_face_overrides, :unresolved_hidden_face_overrides,
+           :unresolved_visible_edge_overrides, :unresolved_hidden_edge_overrides,
+           :unresolved_primitive_overrides].each do |key|
+            Array(vis[key]).each { |id| candidates << id }
+          end
+          Array(scene.dig(:section_state, :active_section_plane_ids)).each { |id| candidates << id }
         end
         if @profile == :debug
           each_debug_string { |value| candidates << value }
@@ -657,9 +664,11 @@ module BOMEngine
         instances = Array(@model[:instances])
         tag_count = tags.length
         tag_bitset_bytes = (tag_count + 7) / 8
+		faces = @model[:meshes].flat_map { |mesh| Array(mesh[:faces]) }
+		edges = @model[:meshes].flat_map { |mesh| Array(mesh[:edges]) }
 
-        # Section 19 Version 3 supports stable tag and node override identities
-        data = [3, tag_count, scenes.length].pack('CCV')
+        # Section 19 Version 4 adds stable, compiled face/edge visibility and section-plane identities.
+        data = [4, tag_count, scenes.length].pack('CCV')
 
         # Tag stable ID string indices
         tags.each_with_index do |tag, idx|
@@ -753,6 +762,31 @@ module BOMEngine
             str_idx = @string_index[id.to_s] || 0
             data << BOMC::Binary.write_varuint(str_idx)
           end
+
+          append_primitive_rows = lambda do |indices, ids, records, prefix|
+            data << BOMC::Binary.write_varuint(indices.length)
+            indices.each do |idx|
+              data << BOMC::Binary.write_varuint(idx)
+              stable_id = records[idx]&.dig(:stable_id) || "#{prefix}:#{idx}"
+              data << BOMC::Binary.write_varuint(@string_index[stable_id.to_s] || 0)
+            end
+            unresolved_ids = Array(ids).reject { |id| indices.any? { |idx| records[idx]&.dig(:stable_id).to_s == id.to_s } }
+            data << BOMC::Binary.write_varuint(unresolved_ids.length)
+            unresolved_ids.each { |id| data << BOMC::Binary.write_varuint(@string_index[id.to_s] || 0) }
+          end
+
+          append_primitive_rows.call(Array(visibility[:hidden_face_indices]), visibility[:hidden_face_overrides], faces, 'face')
+          append_primitive_rows.call(Array(visibility[:visible_face_indices]), visibility[:visible_face_overrides], faces, 'face')
+          append_primitive_rows.call(Array(visibility[:hidden_edge_indices]), visibility[:hidden_edge_overrides], edges, 'edge')
+          append_primitive_rows.call(Array(visibility[:visible_edge_indices]), visibility[:visible_edge_overrides], edges, 'edge')
+
+          unresolved_primitives = Array(visibility[:unresolved_primitive_overrides])
+          data << BOMC::Binary.write_varuint(unresolved_primitives.length)
+          unresolved_primitives.each { |id| data << BOMC::Binary.write_varuint(@string_index[id.to_s] || 0) }
+
+          section_ids = Array(scene.dig(:section_state, :active_section_plane_ids))
+          data << BOMC::Binary.write_varuint(section_ids.length)
+          section_ids.each { |id| data << BOMC::Binary.write_varuint(@string_index[id.to_s] || 0) }
         end
 
         data

@@ -253,7 +253,8 @@ module BOMEngine
           surface_hint: Classifier.classify(face.normal),
           semantic: semantic_for_face(face),
           hidden: face.hidden?,
-          attributes: Traversal.extract_dicts(face)
+          attributes: Traversal.extract_dicts(face),
+          _entity: face
         }
         uv = build_face_uv(face)
         result[:uv] = uv unless uv.nil?
@@ -288,7 +289,8 @@ module BOMEngine
           tag_id: tag_id(edge.layer),
           hidden: edge.hidden?,
           soft: edge.soft?,
-          smooth: edge.smooth?
+          smooth: edge.smooth?,
+          _entity: edge
         }
       end
 
@@ -469,8 +471,12 @@ module BOMEngine
       end
 
       def build_scenes
-        scenes = SceneVisibilityResolver.resolve_scenes(@model, nodes: @nodes, definitions: @definitions)
+        scenes = SceneVisibilityResolver.resolve_scenes(@model, nodes: @nodes, definitions: @definitions, meshes: @meshes)
         @nodes.each { |node| node.delete(:_entity) }
+        @meshes.each do |mesh|
+          Array(mesh[:faces]).each { |face| face.delete(:_entity) }
+          Array(mesh[:edges]).each { |edge| edge.delete(:_entity) }
+        end
         scenes
       end
 
