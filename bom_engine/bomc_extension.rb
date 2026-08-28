@@ -128,7 +128,8 @@ module BOMEngine
             source_info: source,
             base_path: texture_directory,
             checkpoint: checkpoint,
-            output_path: path
+            output_path: path,
+            enforce_smaller: false
           )
         end,
         validate: ->(result) { validate_compiled_result(result) },

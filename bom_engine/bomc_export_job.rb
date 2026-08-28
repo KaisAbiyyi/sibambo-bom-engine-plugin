@@ -63,7 +63,7 @@ module BOMEngine
       advance.call(:SIZE_GATE, result[:candidate_bytes])
       advance.call(:VALIDATE, result[:candidate_bytes])
       validation = context.fetch(:validate).call(result)
-      advance.call(:DONE, result[:candidate_bytes], result[:status] == :pass ? result[:savings_bytes] : nil)
+      advance.call(:DONE, result[:candidate_bytes], result[:savings_bytes])
 
       container_bytes = result[:bytes] if result[:bytes].is_a?(String)
       result = result.merge(

@@ -61,7 +61,11 @@
     document.getElementById('title').textContent = 'Converting selesai';
     document.getElementById('stage').textContent = 'File siap digunakan oleh model-eval.';
     document.getElementById('elapsed').textContent = data.elapsed_seconds.toFixed(1) + ' detik';
-    var gate = data.gate_status === 'pass' ? 'PASS · saved ' + formatBytes(data.savings_bytes || 0) : 'source-size unavailable';
+    var gate = data.gate_status === 'pass'
+      ? 'PASS · saved ' + formatBytes(data.savings_bytes || 0)
+      : (data.gate_status === 'over_budget'
+        ? 'COMPLETE · ' + formatBytes(Math.abs(data.savings_bytes || 0)) + ' larger than SKP'
+        : 'source-size unavailable');
     document.getElementById('summary').textContent = (data.nodes || 0).toLocaleString() + ' objek · ' + (data.triangles || 0).toLocaleString() + ' triangles · ' + formatBytes(data.bytes || 0) + ' · ' + gate;
     finishActions(true);
   }

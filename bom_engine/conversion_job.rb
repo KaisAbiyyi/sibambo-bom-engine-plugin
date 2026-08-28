@@ -143,7 +143,7 @@ module BOMEngine
         path: result[:path],
         bytes: result[:bytes],
         source_bytes: result.dig(:source_info, :bytes),
-        savings_bytes: result[:status] == :pass ? result[:savings_bytes] : nil,
+        savings_bytes: result[:savings_bytes],
         gate_status: result[:status],
         strategy: result[:strategy],
         mode: result[:mode],

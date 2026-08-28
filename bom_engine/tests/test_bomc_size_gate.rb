@@ -20,6 +20,7 @@ module BOMEngine
         test_boundaries
         test_source_capture
         test_escalation_and_invariants
+        test_advisory_gate_publishes_best_complete_candidate
         test_failed_candidates_are_not_published
         puts 'BOMC Size Gate Tests: ALL PASSED'
         true
@@ -101,6 +102,27 @@ module BOMEngine
           assert(!error.dominant_sections.empty?, 'gate failure identifies dominant stored sections')
           assert(File.binread(output) == 'keep-me', 'failed candidates never replace an existing output')
           assert(Dir.glob(File.join(directory, '*.part')).empty?, 'failed size gate leaves no partial files')
+        ensure
+          FileUtils.remove_entry(directory) if directory && Dir.exist?(directory)
+        end
+      end
+
+      def test_advisory_gate_publishes_best_complete_candidate
+        directory = Dir.mktmpdir('bomc-advisory-gate')
+        begin
+          output = File.join(directory, 'texture-heavy.bomc')
+          result = BOMCSizeGate.compile(
+            graph: graph_fixture,
+            source_info: { available: true, bytes: 1 },
+            base_path: nil,
+            output_path: output,
+            enforce_smaller: false
+          )
+          assert(result[:status] == :over_budget, 'advisory size target reports over-budget without treating a complete BOMC as export failure')
+          assert(result[:candidate_bytes] > result[:source_bytes] && result[:savings_bytes] < 0, 'over-budget result retains exact signed size diagnostics')
+          assert(result[:attempts].length == BOMCSizeGate::STRATEGIES.length, 'advisory export still evaluates every bounded lossless strategy')
+          assert(File.binread(output) == result[:bytes], 'advisory export atomically publishes the best complete lossless candidate')
+          assert(BOMCDecoder.decode(result[:bytes]).dig(:coverage, :unaccounted).to_i.zero?, 'published over-budget candidate retains complete geometry coverage')
         ensure
           FileUtils.remove_entry(directory) if directory && Dir.exist?(directory)
         end

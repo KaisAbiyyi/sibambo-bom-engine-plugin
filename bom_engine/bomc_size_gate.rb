@@ -1,4 +1,6 @@
-# Strict saved-SKP size gate with bounded, deterministic lossless escalation.
+# Saved-SKP size diagnostics with bounded, deterministic lossless escalation.
+# Callers may enforce a strict smaller-than-SKP target; the interactive exporter
+# treats that target as advisory so complete texture-heavy models still publish.
 
 require 'fileutils'
 require_relative 'bomc_writer'
@@ -40,7 +42,7 @@ module BOMEngine
       Integer(candidate_bytes) < Integer(source_info.fetch(:bytes)) ? :pass : :fail
     end
 
-    def compile(graph:, source_info:, base_path:, checkpoint: nil, output_path: nil)
+    def compile(graph:, source_info:, base_path:, checkpoint: nil, output_path: nil, enforce_smaller: true)
       info = source_info || { available: false, bytes: nil }
       strategies = info[:available] ? STRATEGIES : [STRATEGIES.first]
       attempts = []
@@ -82,25 +84,7 @@ module BOMEngine
         best = best_result(best, result, strategy)
 
         if status == :pass || status == :unavailable
-          if output_path
-            invoke_checkpoint(
-              checkpoint,
-              stage: :write_container,
-              processed: 0,
-              total: result[:bytes].bytesize,
-              candidate_bytes: candidate_size,
-              force: true
-            )
-            publish(output_path, result[:bytes])
-            invoke_checkpoint(
-              checkpoint,
-              stage: :write_container,
-              processed: result[:bytes].bytesize,
-              total: result[:bytes].bytesize,
-              candidate_bytes: candidate_size,
-              force: true
-            )
-          end
+          publish_result(output_path, result, candidate_size, checkpoint) if output_path
           return result.merge(
             status: status,
             strategy: strategy[:name],
@@ -111,6 +95,21 @@ module BOMEngine
           )
         end
         result = nil
+      end
+
+      unless enforce_smaller
+        selected = best.fetch(:result)
+        candidate_size = best.fetch(:candidate_bytes)
+        publish_result(output_path, selected, candidate_size, checkpoint) if output_path
+        return selected.merge(
+          status: :over_budget,
+          strategy: best.fetch(:strategy),
+          candidate_bytes: candidate_size,
+          source_bytes: info[:bytes],
+          savings_bytes: info[:bytes] - candidate_size,
+          attempts: attempts,
+          dominant_sections: dominant_sections(best[:metrics])
+        )
       end
 
       raise TargetNotMet.new(
@@ -127,7 +126,8 @@ module BOMEngine
       candidate = {
         candidate_bytes: result[:bytes].bytesize,
         metrics: result[:metrics],
-        strategy: strategy[:name]
+        strategy: strategy[:name],
+        result: result
       }
       return candidate if current.nil? || candidate[:candidate_bytes] < current[:candidate_bytes]
       current
@@ -146,6 +146,27 @@ module BOMEngine
       checkpoint.call(**payload) if checkpoint
     end
     private_class_method :invoke_checkpoint
+
+    def publish_result(output_path, result, candidate_size, checkpoint)
+      invoke_checkpoint(
+        checkpoint,
+        stage: :write_container,
+        processed: 0,
+        total: result[:bytes].bytesize,
+        candidate_bytes: candidate_size,
+        force: true
+      )
+      publish(output_path, result[:bytes])
+      invoke_checkpoint(
+        checkpoint,
+        stage: :write_container,
+        processed: result[:bytes].bytesize,
+        total: result[:bytes].bytesize,
+        candidate_bytes: candidate_size,
+        force: true
+      )
+    end
+    private_class_method :publish_result
 
     def publish(path, bytes)
       temporary_path = "#{path}.#{Process.pid}.part"

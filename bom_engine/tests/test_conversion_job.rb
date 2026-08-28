@@ -69,6 +69,19 @@ assert(scripts.any? { |script| script.include?('updateProgress') }, 'progress wi
 assert(scripts.any? { |script| script.include?('completeConversion') }, 'progress window receives completion result')
 assert(BOMEngine::ConversionJob.active.nil?, 'completed job releases global active slot')
 
+over_budget_job = BOMEngine::ConversionJob.start(title: 'Texture-heavy conversion', output_path: 'C:/tmp/model.bomc') do
+  {
+    path: 'C:/tmp/model.bomc', bytes: 110, candidate_bytes: 110,
+    source_info: { bytes: 100 }, savings_bytes: -10,
+    status: :over_budget, strategy: :maximum_lossless,
+    validation: { nodes: 7, triangles: 11 }
+  }
+end
+UI.tick while over_budget_job.running?
+over_budget_script = UI::HtmlDialog.last.scripts.find { |script| script.include?('completeConversion') }.to_s
+assert(over_budget_script.include?('"gate_status":"over_budget"'), 'over-budget lossless export completes instead of entering the failure UI')
+assert(over_budget_script.include?('"savings_bytes":-10'), 'completion UI receives the exact signed SKP size delta')
+
 cancelled_job = BOMEngine::ConversionJob.start(title: 'Cancel conversion', output_path: 'C:/tmp/model.json') do |progress|
   3.times { |index| progress.call(stage: "Stage #{index}", processed: index + 1) }
 end
