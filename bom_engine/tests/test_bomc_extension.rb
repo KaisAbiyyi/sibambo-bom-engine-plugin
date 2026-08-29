@@ -33,7 +33,7 @@ module BOMEngine
         unsaved = BOMCExtension.output_path(FakeModel.new(''))
         assert(saved.tr('\\', '/').end_with?('/model-eval-exports/RUMAH_L.bomc'), 'saved model gets deterministic one-file BOMC path')
         assert(unsaved.end_with?('Untitled.bomc'), 'unsaved model gets deterministic BOMC filename')
-        assert(BOMCExtension::DEFAULT_PROFILE == :production, 'production profile is the preferred default')
+        assert(BOMCExtension::DEFAULT_PROFILE == :visual, 'visual profile is the preferred web-first default')
         assert(BOMCExtension::FORMAT_EXTENSION == '.bomc', 'compiled user-facing extension is stable')
         menu = FakeMenu.new
         BOMCExtension.register_menu(menu)
