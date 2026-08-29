@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "description": "Corpus manifest for SIBAMBO BOMC three-profile benchmarks",
+  "items": [
+    {
+      "id": "tiny-box",
+      "category": "tiny",
+      "skp_path": "skps/test.skp",
+      "model_eval_fixture": "examples/model-eval-json-v1-small.json",
+      "required_for_release": true
+    },
+    {
+      "id": "small-textured-house2",
+      "category": "small-textured",
+      "skp_path": "skps/house2.skp",
+      "model_eval_fixture": "skps/model-eval-exports/house2_model-eval.json",
+      "required_for_release": true
+    },
+    {
+      "id": "medium-architectural-presentation20",
+      "category": "medium-architectural",
+      "skp_path": "skps/presentation20.skp",
+      "model_eval_fixture": "skps/model-eval-exports/presentation20_model-eval.json",
+      "required_for_release": true
+    },
+    {
+      "id": "complex-architectural-sboost1",
+      "category": "complex-architectural",
+      "skp_path": "skps/PROJECT SBOOST 1.skp",
+      "model_eval_fixture": "skps/model-eval-exports/PROJECT SBOOST 1_model-eval.json",
+      "required_for_release": true
+    },
+    {
+      "id": "texture-heavy-rumah-y",
+      "category": "texture-heavy",
+      "skp_path": "skps/RUMAH Y.skp",
+      "model_eval_fixture": "skps/model-eval-exports/RUMAH Y_model-eval.json",
+      "required_for_release": true
+    },
+    {
+      "id": "scene-heavy-sboost2",
+      "category": "scene-heavy",
+      "skp_path": "skps/PROJECT SBOOST 2.skp",
+      "model_eval_fixture": "skps/model-eval-exports/PROJECT SBOOST 2_model-eval.json",
+      "required_for_release": true
+    },
+    {
+      "id": "section-cut-heavy-rumah-l",
+      "category": "section-cut-heavy",
+      "skp_path": "skps/RUMAH L.skp",
+      "model_eval_fixture": "skps/model-eval-exports/RUMAH L_model-eval.json",
+      "required_for_release": true,
+      "local_only": true
+    }
+  ]
+}
