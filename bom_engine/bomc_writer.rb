@@ -7,6 +7,7 @@ require_relative 'bomc_codecs'
 require_relative 'bomc_model_adapter'
 require_relative 'bomc_profile'
 require_relative 'bomc_encoding_contract'
+require_relative 'bomc_geometry_policy'
 
 module BOMEngine
   module BOMCWriter
@@ -145,7 +146,12 @@ module BOMEngine
         is_exact = @profile_contract.profile == :exact
         forced_normal_codec = is_exact ? BOMC::NormalCodec::FLOAT64 : nil
         forced_transform_codec = is_exact ? BOMC::TransformCodec::FLOAT64_3X4 : nil
-        normal_block = BOMC::NormalCodec.encode(geometry[:normals], forced_codec: forced_normal_codec)
+
+        all_faces = @model[:meshes].flat_map { |m| m[:faces] }
+        model_normal_class = BOMCGeometryPolicy.mesh_semantic_class(all_faces)
+        normal_tol = BOMCGeometryPolicy.normal_tolerance(profile: @profile_contract.name, semantic_class: model_normal_class)
+
+        normal_block = BOMC::NormalCodec.encode(geometry[:normals], max_error_deg: normal_tol, semantic_class: model_normal_class, forced_codec: forced_normal_codec)
         notify(:encode_normals, geometry[:normals].length / 3, geometry[:normals].length / 3)
         transform_block = BOMC::TransformCodec.encode(@model[:transforms], forced_codec: forced_transform_codec, checkpoint: @checkpoint)
         notify(:encode_transforms, @model[:transforms].length, @model[:transforms].length)
@@ -490,10 +496,14 @@ module BOMEngine
         forced_uv_codec = is_exact ? BOMC::UVCodec::FLOAT64 : nil
 
         @model[:meshes].each_with_index do |mesh, mesh_index|
+          mesh_class = BOMCGeometryPolicy.mesh_semantic_class(mesh[:faces])
+          pos_tol = BOMCGeometryPolicy.position_tolerance(profile: @profile_contract.name, semantic_class: mesh_class)
+          uv_tol = BOMCGeometryPolicy.uv_tolerance(profile: @profile_contract.name, semantic_class: mesh_class)
+
           mesh_face_start = faces.length
           mesh_edge_start = edges.length
           loops_for_gate = mesh[:faces].map { |face| [face[:outer]] + face[:holes] }.flatten(1)
-          position = BOMC::PositionCodec.encode(mesh[:positions], loops: loops_for_gate, forced_codec: forced_pos_codec)
+          position = BOMC::PositionCodec.encode(mesh[:positions], loops: loops_for_gate, max_error_m: pos_tol, semantic_class: mesh_class, forced_codec: forced_pos_codec)
           position_offset, position_length = append_aligned(position_stream, pack_position_block(position))
           @position_metrics << position.reject { |key, _value| key == :bytes }
           notify(:encode_positions, mesh_index + 1, @model[:meshes].length)
@@ -545,7 +555,7 @@ module BOMEngine
           uv_offset = 0
           uv_length = 0
           unless mesh_uv_values.empty?
-            uv = BOMC::UVCodec.encode(mesh_uv_values, forced_codec: forced_uv_codec)
+            uv = BOMC::UVCodec.encode(mesh_uv_values, max_error: uv_tol, semantic_class: mesh_class, forced_codec: forced_uv_codec)
             uv_offset, uv_length = append_aligned(uv_stream, pack_uv_block(uv))
             @uv_metrics << uv.reject { |key, _value| key == :bytes }
             uv_block_count += 1

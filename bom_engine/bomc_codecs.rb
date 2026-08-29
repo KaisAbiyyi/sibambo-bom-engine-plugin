@@ -63,7 +63,7 @@ module BOMEngine
 
       module_function
 
-      def encode(values, loops: [], max_error_m: MAX_ERROR_M, forced_codec: nil)
+      def encode(values, loops: [], max_error_m: MAX_ERROR_M, semantic_class: nil, forced_codec: nil)
         source = Array(values).map(&:to_f)
         raise ArgumentError, 'Position buffer must contain XYZ triples.' unless (source.length % 3).zero?
         CodecMath.finite_values!(source, 'Position buffer')
@@ -78,7 +78,7 @@ module BOMEngine
             errors: { max: 0.0, p95: 0.0, rms: 0.0 },
             count: source.length / 3,
             candidates: [
-              { name: 'float64_absolute', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true }
+              { name: 'float64_absolute', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true, semantic_class: semantic_class }
             ]
           }
         end
@@ -89,7 +89,7 @@ module BOMEngine
         candidates = []
         candidates << candidate(
           'float64_absolute', FLOAT64_ABSOLUTE, source.pack('E*'), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
-          source, source, loops, max_error_m, 0
+          source, source, loops, max_error_m, 0, semantic_class
         )
 
         local_values = source.each_with_index.map { |value, index| value - minimum[index % 3] }
@@ -97,19 +97,19 @@ module BOMEngine
         float32_decoded = float32_bytes.unpack('e*').each_with_index.map { |value, index| value + minimum[index % 3] }
         candidates << candidate(
           'float32_local', FLOAT32_LOCAL, float32_bytes, minimum, [0.0, 0.0, 0.0],
-          source, float32_decoded, loops, max_error_m, 1
+          source, float32_decoded, loops, max_error_m, 1, semantic_class
         )
 
         int32 = quantized_candidate(source, center, 2_147_483_647, 'l<*')
         candidates << candidate(
           'int32_quantized', INT32_QUANTIZED, int32[:bytes], center, int32[:scale],
-          source, int32[:decoded], loops, max_error_m, 3
+          source, int32[:decoded], loops, max_error_m, 3, semantic_class
         ).merge(integers: int32[:integers], integer_bits: 32)
 
         int16 = quantized_candidate(source, center, 32_767, 's<*')
         candidates << candidate(
           'int16_quantized', INT16_QUANTIZED, int16[:bytes], center, int16[:scale],
-          source, int16[:decoded], loops, max_error_m, 2
+          source, int16[:decoded], loops, max_error_m, 2, semantic_class
         ).merge(integers: int16[:integers], integer_bits: 16)
 
         delta_source = candidates[-1][:passed] ? int16 : int32
@@ -121,7 +121,7 @@ module BOMEngine
         end.join.b
         delta = candidate(
           'delta_varint', DELTA_VARINT, delta_bytes, center, delta_source[:scale],
-          source, delta_source[:decoded], loops, max_error_m, 4
+          source, delta_source[:decoded], loops, max_error_m, 4, semantic_class
         )
         delta[:integer_bits] = delta_source.equal?(int16) ? 16 : 32
         candidates << delta
@@ -162,7 +162,7 @@ module BOMEngine
         values
       end
 
-      def candidate(name, codec, bytes, origin, scale, source, decoded, loops, max_error_m, complexity)
+      def candidate(name, codec, bytes, origin, scale, source, decoded, loops, max_error_m, complexity, semantic_class = nil)
         point_errors = source.each_slice(3).with_index.map do |point, point_index|
           offset = point_index * 3
           Math.sqrt(3.times.map { |axis| (point[axis] - decoded[offset + axis])**2 }.inject(0.0, :+))
@@ -177,6 +177,7 @@ module BOMEngine
           scale: scale,
           errors: errors,
           area_max_error_m2: area_error,
+          semantic_class: semantic_class,
           passed: errors[:max] <= max_error_m + 1.0e-12 && area_passed,
           raw_bytes: bytes.bytesize,
           deflate_bytes: CodecMath.compressed_size(bytes),
@@ -284,7 +285,7 @@ module BOMEngine
 
       module_function
 
-      def encode(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, forced_codec: nil)
+      def encode(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, semantic_class: nil, forced_codec: nil)
         source = Array(values).map(&:to_f)
         raise ArgumentError, 'Normal buffer must contain XYZ triples.' unless (source.length % 3).zero?
         CodecMath.finite_values!(source, 'Normal buffer')
@@ -297,7 +298,7 @@ module BOMEngine
             count: source.length / 3,
             errors: { max: 0.0, p95: 0.0, rms: 0.0 },
             candidates: [
-              { name: 'float64x3', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true }
+              { name: 'float64x3', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true, semantic_class: semantic_class }
             ]
           }
         end
@@ -336,8 +337,8 @@ module BOMEngine
           count: source.length / 3,
           errors: selected_errors,
           candidates: [
-            { name: 'float32x3', raw_bytes: float_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float_bytes), errors: float_summary, passed: float_summary[:max] <= max_error_deg.to_f },
-            { name: 'oct16x2', raw_bytes: oct_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(oct_bytes), errors: oct_summary, passed: use_oct }
+            { name: 'float32x3', raw_bytes: float_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float_bytes), errors: float_summary, passed: float_summary[:max] <= max_error_deg.to_f, semantic_class: semantic_class },
+            { name: 'oct16x2', raw_bytes: oct_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(oct_bytes), errors: oct_summary, passed: use_oct, semantic_class: semantic_class }
           ]
         }
       end
@@ -421,7 +422,7 @@ module BOMEngine
 
       module_function
 
-      def encode(values, max_error: MAX_ERROR, forced_codec: nil)
+      def encode(values, max_error: MAX_ERROR, semantic_class: nil, forced_codec: nil)
         source = Array(values).map(&:to_f)
         raise ArgumentError, 'UV buffer must contain pairs.' unless (source.length % 2).zero?
         CodecMath.finite_values!(source, 'UV buffer')
@@ -436,19 +437,19 @@ module BOMEngine
             errors: { max: 0.0, p95: 0.0, rms: 0.0 },
             count: source.length / 2,
             candidates: [
-              { name: 'float64', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true }
+              { name: 'float64', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true, semantic_class: semantic_class }
             ]
           }
         end
 
         candidates = []
         float32_bytes = source.pack('e*')
-        candidates << uv_candidate('float32', FLOAT32, float32_bytes, [0.0, 0.0], [0.0, 0.0], source, float32_bytes.unpack('e*'), max_error, 0)
+        candidates << uv_candidate('float32', FLOAT32, float32_bytes, [0.0, 0.0], [0.0, 0.0], source, float32_bytes.unpack('e*'), max_error, 0, semantic_class)
 
         half_values = source.map { |value| float_to_half(value) }
         half_bytes = half_values.pack('S<*')
         half_decoded = half_values.map { |value| half_to_float(value) }
-        candidates << uv_candidate('float16', FLOAT16, half_bytes, [0.0, 0.0], [0.0, 0.0], source, half_decoded, max_error, 2)
+        candidates << uv_candidate('float16', FLOAT16, half_bytes, [0.0, 0.0], [0.0, 0.0], source, half_decoded, max_error, 2, semantic_class)
 
         minimum, maximum = uv_bounds(source)
         center = 2.times.map { |axis| (minimum[axis] + maximum[axis]) * 0.5 }
@@ -462,7 +463,7 @@ module BOMEngine
         end
         quantized_bytes = integers.pack('s<*')
         quantized_decoded = uv_dequantize(integers, center, scale)
-        candidates << uv_candidate('int16_quantized', INT16_QUANTIZED, quantized_bytes, center, scale, source, quantized_decoded, max_error, 1)
+        candidates << uv_candidate('int16_quantized', INT16_QUANTIZED, quantized_bytes, center, scale, source, quantized_decoded, max_error, 1, semantic_class)
 
         previous = 0
         delta_bytes = integers.map do |integer|
@@ -470,10 +471,10 @@ module BOMEngine
           previous = integer
           Binary.write_zigzag(delta)
         end.join.b
-        candidates << uv_candidate('delta_varint', DELTA_VARINT, delta_bytes, center, scale, source, quantized_decoded, max_error, 3)
+        candidates << uv_candidate('delta_varint', DELTA_VARINT, delta_bytes, center, scale, source, quantized_decoded, max_error, 3, semantic_class)
 
         float64_bytes = source.pack('E*')
-        candidates << uv_candidate('float64', FLOAT64, float64_bytes, [0.0, 0.0], [0.0, 0.0], source, source, max_error, 4)
+        candidates << uv_candidate('float64', FLOAT64, float64_bytes, [0.0, 0.0], [0.0, 0.0], source, source, max_error, 4, semantic_class)
 
         passing = candidates.select { |item| item[:passed] }
         raise 'No UV codec passed the error gate.' if passing.empty?
@@ -512,7 +513,7 @@ module BOMEngine
         values
       end
 
-      def uv_candidate(name, codec, bytes, origin, scale, source, decoded, max_error, complexity)
+      def uv_candidate(name, codec, bytes, origin, scale, source, decoded, max_error, complexity, semantic_class = nil)
         errors = source.each_slice(2).with_index.map do |pair, index|
           offset = index * 2
           Math.sqrt(2.times.map { |axis| (pair[axis] - decoded[offset + axis])**2 }.inject(0.0, :+))
@@ -520,7 +521,7 @@ module BOMEngine
         summary = CodecMath.error_summary(errors)
         {
           name: name, codec: codec, bytes: bytes, origin: origin, scale: scale,
-          errors: summary, passed: summary[:max] <= max_error + 1.0e-12,
+          errors: summary, semantic_class: semantic_class, passed: summary[:max] <= max_error + 1.0e-12,
           raw_bytes: bytes.bytesize, deflate_bytes: CodecMath.compressed_size(bytes), complexity: complexity
         }
       end
