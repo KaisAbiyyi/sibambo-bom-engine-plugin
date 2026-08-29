@@ -17,7 +17,7 @@ module BOMEngine
     #   :compact_geometry, :binary_geometry, :selection_only
     def self.show(has_selection: false, force_selection: false, &callback)
       dialog = UI::HtmlDialog.new(
-        dialog_title: "BOM Engine — Export Settings",
+        dialog_title: "Sibambo BOMC Engine — Export Settings",
         scrollable:   true,
         resizable:    true,
         width:        480,

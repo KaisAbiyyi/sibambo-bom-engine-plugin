@@ -86,7 +86,7 @@ module BOMEngine
     end
 
     def register_menu(menu)
-      menu.add_item('BOM Engine: Export Compiled BOMC...') do
+      menu.add_item('Sibambo BOMC Engine: Export BOMC 1.2...') do
         export_interactive
       end
     end

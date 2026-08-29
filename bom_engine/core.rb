@@ -1,6 +1,7 @@
 # bom_engine/core.rb
 # Export controller — orchestrates all modules and registers SketchUp menu/toolbar.
 
+require_relative 'branding'
 require_relative 'constants'
 require_relative 'logger'
 require_relative 'traversal'
@@ -35,7 +36,7 @@ module BOMEngine
 
     unless file_loaded?(__FILE__)
       plugins_menu = UI.menu("Plugins")
-      display_name = defined?(BOMEngine::PLUGIN_DISPLAY_NAME) ? BOMEngine::PLUGIN_DISPLAY_NAME : 'BOM Engine'
+      display_name = defined?(BOMEngine::PLUGIN_DISPLAY_NAME) ? BOMEngine::PLUGIN_DISPLAY_NAME : Branding::EXTENSION_NAME
       bom_menu     = plugins_menu.add_submenu(display_name)
 
       bom_menu.add_item("Quick Export for Model-Eval") { quick_export_for_model_eval }
@@ -53,7 +54,7 @@ module BOMEngine
       bom_menu.add_separator
       bom_menu.add_item("Toggle Real-Time Observer") { toggle_observer }
       bom_menu.add_separator
-      bom_menu.add_item("About BOM Engine") { show_about }
+      bom_menu.add_item("About #{display_name}") { show_about }
 
       # Toolbar
       toolbar = UI::Toolbar.new(display_name)
@@ -118,7 +119,7 @@ module BOMEngine
     def self.start_model_eval_export(model, batch_size, mode = 'auto')
       output_path = model_eval_output_path(model)
       ConversionJob.start(
-        title: 'BOM Engine — Converting Model-Eval',
+        title: 'Sibambo BOMC Engine — Converting Model-Eval',
         output_path: output_path,
         batch_size: batch_size
       ) do |progress|
@@ -242,7 +243,7 @@ module BOMEngine
       Logger.info("Export started [#{mode_label}] → #{out_path}")
       start_time = Time.now
 
-      model.start_operation("BOM Engine Export", true)
+      model.start_operation("Sibambo BOMC Engine Export", true)
 
       begin
         level = settings[:export_level].to_s
@@ -597,13 +598,7 @@ module BOMEngine
     end
 
     def self.show_about
-      UI.messagebox(
-        "BOM Engine Exporter v#{BOMEngine::PLUGIN_VERSION}\n\n" \
-        "Mengekspor model SketchUp ke JSON terstruktur\n" \
-        "untuk estimasi biaya konstruksi berbasis SNI-AHSP.\n\n" \
-        "Proyek Riset — Sibambo 2026",
-        MB_OK
-      )
+      UI.messagebox(Branding.about_text, MB_OK)
     end
 
   end
