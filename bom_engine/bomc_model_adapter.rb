@@ -1,6 +1,5 @@
-# Normalizes Canonical v3 or compact Model-Eval JSON into BOMC compiler input.
-
 require 'digest'
+require_relative 'scene_clip_program'
 
 module BOMEngine
   module BOMC
@@ -92,6 +91,19 @@ module BOMEngine
         face_index, edge_index = index_primitive_ids(meshes)
         scenes = adapt_scenes(payload[:scenes], tag_index, node_index, face_index, edge_index)
 
+        clip_planes = Array(payload[:clip_planes]).map do |cp|
+          SceneClipProgram.create_plane(
+            stable_id: cp[:stable_id] || cp[:id],
+            source_persistent_id: cp[:source_persistent_id] || cp[:persistent_id] || cp[:id],
+            origin_m: cp[:origin_m] || cp[:origin] || [0.0, 0.0, 0.0],
+            normal: cp[:normal] || [0.0, 0.0, 1.0],
+            keep_side: cp[:keep_side] || 1,
+            owner_definition_id: cp[:owner_definition_id] || cp[:definition_id],
+            owner_instance_id: cp[:owner_instance_id] || cp[:instance_id],
+            flags: cp[:flags] || 0
+          )
+        end
+
         finalize(
           source: payload[:source] || {},
           coordinate_system: payload[:coordinate_system] || {},
@@ -102,7 +114,8 @@ module BOMEngine
           definitions: definitions,
           instances: instances,
           root_node: root_node,
-          scenes: scenes
+          scenes: scenes,
+          clip_planes: clip_planes
         )
       end
 
@@ -601,6 +614,7 @@ module BOMEngine
         }
         model[:bounds] = model_bounds(model[:meshes])
         model[:scenes] = Array(model[:scenes])
+        model[:clip_planes] = Array(model[:clip_planes])
         model
       end
       private_class_method :finalize

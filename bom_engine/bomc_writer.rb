@@ -8,6 +8,7 @@ require_relative 'bomc_model_adapter'
 require_relative 'bomc_profile'
 require_relative 'bomc_encoding_contract'
 require_relative 'bomc_geometry_policy'
+require_relative 'scene_clip_program'
 
 module BOMEngine
   module BOMCWriter
@@ -179,6 +180,10 @@ module BOMEngine
         scenes = Array(@model[:scenes])
         if !scenes.empty?
           all_sections << section(BOMC::SECTION_SCENES, scenes.length, build_scenes_section, true)
+        end
+        clip_planes = Array(@model[:clip_planes])
+        if !clip_planes.empty?
+          all_sections << section(BOMC::SECTION_CLIP_PLANES, clip_planes.length, build_clip_planes_section, true)
         end
         all_sections << section(BOMC::SECTION_DEBUG, debug_records.length, build_debug_section, true) if @profile == :debug
         required = [
@@ -724,6 +729,90 @@ module BOMEngine
         bytes
       end
 
+      def build_string_dictionary
+        candidates = []
+        source = @model[:source] || {}
+        unless @minimal_metadata
+          candidates << source[:file_name]
+          candidates << source[:model_name]
+        end
+        @model[:materials].each do |material|
+          candidates << material[:name]
+          candidates << material[:display_name]
+          candidates << material[:stable_id]
+        end
+        @model[:tags].each do |tag|
+          candidates << tag[:name]
+          candidates << tag[:id]
+          candidates << tag[:stable_id]
+        end
+        @model[:definitions].each do |definition|
+          candidates << definition[:name]
+          candidates << definition[:stable_id]
+        end
+        @model[:instances].each_with_index do |instance, index|
+          notify(:compile_metadata, index + 1, @model[:instances].length)
+          candidates << instance[:name]
+          candidates << instance[:id]
+          candidates << instance[:stable_id]
+          candidates << instance[:semantic_label]
+        end
+        @model[:meshes].each do |mesh|
+          candidates << mesh[:stable_id]
+          mesh[:faces].each { |face| candidates << face[:semantic_label] }
+        end
+        fallback_records.each { |record| candidates << record[:text] }
+        Array(@model[:scenes]).each do |scene|
+          candidates << scene[:name]
+          candidates << scene[:description]
+          candidates << scene[:stable_id]
+          candidates << scene[:visibility_signature]
+          vis = scene[:visibility] || {}
+          Array(vis[:visible_node_overrides]).each { |id| candidates << id }
+          Array(vis[:hidden_node_overrides]).each { |id| candidates << id }
+          Array(vis[:visible_tag_ids]).each { |id| candidates << id }
+          Array(vis[:hidden_tag_ids]).each { |id| candidates << id }
+          Array(vis[:unresolved_hidden_node_overrides]).each { |id| candidates << id }
+          Array(vis[:unresolved_visible_node_overrides]).each { |id| candidates << id }
+          [:visible_face_overrides, :hidden_face_overrides, :visible_edge_overrides, :hidden_edge_overrides,
+           :unresolved_visible_face_overrides, :unresolved_hidden_face_overrides,
+           :unresolved_visible_edge_overrides, :unresolved_hidden_edge_overrides,
+           :unresolved_primitive_overrides].each do |key|
+            Array(vis[key]).each { |id| candidates << id }
+          end
+          Array(scene.dig(:section_state, :active_section_plane_ids)).each { |id| candidates << id }
+        end
+        Array(@model[:clip_planes]).each do |plane|
+          candidates << plane[:stable_id]
+          candidates << plane[:source_persistent_id]
+          candidates << plane[:owner_definition_id]
+          candidates << plane[:owner_instance_id]
+        end
+        if @profile == :debug
+          each_debug_string { |value| candidates << value }
+        end
+        @strings = candidates.compact.map(&:to_s).uniq.sort
+        @string_index = {}
+        @strings.each_with_index { |value, index| @string_index[value] = index }
+      end
+
+      def build_strings_section
+        data = +''.b
+        offsets = [0]
+        payload = +''.b
+        @strings.each do |string|
+          bytes = string.encode(Encoding::UTF_8).b
+          payload << bytes
+          offsets << payload.bytesize
+        end
+        header = [1, 0, 0, 0, @strings.length, payload.bytesize].pack('CCCCVV')
+        header + offsets.pack('V*') + payload
+      end
+
+      def build_clip_planes_section
+        SceneClipProgram.build_section(@model[:clip_planes], @string_index)
+      end
+
       def build_scenes_section
         scenes = Array(@model[:scenes])
         tags = Array(@model[:tags])
@@ -733,8 +822,8 @@ module BOMEngine
 		faces = @model[:meshes].flat_map { |mesh| Array(mesh[:faces]) }
 		edges = @model[:meshes].flat_map { |mesh| Array(mesh[:edges]) }
 
-        # Section 19 Version 4 adds stable, compiled face/edge visibility and section-plane identities.
-        data = [4, tag_count, scenes.length].pack('CCV')
+        # Section 19 Version 5 adds compiled active clip plane indices referencing Section 21.
+        data = [5, tag_count, scenes.length].pack('CCV')
 
         # Tag stable ID string indices
         tags.each_with_index do |tag, idx|
@@ -742,6 +831,10 @@ module BOMEngine
           str_idx = @string_index[tag_id.to_s] || @string_index[tag[:name].to_s] || 0
           data << BOMC::Binary.write_varuint(str_idx)
         end
+
+        clip_planes = Array(@model[:clip_planes])
+        plane_index_by_id = {}
+        clip_planes.each_with_index { |p, idx| plane_index_by_id[p[:stable_id].to_s] = idx }
 
         scenes.each do |scene|
           camera = scene[:camera] || {}
@@ -853,6 +946,13 @@ module BOMEngine
           section_ids = Array(scene.dig(:section_state, :active_section_plane_ids))
           data << BOMC::Binary.write_varuint(section_ids.length)
           section_ids.each { |id| data << BOMC::Binary.write_varuint(@string_index[id.to_s] || 0) }
+
+          clip_indices = Array(scene.dig(:section_state, :active_clip_plane_indices))
+          if clip_indices.empty? && !section_ids.empty?
+            clip_indices = section_ids.map { |pid| plane_index_by_id[pid.to_s] }.compact
+          end
+          data << BOMC::Binary.write_varuint(clip_indices.length)
+          clip_indices.each { |cidx| data << BOMC::Binary.write_varuint(cidx) }
         end
 
         data

@@ -633,15 +633,87 @@ module BOMEngine
 
     def extract_active_section_planes(page)
       planes = []
+      return planes if page.nil?
       if page.respond_to?(:active_section_planes)
         raw = (begin page.active_section_planes.to_a rescue [] end) || []
         raw.each do |plane|
           planes << "section:#{safe_persistent_id(plane)}"
         end
+      elsif page.respond_to?(:active_section_plane) && page.active_section_plane
+        planes << "section:#{safe_persistent_id(page.active_section_plane)}"
       end
       planes
     rescue StandardError
       []
+    end
+
+    def collect_model_clip_planes(model)
+      planes = []
+      return planes if model.nil?
+
+      # 1. Global / root section planes
+      if model.respond_to?(:entities)
+        entities = (begin model.entities.to_a rescue [] end) || []
+        entities.each do |entity|
+          next unless entity.class.to_s =~ /SectionPlane/
+          planes << create_clip_plane_record(entity)
+        end
+      end
+
+      # 2. Nested section planes in definitions
+      if model.respond_to?(:definitions)
+        defs = (begin model.definitions.to_a rescue [] end) || []
+        defs.each do |definition|
+          next if definition.respond_to?(:image?) && definition.image?
+          def_id = "def:#{safe_persistent_id(definition)}"
+          def_entities = (begin definition.entities.to_a rescue [] end) || []
+          def_entities.each do |entity|
+            next unless entity.class.to_s =~ /SectionPlane/
+            planes << create_clip_plane_record(entity, owner_definition_id: def_id)
+          end
+        end
+      end
+
+      planes
+    rescue StandardError
+      []
+    end
+
+    def create_clip_plane_record(plane, owner_definition_id: nil, owner_instance_id: nil)
+      pid = safe_persistent_id(plane)
+      stable_id = "section:#{pid}"
+      orig = [0.0, 0.0, 0.0]
+      norm = [0.0, 0.0, 1.0]
+
+      if plane.respond_to?(:get_plane)
+        eq = (begin plane.get_plane.to_a rescue nil end)
+        if eq && eq.length == 4
+          norm = [eq[0].to_f, eq[1].to_f, eq[2].to_f]
+          dist_in = eq[3].to_f
+          # In SketchUp ax + by + cz + d = 0 in inches
+          # Normal is unit vector. Origin point on plane = -d * normal * IN_TO_M
+          dist_m = dist_in * Constants::IN_TO_M
+          orig = [-norm[0] * dist_m, -norm[1] * dist_m, -norm[2] * dist_m]
+        end
+      elsif plane.respond_to?(:origin) && plane.respond_to?(:normal)
+        orig = point_array(plane.origin)
+        norm = vector_array(plane.normal)
+      end
+
+      flags = 0
+      flags |= 0x01 if plane.respond_to?(:active?) && plane.active?
+      flags |= 0x02 if plane.respond_to?(:hidden?) && plane.hidden?
+
+      {
+        stable_id: stable_id,
+        source_persistent_id: pid,
+        origin_m: orig,
+        normal: norm,
+        keep_side: 1,
+        owner_definition_id: owner_definition_id,
+        owner_instance_id: owner_instance_id,
+        flags: flags
+      }
     end
 
     def point_array(point)

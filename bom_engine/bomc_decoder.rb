@@ -5,6 +5,7 @@ require_relative 'bomc_format'
 require_relative 'bomc_codecs'
 require_relative 'bomc_encoding_contract'
 require_relative 'scene_visibility_resolver'
+require_relative 'scene_clip_program'
 
 module BOMEngine
   module BOMCDecoder
@@ -123,6 +124,12 @@ module BOMEngine
                               BOMCEncodingContract.decode(section_bytes(BOMC::SECTION_ENCODING_CONTRACT))
                             end
 
+        clip_planes = if @sections[BOMC::SECTION_CLIP_PLANES]
+                        SceneClipProgram.decode_section(section_bytes(BOMC::SECTION_CLIP_PLANES), strings)
+                      else
+                        []
+                      end
+
         {
           format: { name: 'BOMC', version: "#{@container[:header][:major]}.#{@container[:header][:minor]}", profile: model[:profile] },
           source: model[:source],
@@ -141,6 +148,7 @@ module BOMEngine
           textures: textures,
           coverage: coverage,
           fallback: fallback,
+          clip_planes: clip_planes,
           debug: debug,
           encoding_contract: encoding_contract,
           container: {
@@ -745,7 +753,7 @@ module BOMEngine
         return [] if bytes.nil? || bytes.empty?
 
         version, tag_count, scenes_count = bytes.byteslice(0, 6).unpack('CCV')
-        raise 'BOMC invalid: scenes section version.' unless [1, 2, 3, 4].include?(version)
+        raise 'BOMC invalid: scenes section version.' unless [1, 2, 3, 4, 5].include?(version)
         tag_bitset_bytes = (tag_count + 7) / 8
         cursor = 6
 
@@ -871,6 +879,14 @@ module BOMEngine
               str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
               primitive[:active_section_plane_ids] << string_value(strings, str_idx)
             end
+            if version >= 5
+              clip_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+              primitive[:active_clip_plane_indices] = []
+              clip_count.times do
+                cidx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
+                primitive[:active_clip_plane_indices] << cidx
+              end
+            end
           end
 
           visible_tag_ids = visible_tag_indices.map do |i|
@@ -890,6 +906,8 @@ module BOMEngine
 
           stable_id = strings[id_idx].to_s
           stable_id = "scene:doc:#{name_idx}" if stable_id.empty?
+
+          rendering_support = (version >= 5 && (primitive[:active_clip_plane_indices]&.any? || !primitive[:active_section_plane_ids].empty?)) ? 'full' : 'metadata-only'
 
           {
             id: stable_id,
@@ -928,7 +946,7 @@ module BOMEngine
               unresolved_hidden_node_overrides: unresolved_hidden_overrides,
               unresolved_visible_node_override_count: unresolved_visible_overrides.length,
               unresolved_hidden_node_override_count: unresolved_hidden_overrides.length,
-              **primitive.reject { |key, _| key == :active_section_plane_ids },
+              **primitive.reject { |key, _| key == :active_section_plane_ids || key == :active_clip_plane_indices },
               resolved_visible_primitive_override_count: primitive[:visible_face_indices].length + primitive[:visible_edge_indices].length,
               resolved_hidden_primitive_override_count: primitive[:hidden_face_indices].length + primitive[:hidden_edge_indices].length,
               unresolved_visible_primitive_override_count: primitive[:unresolved_visible_face_overrides].length + primitive[:unresolved_visible_edge_overrides].length,
@@ -939,7 +957,11 @@ module BOMEngine
             stores_hidden_objects: stores_objects,
             stores_hidden_geometry: stores_geometry,
             stores_section_planes: stores_sections,
-            section_state: { active_section_plane_ids: primitive[:active_section_plane_ids], rendering_support: 'metadata-only' },
+            section_state: {
+              active_section_plane_ids: primitive[:active_section_plane_ids],
+              active_clip_plane_indices: primitive[:active_clip_plane_indices] || [],
+              rendering_support: rendering_support
+            },
             visibility_signature: strings[sig_idx].to_s
           }
         end

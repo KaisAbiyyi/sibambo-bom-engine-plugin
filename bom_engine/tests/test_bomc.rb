@@ -52,6 +52,7 @@ module BOMEngine
         test_model_eval_adapter
         test_differential_validation
         test_shared_definition_scaling
+        test_section_clip_planes
         puts 'BOMC Tests: ALL PASSED'
         true
       rescue StandardError => error
@@ -117,7 +118,7 @@ module BOMEngine
         directory_only = BOMC::Container.read_directory(bytes)
 
         assert(bytes.byteslice(0, 8) == "BOMC\r\n\x1a\n".b, 'BOMC magic is explicit')
-        assert(parsed[:header][:major] == 1 && parsed[:header][:minor] == 1, 'compact BOMC container version is 1.1')
+        assert(parsed[:header][:major] == 1 && (parsed[:header][:minor] == 1 || parsed[:header][:minor] == 2), 'compact BOMC container version is 1.1 or 1.2')
         assert(parsed[:header][:header_bytes] == 32, 'fixed header is 32 bytes')
         assert(parsed[:header][:directory_entry_bytes] == 24, 'compact directory entry is 24 bytes')
         assert(legacy_parsed[:header][:minor] == 0, 'legacy BOMC 1.0 remains readable')
@@ -344,7 +345,7 @@ module BOMEngine
         decoded = BOMCDecoder.decode(result[:bytes])
         types = decoded[:directory].map { |section| section[:type] }
 
-        assert(decoded[:format][:version] == '1.1', 'sparse compiled model reports BOMC 1.1')
+        assert(decoded[:format][:version] == '1.1' || decoded[:format][:version] == '1.2', 'sparse compiled model reports BOMC 1.1 or 1.2')
         assert(!types.include?(BOMC::SECTION_MATERIALS), 'empty material section is omitted')
         assert(!types.include?(BOMC::SECTION_TAGS), 'empty tag section is omitted')
         assert(!types.include?(BOMC::SECTION_MESHES), 'empty geometry sections are omitted')
@@ -633,6 +634,53 @@ module BOMEngine
           graph[:definitions][0][:node_ids] << id
         end
         graph
+      end
+
+      def test_section_clip_planes
+        graph = compiled_fixture
+        graph[:clip_planes] = [
+          {
+            id: 'section:plane-1',
+            source_persistent_id: 'pid-1',
+            origin_m: [1.0, 2.0, 3.0],
+            normal: [0.0, 0.0, 1.0],
+            keep_side: 1,
+            flags: 1
+          }
+        ]
+        graph[:scenes] = [
+          {
+            id: 'scene:doc:cut',
+            name: 'Cut Scene',
+            description: '',
+            is_active_at_export: true,
+            camera: { projection: 'perspective', eye_m: [10, 10, 10], target_m: [0, 0, 0], up: [0, 0, 1], field_of_view_degrees: 35.0, aspect_ratio: 1.0 },
+            use_camera: true,
+            transition_time_seconds: 0.0,
+            visibility: { visible_tag_ids: ['tag-fixture-1'], hidden_tag_ids: [], visible_node_overrides: [], hidden_node_overrides: [] },
+            stores_tag_visibility: true,
+            stores_hidden_objects: true,
+            stores_hidden_geometry: false,
+            stores_section_planes: true,
+            section_state: { active_section_plane_ids: ['section:plane-1'] },
+            visibility_signature: 'sig-cut-test'
+          }
+        ]
+
+        packed = BOMCWriter.pack(graph)
+        assert(!packed[:bytes].nil?, 'Section clip planes pack succeeds')
+
+        decoded = BOMCDecoder.decode(packed[:bytes])
+        assert(decoded[:clip_planes].length == 1, 'Decoded clip planes has 1 record')
+        plane = decoded[:clip_planes].first
+        assert(plane[:stable_id] == 'section:plane-1', 'Clip plane stable_id matches')
+        assert(plane[:origin_m] == [1.0, 2.0, 3.0], 'Clip plane origin matches')
+        assert(plane[:normal] == [0.0, 0.0, 1.0], 'Clip plane normal matches')
+        assert((plane[:plane_constant] - (-3.0)).abs < 1.0e-6, 'Clip plane constant matches -dot(n, orig)')
+
+        scene = decoded[:scenes].first
+        assert(scene.dig(:section_state, :active_clip_plane_indices) == [0], 'Scene v5 references active clip plane index 0')
+        assert(scene.dig(:section_state, :rendering_support) == 'full', 'Scene v5 reports full rendering support')
       end
     end
   end

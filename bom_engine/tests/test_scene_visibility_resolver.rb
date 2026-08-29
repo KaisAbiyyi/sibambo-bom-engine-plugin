@@ -587,5 +587,136 @@ module BOMEngine
       assert_equal [1], scene.dig(:visibility, :visible_node_indices) # node:inst:1 is index 1
       assert_equal [2], scene.dig(:visibility, :hidden_node_indices)  # node:inst:2 is index 2
     end
+
+    def test_section_clip_plane_capture_and_scene_v5_resolution
+      graph = {
+        format: { name: 'canonical', version: '3.0.0' },
+        materials: [{ id: 'mat:1', name: 'Material 1' }],
+        tags: [{ id: 'tag:1', name: 'Tag 1', visible: true }],
+        definitions: [
+          { id: 'def:root', name: 'Root' },
+          { id: 'def:table', name: 'Table', mesh_id: 'mesh:1' }
+        ],
+        meshes: [
+          {
+            id: 'mesh:1',
+            definition_id: 'def:table',
+            positions_m: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+            faces: [{ id: 'f1', vertices: [0, 1, 2], material_id: 'mat:1', tag_id: 'tag:1' }],
+            edges: []
+          }
+        ],
+        nodes: [
+          { id: 'node:root', kind: 'root', name: 'Root', definition_id: 'def:root', transform_id: 0 },
+          { id: 'node:table_1', kind: 'component_instance', name: 'Table 1', definition_id: 'def:table', transform_id: 0, persistent_id: '101' },
+          { id: 'node:table_2', kind: 'component_instance', name: 'Table 2', definition_id: 'def:table', transform_id: 0, persistent_id: '102' }
+        ],
+        transforms: [[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]],
+        clip_planes: [
+          {
+            id: 'section:global_cut',
+            source_persistent_id: '9001',
+            origin_m: [0.0, 0.0, 1.2],
+            normal: [0.0, 0.0, 1.0],
+            keep_side: 1,
+            flags: 1
+          },
+          {
+            id: 'section:table_cut',
+            source_persistent_id: '9002',
+            origin_m: [0.5, 0.0, 0.0],
+            normal: [1.0, 0.0, 0.0],
+            keep_side: 1,
+            owner_definition_id: 'def:table',
+            owner_instance_id: 'node:table_1',
+            flags: 1
+          }
+        ],
+        scenes: [
+          {
+            id: 'scene:doc:1',
+            name: 'Scene with Global Cut',
+            description: '',
+            is_active_at_export: true,
+            camera: { projection: 'perspective', eye_m: [10, 10, 10], target_m: [0, 0, 0], up: [0, 0, 1], field_of_view_degrees: 35.0, aspect_ratio: 1.0 },
+            use_camera: true,
+            transition_time_seconds: 0.0,
+            visibility: { visible_tag_ids: ['tag:1'], hidden_tag_ids: [], visible_node_overrides: [], hidden_node_overrides: [] },
+            stores_tag_visibility: true,
+            stores_hidden_objects: true,
+            stores_hidden_geometry: false,
+            stores_section_planes: true,
+            section_state: { active_section_plane_ids: ['section:global_cut'] },
+            visibility_signature: 'sig_cut_1'
+          },
+          {
+            id: 'scene:doc:2',
+            name: 'Scene with Nested Cut',
+            description: '',
+            is_active_at_export: false,
+            camera: { projection: 'perspective', eye_m: [10, 10, 10], target_m: [0, 0, 0], up: [0, 0, 1], field_of_view_degrees: 35.0, aspect_ratio: 1.0 },
+            use_camera: true,
+            transition_time_seconds: 0.0,
+            visibility: { visible_tag_ids: ['tag:1'], hidden_tag_ids: [], visible_node_overrides: [], hidden_node_overrides: [] },
+            stores_tag_visibility: true,
+            stores_hidden_objects: true,
+            stores_hidden_geometry: false,
+            stores_section_planes: true,
+            section_state: { active_section_plane_ids: ['section:table_cut'] },
+            visibility_signature: 'sig_cut_2'
+          },
+          {
+            id: 'scene:doc:3',
+            name: 'Scene without Cut',
+            description: '',
+            is_active_at_export: false,
+            camera: { projection: 'perspective', eye_m: [10, 10, 10], target_m: [0, 0, 0], up: [0, 0, 1], field_of_view_degrees: 35.0, aspect_ratio: 1.0 },
+            use_camera: true,
+            transition_time_seconds: 0.0,
+            visibility: { visible_tag_ids: ['tag:1'], hidden_tag_ids: [], visible_node_overrides: [], hidden_node_overrides: [] },
+            stores_tag_visibility: true,
+            stores_hidden_objects: true,
+            stores_hidden_geometry: false,
+            stores_section_planes: false,
+            section_state: { active_section_plane_ids: [] },
+            visibility_signature: 'sig_cut_3'
+          }
+        ]
+      }
+
+      packed = BOMCWriter.pack(graph)
+      decoded = BOMCDecoder.decode(packed[:bytes])
+
+      assert_equal 2, decoded[:clip_planes].length
+      global_cut = decoded[:clip_planes][0]
+      assert_equal 'section:global_cut', global_cut[:stable_id]
+      assert_equal [0.0, 0.0, 1.2], global_cut[:origin_m]
+      assert_equal [0.0, 0.0, 1.0], global_cut[:normal]
+      assert_in_delta(-1.2, global_cut[:plane_constant], 1.0e-6)
+      assert_nil global_cut[:owner_definition_id]
+
+      nested_cut = decoded[:clip_planes][1]
+      assert_equal 'section:table_cut', nested_cut[:stable_id]
+      assert_equal 'def:table', nested_cut[:owner_definition_id]
+      assert_equal 'node:table_1', nested_cut[:owner_instance_id]
+
+      scenes = decoded[:scenes]
+      assert_equal 3, scenes.length
+
+      # Scene 1: references clip plane 0 (global)
+      assert_equal ['section:global_cut'], scenes[0].dig(:section_state, :active_section_plane_ids)
+      assert_equal [0], scenes[0].dig(:section_state, :active_clip_plane_indices)
+      assert_equal 'full', scenes[0].dig(:section_state, :rendering_support)
+
+      # Scene 2: references clip plane 1 (nested)
+      assert_equal ['section:table_cut'], scenes[1].dig(:section_state, :active_section_plane_ids)
+      assert_equal [1], scenes[1].dig(:section_state, :active_clip_plane_indices)
+      assert_equal 'full', scenes[1].dig(:section_state, :rendering_support)
+
+      # Scene 3: no active clip plane
+      assert_equal [], scenes[2].dig(:section_state, :active_section_plane_ids)
+      assert_equal [], scenes[2].dig(:section_state, :active_clip_plane_indices)
+      assert_equal 'metadata-only', scenes[2].dig(:section_state, :rendering_support)
+    end
   end
 end
