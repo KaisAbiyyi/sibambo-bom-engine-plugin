@@ -61,12 +61,19 @@
     document.getElementById('title').textContent = 'Converting selesai';
     document.getElementById('stage').textContent = 'File siap digunakan oleh model-eval.';
     document.getElementById('elapsed').textContent = data.elapsed_seconds.toFixed(1) + ' detik';
-    var gate = data.gate_status === 'pass'
-      ? 'PASS · saved ' + formatBytes(data.savings_bytes || 0)
-      : (data.gate_status === 'over_budget'
-        ? 'COMPLETE · ' + formatBytes(Math.abs(data.savings_bytes || 0)) + ' larger than SKP'
-        : 'source-size unavailable');
-    document.getElementById('summary').textContent = (data.nodes || 0).toLocaleString() + ' objek · ' + (data.triangles || 0).toLocaleString() + ' triangles · ' + formatBytes(data.bytes || 0) + ' · ' + gate;
+    var profile = String(data.profile || 'visual').toUpperCase();
+    var gate = '';
+    if (data.profile === 'exact') {
+      gate = 'Exact profile · No size guarantee';
+    } else if (data.gate_status === 'pass') {
+      var ratioStr = data.source_bytes ? ' (' + ((data.bytes / data.source_bytes) * 100).toFixed(1) + '% ratio)' : '';
+      gate = profile + ' PASS · ' + formatBytes(data.bytes || 0) + ratioStr + ' · saved ' + formatBytes(data.savings_bytes || 0);
+    } else if (data.gate_status === 'over_budget' || data.gate_status === 'rejected_over_budget') {
+      gate = 'Export not published · Reason: byte budget not feasible within fidelity contract';
+    } else {
+      gate = profile + ' · ' + formatBytes(data.bytes || 0);
+    }
+    document.getElementById('summary').textContent = (data.nodes || 0).toLocaleString() + ' objek · ' + (data.triangles || 0).toLocaleString() + ' triangles · ' + gate;
     finishActions(true);
   }
   function failConversion(data) {

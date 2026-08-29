@@ -17,7 +17,7 @@ end
 
 module BOMEngine
   module BOMCExtension
-    DEFAULT_PROFILE = :production
+    DEFAULT_PROFILE = :visual
     FORMAT_EXTENSION = '.bomc'.freeze
 
     module_function
@@ -63,17 +63,18 @@ module BOMEngine
       chosen = UI.savepanel('Export Compiled BOMC', File.dirname(suggested), File.basename(suggested))
       return nil if chosen.nil?
       chosen += FORMAT_EXTENSION unless chosen.downcase.end_with?(FORMAT_EXTENSION)
-      settings = choose_processing_settings
-      return nil if settings.nil?
+      opts = choose_processing_settings
+      return nil if opts.nil?
+      selected_profile, settings = opts
       ConversionJob.start(
-        title: 'Export Compiled BOMC 1.1',
+        title: 'Export Compiled BOMC 1.2',
         output_path: chosen,
         batch_size: settings[:max_items]
       ) do |progress|
         export(
           model,
           output_path: chosen,
-          profile: DEFAULT_PROFILE,
+          profile: selected_profile,
           progress: progress,
           settings: settings
         )
@@ -92,23 +93,35 @@ module BOMEngine
 
     def choose_processing_settings
       answer = UI.inputbox(
-        ['Processing preset'],
-        ['Balanced'],
-        ['Light / Stable|Balanced|Fast|Custom'],
-        'BOMC Responsiveness'
+        ['Profile', 'Processing preset'],
+        ['Visual (Recommended for web)', 'Balanced'],
+        ['Visual (Recommended for web)|Research (Reproducible bounded)|Exact (Reference fidelity)', 'Light / Stable|Balanced|Fast|Custom'],
+        'BOMC 1.2 Options'
       )
       return nil if answer.nil?
-      label = answer[0].to_s.downcase
-      mode = label.start_with?('light') ? :light : label.to_sym
-      return BOMCProcessing.settings(mode) unless mode == :custom
+      prof_str = answer[0].to_s.downcase
+      profile = if prof_str.start_with?('exact')
+        :exact
+      elsif prof_str.start_with?('research')
+        :research
+      else
+        :visual
+      end
 
-      custom = UI.inputbox(
-        ['Maximum items per slice', 'Maximum milliseconds per slice'],
-        [256, 24.0],
-        'Custom BOMC Budget'
-      )
-      return nil if custom.nil?
-      BOMCProcessing.settings(:custom, custom: { max_items: custom[0], max_ms: custom[1] })
+      label = answer[1].to_s.downcase
+      mode = label.start_with?('light') ? :light : label.to_sym
+      settings = if mode == :custom
+        custom = UI.inputbox(
+          ['Maximum items per slice', 'Maximum milliseconds per slice'],
+          [256, 24.0],
+          'Custom BOMC Budget'
+        )
+        return nil if custom.nil?
+        BOMCProcessing.settings(:custom, custom: { max_items: custom[0], max_ms: custom[1] })
+      else
+        BOMCProcessing.settings(mode)
+      end
+      [profile, settings]
     end
     private_class_method :choose_processing_settings
 

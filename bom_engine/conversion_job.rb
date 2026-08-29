@@ -146,6 +146,7 @@ module BOMEngine
         savings_bytes: result[:savings_bytes],
         gate_status: result[:status],
         strategy: result[:strategy],
+        profile: result[:profile],
         mode: result[:mode],
         elapsed_seconds: elapsed_seconds,
         nodes: stats[:nodes],
