@@ -483,9 +483,35 @@ versions:
     analysis_payload: "manifest_records_with_scene_profiles"
     approximate_historical_intent: "Shared-universe Scene/Page BOMC exporter preserving top-level SketchUp Face and Edge hide/show overrides as stable identities compiled to runtime indices, with explicit unresolved primitive diagnostics."
     predecessor: "SBE-2026.08.27-02"
-    successor: null
+    successor: "SBE-2026.08.29-01"
     selection_reason: "First production Scene/Page BOMC contract that carries non-instance drawing geometry visibility through Section 19 v4 instead of silently discarding it."
     build_strategy: "git_archive"
     install_enabled: true
     isolated_module: "SibamboHistory::V20260828_01"
 
+  - sequence: 19
+    display_version: "SBE-2026.08.29-01"
+    label: "[18] 2026-08-29 — Scene/Page BOMC — Resilient Texture-Heavy Export"
+    date: "2026-08-29T00:10:00+07:00"
+    source_repository: "https://github.com/KaisAbiyyi/sibambo-bom-engine-plugin"
+    commit_sha: "a158b75dca55766e0d53a74349a9a746e98c06d3"
+    commit_message: "fix(export): publish complete BOMC when size target is missed"
+    classification: "RELEASE"
+    format_family: "bomc_compiled_v1_1_scenes"
+    format_version: "1.1"
+    output_extensions: [".bomc"]
+    compression: "per_section_deflate_or_store"
+    geometry_representation: "bit_packed_varint_quantized_octahedral"
+    definition_instance_model: "compact_definition_instance_table"
+    textures: "embedded_png_jpg_webp_in_section_table"
+    uv: "quantized_or_float32_block"
+    source_edges: "exact_source_edge_sets_with_flags"
+    scenes: "full_visibility_bitsets_and_overrides_section_19_v4_face_edge_masks"
+    analysis_payload: "manifest_records_with_scene_profiles"
+    approximate_historical_intent: "Production Scene/Page BOMC exporter that keeps the smaller-than-SKP target as a diagnostic while atomically publishing the best complete lossless candidate for texture-heavy models."
+    predecessor: "SBE-2026.08.28-01"
+    successor: null
+    selection_reason: "First Evolution Lab exporter that does not reject a valid complete BOMC solely because container bytes exceed the differently compressed source SKP."
+    build_strategy: "git_archive"
+    install_enabled: true
+    isolated_module: "SibamboHistory::V20260829_01"

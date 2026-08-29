@@ -17,7 +17,7 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
-  EVOLUTION_LAB_VERSION = '1.1.21'.freeze
+  EVOLUTION_LAB_VERSION = '1.1.22'.freeze
 
   def self.build
     puts "======================================================================"
@@ -207,6 +207,13 @@ module EvolutionLabBuilder
       content = content.gsub(/require_relative\s+['"]bom_engine\//, "require_relative '")
       content = content.gsub(/require\s+File\.join\(File\.dirname\(__FILE__\),\s*['"]bom_engine['"]/, "require File.join(File.dirname(__FILE__)")
 
+      # The standalone conversion-job test is wrapped by the namespace
+      # transformation above. Keep its assertion helper callable from the
+      # resulting module body instead of leaving it as an instance method.
+      if ver['display_version'] == 'SBE-2026.08.29-01' && File.basename(rb_path) == 'test_conversion_job.rb'
+        content.sub!(/^def assert\(condition, message\)$/, 'def self.assert(condition, message)')
+      end
+
       File.write(rb_path, content, encoding: 'UTF-8')
     end
 
@@ -221,7 +228,7 @@ module EvolutionLabBuilder
     export_kind = historical_export_kind(ver)
     create_cooperative_job(staged_dir, sub_mod)
 
-    if ['SBE-2026.08.27-01', 'SBE-2026.08.27-02', 'SBE-2026.08.28-01'].include?(ver['display_version'])
+    if ['SBE-2026.08.27-01', 'SBE-2026.08.27-02', 'SBE-2026.08.28-01', 'SBE-2026.08.29-01'].include?(ver['display_version'])
       code = <<~RUBY
         # frozen_string_literal: true
         # Entry point for #{ver['label']} (#{ver['display_version']})
@@ -504,7 +511,8 @@ module EvolutionLabBuilder
       '14' => :bomc_scene,
       '15' => :bomc_scene,
       '16' => :bomc_scene,
-      '17' => :bomc_scene
+      '17' => :bomc_scene,
+      '18' => :bomc_scene
     }.fetch(id, :experimental)
   end
 
@@ -910,6 +918,11 @@ module EvolutionLabBuilder
         kind: 'bomc_scene', title: "BOM Engine — Scene/Page BOMC Exporter (#{ver['display_version']})", badge: 'BOMC SCENE V6',
         description: 'BOMC shared-universe dengan Section 19 v4 untuk mask Face/Edge Scene yang terkompilasi.',
         suffix: "__#{ver['display_version']}.bomc", button: 'Export BOMC'
+      },
+      '18' => {
+        kind: 'bomc_scene', title: "BOM Engine — Scene/Page BOMC Exporter (#{ver['display_version']})", badge: 'BOMC SCENE V7',
+        description: 'BOMC Scene/Page tahan model texture-heavy; target ukuran SKP bersifat diagnostik, bukan alasan membuang ekspor lengkap.',
+        suffix: "__#{ver['display_version']}.bomc", button: 'Export BOMC'
       }
     }.fetch(id, nil)
   end
@@ -1040,7 +1053,7 @@ module EvolutionLabBuilder
       </body>
       </html>
     HTML
-    if ver['display_version'] == 'SBE-2026.08.28-01'
+    if ['SBE-2026.08.28-01', 'SBE-2026.08.29-01'].include?(ver['display_version'])
       html.sub!(
         "return path.replace(/(?:_(?:bom|canonical|model-eval|runtime))?.(?:json|bome2|cleanpkg|bomc)(?:.gz)?$/i, '') + OUTPUT_SUFFIX;",
         "path = path.replace(/(?:_(?:bom|canonical|model-eval|runtime))?.(?:json|bome2|cleanpkg|bomc)(?:.gz)?$/i, '');\n" \
@@ -1057,7 +1070,7 @@ module EvolutionLabBuilder
 
     dialog.sub!(generic_title, "dialog_title: #{spec.fetch(:title).inspect}")
     dialog.gsub!(/_canonical\.json/, spec.fetch(:suffix))
-    if ver['display_version'] == 'SBE-2026.08.28-01'
+    if ['SBE-2026.08.28-01', 'SBE-2026.08.29-01'].include?(ver['display_version'])
       dialog.gsub!(/(?:__SBE-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9A-Z]+)+\.bomc/i, spec.fetch(:suffix))
     end
     File.write(dialog_path, dialog, encoding: 'UTF-8')

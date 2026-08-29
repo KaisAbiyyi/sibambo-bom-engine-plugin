@@ -19,7 +19,8 @@ EXPECTED = {
   '14' => :bomc_scene,
   '15' => :bomc_scene,
   '16' => :bomc_scene,
-  '17' => :bomc_scene
+  '17' => :bomc_scene,
+  '18' => :bomc_scene
 }.freeze
 
 root = File.expand_path('../..', __dir__)

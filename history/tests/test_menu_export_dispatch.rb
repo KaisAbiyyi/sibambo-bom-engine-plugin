@@ -72,11 +72,11 @@ lab = UI.extensions_menu.submenus.fetch('Sibambo BOM Engine Evolution Lab')
 major = lab.submenus.fetch('Major & Release Versions')
 
 version_items = major.items.select { |label, _callback| label.match?(/^\[\d{2}\]/) }
-raise "expected 17 version items, got #{version_items.length}" unless version_items.length == 17
+raise "expected 18 version items, got #{version_items.length}" unless version_items.length == 18
 
 version_items.each_value(&:call)
 
-expected_ids = (1..17).map { |number| format('%02d', number) }
+expected_ids = (1..18).map { |number| format('%02d', number) }
 actual = SibamboHistory::EvolutionLab.test_current_exports || []
 actual_ids = actual.map(&:first)
 raise "wrong current-model dispatch: #{actual_ids.inspect}" unless actual_ids == expected_ids
@@ -86,7 +86,7 @@ raise 'obsolete multi-model batch menu is still visible' if lab.items.key?('Batc
 
 lab.items.fetch('About Evolution Lab').call
 about = UI.last_message.to_s
-raise 'About dialog missing Evolution Lab version' unless about.include?('Evolution Lab version: v1.1.21')
-raise 'About dialog missing latest milestone' unless about.include?('SBE-2026.08.28-01')
+raise 'About dialog missing Evolution Lab version' unless about.include?('Evolution Lab version: v1.1.22')
+raise 'About dialog missing latest milestone' unless about.include?('SBE-2026.08.29-01')
 
 puts "menu export dispatch: PASS (#{version_items.length} current-model entries; no multi-model batch menu)"

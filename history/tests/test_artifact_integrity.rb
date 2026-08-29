@@ -25,7 +25,7 @@ end
 # 1. Verify Master RBZ
 manifest = JSON.parse(File.read(versions_path, encoding: 'UTF-8'))
 versions = manifest['versions']
-master_rbz_name = 'sibambo_bom_engine_evolution_lab_v1.1.21.rbz'
+master_rbz_name = 'sibambo_bom_engine_evolution_lab_v1.1.22.rbz'
 master_rbz_path = File.join(dist_dir, master_rbz_name)
 
 raise "Master RBZ missing: #{master_rbz_path}" unless File.exist?(master_rbz_path)
@@ -92,42 +92,42 @@ end
 
 # 5. Verify specialized dialog provenance and menu routing for the latest milestone.
 latest_ver = versions.last
-raise "Latest version must be SBE-2026.08.28-01" unless latest_ver['display_version'] == 'SBE-2026.08.28-01'
+raise "Latest version must be SBE-2026.08.29-01" unless latest_ver['display_version'] == 'SBE-2026.08.29-01'
 latest_staged = File.join(root, 'history', 'generated', latest_ver['display_version'], 'staged')
-latest_entry = File.join(latest_staged, 'entry_sbe_2026_08_28_01.rb')
+latest_entry = File.join(latest_staged, 'entry_sbe_2026_08_29_01.rb')
 latest_html = File.join(latest_staged, 'bom_engine', 'ui', 'export_dialog.html')
 latest_ui_dialog = File.join(latest_staged, 'bom_engine', 'ui_dialog.rb')
 
-raise "Entry file missing for SBE-2026.08.28-01" unless File.exist?(latest_entry)
-raise "Export HTML missing for SBE-2026.08.28-01" unless File.exist?(latest_html)
+raise "Entry file missing for SBE-2026.08.29-01" unless File.exist?(latest_entry)
+raise "Export HTML missing for SBE-2026.08.29-01" unless File.exist?(latest_html)
 
 entry_src = File.read(latest_entry, encoding: 'UTF-8')
 html_src = File.read(latest_html, encoding: 'UTF-8')
 ui_dialog_src = File.read(latest_ui_dialog, encoding: 'UTF-8')
 
 raise "Entry must declare EXPORT_KIND = :bomc_scene" unless entry_src.include?('EXPORT_KIND = :bomc_scene')
-raise "Entry must suffix with __SBE-2026.08.28-01.bomc" unless entry_src.include?('"__SBE-2026.08.28-01.bomc"')
+raise "Entry must suffix with __SBE-2026.08.29-01.bomc" unless entry_src.include?('"__SBE-2026.08.29-01.bomc"')
 raise "HTML dialog must lock export kind to bomc_scene" unless html_src.include?('data-evolution-export-kind="bomc_scene"')
 raise "UI dialog bridge must not have default canonical title" if ui_dialog_src.include?('BOM Engine — Export Settings')
-raise "UI dialog default path contains a repeated milestone suffix" if ui_dialog_src.include?('__SBE-2026.08.28-01__SBE-2026.08.28-01')
+raise "UI dialog default path contains a repeated milestone suffix" if ui_dialog_src.include?('__SBE-2026.08.29-01__SBE-2026.08.29-01')
 raise "HTML path normalizer must strip a prior milestone suffix" unless html_src.include?('path.replace(/__SBE-')
-puts "  PASS: Milestone [17] SBE-2026.08.28-01 specialized dialog provenance verified"
+puts "  PASS: Milestone [18] SBE-2026.08.29-01 specialized dialog provenance verified"
 
 # 6. Verify output_with_suffix normalization table across formats
 test_paths = {
-  'model.json' => 'model__SBE-2026.08.28-01.bomc',
-  'model_canonical.json' => 'model__SBE-2026.08.28-01.bomc',
-  'model_runtime.bome2' => 'model__SBE-2026.08.28-01.bomc',
-  'model.cleanpkg' => 'model__SBE-2026.08.28-01.bomc',
-  'model.bomc' => 'model__SBE-2026.08.28-01.bomc',
-  'model__SBE-2026.08.27-02.bomc' => 'model__SBE-2026.08.28-01.bomc'
+  'model.json' => 'model__SBE-2026.08.29-01.bomc',
+  'model_canonical.json' => 'model__SBE-2026.08.29-01.bomc',
+  'model_runtime.bome2' => 'model__SBE-2026.08.29-01.bomc',
+  'model.cleanpkg' => 'model__SBE-2026.08.29-01.bomc',
+  'model.bomc' => 'model__SBE-2026.08.29-01.bomc',
+  'model__SBE-2026.08.28-01.bomc' => 'model__SBE-2026.08.29-01.bomc'
 }
 
 eval_script = <<~RUBY
   #{entry_src}
   test_paths = #{test_paths.inspect}
   test_paths.each do |input, expected|
-    actual = SibamboHistory::V20260828_01.output_with_suffix(input, '__SBE-2026.08.28-01.bomc')
+    actual = SibamboHistory::V20260829_01.output_with_suffix(input, '__SBE-2026.08.29-01.bomc')
     raise "Suffix normalization failure: \#{input} -> got \#{actual}, expected \#{expected}" unless actual == expected
   end
 RUBY
