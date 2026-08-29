@@ -4,6 +4,7 @@
 require 'test/unit'
 require_relative '../bomc_geometry_policy'
 require_relative '../bomc_codecs'
+require_relative '../bomc_budget_solver'
 
 class TestBOMCGeometryPolicy < Test::Unit::TestCase
   def test_semantic_role_classification
@@ -88,5 +89,64 @@ class TestBOMCGeometryPolicy < Test::Unit::TestCase
     uvs = [0.0, 0.0, 1.0, 1.0]
     encoded_uv = BOMEngine::BOMC::UVCodec.encode(uvs, semantic_class: :class_c)
     assert encoded_uv[:candidates].all? { |c| c[:semantic_class] == :class_c }
+  end
+
+  def test_position_candidates_are_exposed_to_budget_solver
+    positions = [
+      0.0, 0.0, 0.0,
+      1.000_123, 0.0, 0.0,
+      0.0, 1.000_321, 0.0
+    ]
+    block = BOMEngine::BOMC::PositionCodec.encode(
+      positions,
+      loops: [[0, 1, 2]],
+      max_error_m: 0.001,
+      semantic_class: :class_b
+    )
+
+    candidates = BOMEngine::BOMCGeometryPolicy.budget_candidates(
+      reports: block[:candidates],
+      domain: :positions,
+      owner_id: :mesh_0,
+      profile: :visual,
+      semantic_class: :class_b
+    )
+    frontier = BOMEngine::BOMCBudgetSolver.pareto_frontier(
+      profile: :visual,
+      candidates: candidates
+    )
+
+    assert_operator candidates.length, :>, 1
+    assert_operator frontier.length, :>, 1
+    assert candidates.all? { |candidate| candidate.domain == :positions }
+    assert candidates.all? { |candidate| candidate.owner_id == :mesh_0 }
+    assert candidates.all? { |candidate| candidate.quality_evidence[:semantic_class] == :class_b }
+    assert candidates.any? { |candidate| candidate.quality_evidence[:max_position_error_m].positive? }
+  end
+
+  def test_budget_candidate_error_boundary_is_inclusive
+    reports = [
+      {
+        name: 'at-boundary', codec: 1, raw_bytes: 24, deflate_bytes: 18,
+        errors: { max: 0.001, p95: 0.001, rms: 0.001 }, passed: true,
+        semantic_class: :class_b
+      },
+      {
+        name: 'over-boundary', codec: 2, raw_bytes: 12, deflate_bytes: 10,
+        errors: { max: 0.001_000_000_002, p95: 0.001, rms: 0.001 }, passed: true,
+        semantic_class: :class_b
+      }
+    ]
+
+    candidates = BOMEngine::BOMCGeometryPolicy.budget_candidates(
+      reports: reports,
+      domain: :positions,
+      owner_id: :mesh_boundary,
+      profile: :visual,
+      semantic_class: :class_b
+    )
+
+    assert_equal true, candidates[0].pass_hard_constraints?
+    assert_equal false, candidates[1].pass_hard_constraints?
   end
 end

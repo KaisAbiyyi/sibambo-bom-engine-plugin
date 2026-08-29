@@ -44,6 +44,10 @@ class TestBOMCProfileBenchmark < Test::Unit::TestCase
     assert visual[:invariants][:scenes_pass]
     assert visual[:invariants][:clip_planes_pass]
     assert visual[:invariants][:protected_topology_pass]
+    geometry_frontiers = visual[:metrics][:geometry_candidate_frontiers]
+    assert_kind_of Hash, geometry_frontiers
+    assert_operator geometry_frontiers[:positions].first[:candidates].length, :>, 1
+    assert_operator geometry_frontiers[:positions].first[:pareto_candidate_ids].length, :>, 1
 
     # Exact profile checks
     exact = result[:profiles][:exact]

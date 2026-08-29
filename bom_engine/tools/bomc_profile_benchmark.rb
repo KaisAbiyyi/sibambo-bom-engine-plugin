@@ -117,7 +117,8 @@ module BOMEngine
             position_rms_error_m: positions_err[:rms_error_m] || 0.0,
             normal_max_error_deg: normals_err[:max_angular_error_deg] || 0.0,
             uv_max_error: uv_err[:max_error] || 0.0,
-            transform_max_error: transforms_err[:max_error] || 0.0
+            transform_max_error: transforms_err[:max_error] || 0.0,
+            geometry_candidate_frontiers: pack_res.dig(:metrics, :geometry_candidate_frontiers)
           },
           invariants: {
             semantics_pass: validation.is_a?(Hash) && validation.dig(:instances, :exact) != false,

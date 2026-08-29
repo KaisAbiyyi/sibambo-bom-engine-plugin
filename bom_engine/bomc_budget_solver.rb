@@ -211,6 +211,18 @@ module BOMEngine
       }
     end
 
+    def pareto_frontier(profile:, candidates:, profile_contract: nil)
+      contract = if profile_contract
+                   profile_contract.is_a?(BOMCProfile::Profile) ? profile_contract : BOMCProfile.fetch(profile_contract)
+                 else
+                   BOMCProfile.fetch(profile)
+                 end
+      passing = Array(candidates).select do |candidate|
+        candidate.pass_hard_constraints? && satisfies_profile_fidelity?(candidate, contract)
+      end
+      build_pareto_frontier(passing)
+    end
+
     def satisfies_profile_fidelity?(candidate, contract)
       ev = candidate.quality_evidence
       if contract.position_error_m.is_a?(Numeric) && ev[:max_position_error_m]

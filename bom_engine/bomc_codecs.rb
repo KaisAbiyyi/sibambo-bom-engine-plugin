@@ -298,7 +298,7 @@ module BOMEngine
             count: source.length / 3,
             errors: { max: 0.0, p95: 0.0, rms: 0.0 },
             candidates: [
-              { name: 'float64x3', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true, semantic_class: semantic_class }
+              { name: 'float64x3', codec: FLOAT64, raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true, semantic_class: semantic_class }
             ]
           }
         end
@@ -337,8 +337,8 @@ module BOMEngine
           count: source.length / 3,
           errors: selected_errors,
           candidates: [
-            { name: 'float32x3', raw_bytes: float_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float_bytes), errors: float_summary, passed: float_summary[:max] <= max_error_deg.to_f, semantic_class: semantic_class },
-            { name: 'oct16x2', raw_bytes: oct_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(oct_bytes), errors: oct_summary, passed: use_oct, semantic_class: semantic_class }
+            { name: 'float32x3', codec: FLOAT32, raw_bytes: float_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float_bytes), errors: float_summary, passed: float_summary[:max] <= max_error_deg.to_f, semantic_class: semantic_class },
+            { name: 'oct16x2', codec: OCT16, raw_bytes: oct_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(oct_bytes), errors: oct_summary, passed: use_oct, semantic_class: semantic_class }
           ]
         }
       end

@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 # Semantic-Aware Geometry Policy and Error Tolerances (Batch 5)
 
+require_relative 'bomc_candidate'
+
 module BOMEngine
   module BOMCGeometryPolicy
     CLASS_A = :class_a # Protected analytical
@@ -87,6 +89,51 @@ module BOMEngine
       prof == :exact ? 0.0 : TRANSFORM_ERROR
     end
 
+    def budget_candidates(reports:, domain:, owner_id:, profile:, semantic_class:)
+      domain_key = domain.to_s.downcase.to_sym
+      klass = semantic_class.to_s.downcase.to_sym
+      tolerance = tolerance_for_domain(profile, klass, domain_key)
+
+      Array(reports).each_with_index.map do |report, index|
+        errors = report[:errors] || {}
+        maximum_error = errors[:max].to_f
+        within_tolerance = maximum_error <= tolerance + 1.0e-12
+        quality_evidence = {
+          semantic_class: klass,
+          max_area_error_m2: report[:area_max_error_m2].to_f,
+          semantic_distortion: 0.0,
+          protected_topology_distortion: 0.0
+        }
+        case domain_key
+        when :positions
+          quality_evidence[:max_position_error_m] = maximum_error
+        when :normals
+          quality_evidence[:max_normal_error_deg] = maximum_error
+        when :uv
+          quality_evidence[:max_uv_error] = maximum_error
+        else
+          raise ArgumentError, "Unsupported geometry candidate domain #{domain}."
+        end
+
+        BOMCCandidate::Candidate.new(
+          id: "#{domain_key}_#{owner_id}_#{report[:name] || index}",
+          domain: domain_key,
+          owner_id: owner_id,
+          stored_bytes_estimate: report[:deflate_bytes] || report[:raw_bytes] || 0,
+          distortion_score: maximum_error,
+          hard_constraints_passed: report[:passed] != false && within_tolerance,
+          quality_evidence: quality_evidence,
+          deterministic_rank: index,
+          params: {
+            codec: report[:codec],
+            candidate_name: report[:name],
+            semantic_class: klass,
+            raw_bytes: report[:raw_bytes]
+          }
+        )
+      end
+    end
+
     def bounds_for(profile, semantic_class)
       prof = profile.to_s.downcase.to_sym
       klass = semantic_class.to_s.downcase.to_sym
@@ -104,5 +151,16 @@ module BOMEngine
       end
     end
     private_class_method :bounds_for
+
+    def tolerance_for_domain(profile, semantic_class, domain)
+      bounds = bounds_for(profile, semantic_class)
+      case domain
+      when :positions then bounds[:position_m]
+      when :normals then bounds[:normal_deg]
+      when :uv then bounds[:uv]
+      else raise ArgumentError, "Unsupported geometry candidate domain #{domain}."
+      end
+    end
+    private_class_method :tolerance_for_domain
   end
 end

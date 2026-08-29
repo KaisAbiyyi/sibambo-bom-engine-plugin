@@ -8,6 +8,7 @@ require_relative 'bomc_model_adapter'
 require_relative 'bomc_profile'
 require_relative 'bomc_encoding_contract'
 require_relative 'bomc_geometry_policy'
+require_relative 'bomc_budget_solver'
 require_relative 'scene_clip_program'
 
 module BOMEngine
@@ -135,6 +136,7 @@ module BOMEngine
         @adaptive_u32 = 0
         @position_metrics = []
         @uv_metrics = []
+        @geometry_candidate_frontiers = { positions: [], normals: [], uv: [] }
         @topology_absolute_bytes = 0
         @topology_encoded_bytes = 0
         build_texture_registry
@@ -153,6 +155,7 @@ module BOMEngine
         normal_tol = BOMCGeometryPolicy.normal_tolerance(profile: @profile_contract.name, semantic_class: model_normal_class)
 
         normal_block = BOMC::NormalCodec.encode(geometry[:normals], max_error_deg: normal_tol, semantic_class: model_normal_class, forced_codec: forced_normal_codec)
+        record_geometry_frontier(normal_block, domain: :normals, owner_id: :model_normals, semantic_class: model_normal_class)
         notify(:encode_normals, geometry[:normals].length / 3, geometry[:normals].length / 3)
         transform_block = BOMC::TransformCodec.encode(@model[:transforms], forced_codec: forced_transform_codec, checkpoint: @checkpoint)
         notify(:encode_transforms, @model[:transforms].length, @model[:transforms].length)
@@ -236,6 +239,7 @@ module BOMEngine
             positions: @position_metrics,
             normals: normal_block.reject { |key, _value| key == :bytes },
             uv: @uv_metrics,
+            geometry_candidate_frontiers: @geometry_candidate_frontiers,
             transforms: transform_block.reject { |key, _value| key == :bytes },
             topology: {
               absolute_bytes: @topology_absolute_bytes,
@@ -509,6 +513,7 @@ module BOMEngine
           mesh_edge_start = edges.length
           loops_for_gate = mesh[:faces].map { |face| [face[:outer]] + face[:holes] }.flatten(1)
           position = BOMC::PositionCodec.encode(mesh[:positions], loops: loops_for_gate, max_error_m: pos_tol, semantic_class: mesh_class, forced_codec: forced_pos_codec)
+          record_geometry_frontier(position, domain: :positions, owner_id: "mesh_#{mesh_index}", semantic_class: mesh_class)
           position_offset, position_length = append_aligned(position_stream, pack_position_block(position))
           @position_metrics << position.reject { |key, _value| key == :bytes }
           notify(:encode_positions, mesh_index + 1, @model[:meshes].length)
@@ -561,6 +566,7 @@ module BOMEngine
           uv_length = 0
           unless mesh_uv_values.empty?
             uv = BOMC::UVCodec.encode(mesh_uv_values, max_error: uv_tol, semantic_class: mesh_class, forced_codec: forced_uv_codec)
+            record_geometry_frontier(uv, domain: :uv, owner_id: "mesh_#{mesh_index}", semantic_class: mesh_class)
             uv_offset, uv_length = append_aligned(uv_stream, pack_uv_block(uv))
             @uv_metrics << uv.reject { |key, _value| key == :bytes }
             uv_block_count += 1
@@ -608,6 +614,31 @@ module BOMEngine
         ]
         keys.each { |key| bytes << meshes.map { |mesh| mesh[key] }.pack('V*') }
         bytes
+      end
+
+      def record_geometry_frontier(block, domain:, owner_id:, semantic_class:)
+        candidates = BOMCGeometryPolicy.budget_candidates(
+          reports: block[:candidates],
+          domain: domain,
+          owner_id: owner_id,
+          profile: @profile_contract.name,
+          semantic_class: semantic_class
+        )
+        frontier = BOMCBudgetSolver.pareto_frontier(
+          profile: @profile_contract.name,
+          profile_contract: @profile_contract,
+          candidates: candidates
+        )
+        selected = candidates.find do |candidate|
+          candidate.params[:codec] == block[:codec] && candidate.pass_hard_constraints?
+        end
+        @geometry_candidate_frontiers.fetch(domain) << {
+          owner_id: owner_id,
+          semantic_class: semantic_class,
+          candidates: candidates.map(&:to_h),
+          pareto_candidate_ids: frontier.map(&:id),
+          selected_candidate_id: selected && selected.id
+        }
       end
 
       def build_faces_section(faces)

@@ -44,6 +44,7 @@ module BOMEngine
         test_position_codecs
         test_normal_codec
         test_uv_codecs
+        test_geometry_candidate_frontiers
         test_transform_codecs
         test_compiled_round_trip
         test_canonical_uv_ownership
@@ -206,6 +207,20 @@ module BOMEngine
         assert(decoded[2] > 1.0 && decoded[7] > 1.0, 'UV values greater than one are preserved')
         assert(errors.max <= 1.0e-4, 'selected UV codec stays within its numeric gate')
         assert((encoded[:errors][:max] - errors.max).abs <= 1.0e-12, 'UV maximum error is measured')
+      end
+
+      def test_geometry_candidate_frontiers
+        result = BOMCWriter.pack(compiled_fixture, profile: :production)
+        frontiers = result[:metrics][:geometry_candidate_frontiers]
+
+        assert(frontiers.is_a?(Hash), 'writer exposes geometry candidate frontiers')
+        [:positions, :normals, :uv].each do |domain|
+          entry = Array(frontiers[domain]).first
+          assert(!entry.nil?, "writer exposes #{domain} candidate frontier")
+          assert(entry[:candidates].length > 1, "#{domain} frontier carries more than one codec candidate")
+          assert(entry[:pareto_candidate_ids].length > 1, "budget solver sees more than one #{domain} candidate")
+          assert(entry[:pareto_candidate_ids].include?(entry[:selected_candidate_id]), "selected #{domain} candidate belongs to solver frontier")
+        end
       end
 
       def test_transform_codecs
