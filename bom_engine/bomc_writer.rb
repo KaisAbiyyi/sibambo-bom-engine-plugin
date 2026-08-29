@@ -1,15 +1,17 @@
-# BOMC 1.1 compiled building writer.
+# BOMC 1.2 compiled building writer.
 
 require 'digest'
 require 'fileutils'
 require_relative 'bomc_format'
 require_relative 'bomc_codecs'
 require_relative 'bomc_model_adapter'
+require_relative 'bomc_profile'
+require_relative 'bomc_encoding_contract'
 
 module BOMEngine
   module BOMCWriter
     FORMAT_NAME = 'BOMC'.freeze
-    FORMAT_VERSION = '1.1'.freeze
+    FORMAT_VERSION = '1.2'.freeze
 
     SECTION_NAMES = {
       BOMC::SECTION_MODEL => :model,
@@ -31,13 +33,18 @@ module BOMEngine
       BOMC::SECTION_COVERAGE => :coverage,
       BOMC::SECTION_FALLBACK => :fallback,
       BOMC::SECTION_SCENES => :scenes,
+      BOMC::SECTION_ENCODING_CONTRACT => :encoding_contract,
+      BOMC::SECTION_CLIP_PLANES => :clip_planes,
       BOMC::SECTION_DEBUG => :debug
     }.freeze
 
-    def self.pack(graph, profile: :production, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil)
+    def self.pack(graph, profile: :visual, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil)
       Builder.new(
         graph,
         profile: profile,
+        profile_contract: profile_contract,
+        source_skp_bytes: source_skp_bytes,
+        target_bytes: target_bytes,
         base_path: base_path,
         sparse: sparse,
         compact_directory: compact_directory,
@@ -47,10 +54,13 @@ module BOMEngine
       ).build
     end
 
-    def self.write(path, graph, profile: :production, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil)
+    def self.write(path, graph, profile: :visual, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil)
       result = pack(
         graph,
         profile: profile,
+        profile_contract: profile_contract,
+        source_skp_bytes: source_skp_bytes,
+        target_bytes: target_bytes,
         base_path: base_path,
         sparse: sparse,
         compact_directory: compact_directory,
@@ -73,9 +83,21 @@ module BOMEngine
     end
 
     class Builder
-      def initialize(graph, profile:, base_path:, sparse:, compact_directory:, compression_level:, minimal_metadata:, checkpoint:)
+      def initialize(graph, profile:, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path:, sparse:, compact_directory:, compression_level:, minimal_metadata:, checkpoint:)
         @profile = profile.to_sym
-        raise ArgumentError, "Unknown BOMC profile #{@profile}." unless [:production, :debug].include?(@profile)
+        allowed_profiles = [:production, :debug, :exact, :research, :visual]
+        raise ArgumentError, "Unknown BOMC profile #{@profile}." unless allowed_profiles.include?(@profile)
+
+        @profile_contract = if profile_contract
+                              profile_contract.is_a?(BOMCProfile::Profile) ? profile_contract : BOMCProfile.fetch(profile_contract)
+                            elsif [:exact, :research, :visual].include?(@profile)
+                              BOMCProfile.fetch(@profile)
+                            else
+                              BOMCProfile.fetch(:visual)
+                            end
+
+        @source_skp_bytes = Integer(source_skp_bytes || 0)
+        @target_bytes = Integer(target_bytes || 0)
         @sparse = !!sparse
         @compact_directory = !!compact_directory
         @compression_level = Integer(compression_level)
@@ -117,7 +139,8 @@ module BOMEngine
           section(BOMC::SECTION_TEXTURE_TABLE, @textures.length, build_texture_table_section, true),
           section(BOMC::SECTION_TEXTURE_BLOBS, @textures.length, @texture_blob_bytes, false),
           section(BOMC::SECTION_COVERAGE, 1, build_coverage_section, true),
-          section(BOMC::SECTION_FALLBACK, fallback_records.length, build_fallback_section, true)
+          section(BOMC::SECTION_FALLBACK, fallback_records.length, build_fallback_section, true),
+          section(BOMC::SECTION_ENCODING_CONTRACT, 1, BOMCEncodingContract.encode(@profile_contract, source_skp_bytes: @source_skp_bytes, target_bytes: @target_bytes), true)
         ]
         scenes = Array(@model[:scenes])
         if !scenes.empty?
@@ -126,7 +149,8 @@ module BOMEngine
         all_sections << section(BOMC::SECTION_DEBUG, debug_records.length, build_debug_section, true) if @profile == :debug
         required = [
           BOMC::SECTION_MODEL, BOMC::SECTION_STRINGS, BOMC::SECTION_DEFINITIONS,
-          BOMC::SECTION_INSTANCES, BOMC::SECTION_TRANSFORMS, BOMC::SECTION_COVERAGE
+          BOMC::SECTION_INSTANCES, BOMC::SECTION_TRANSFORMS, BOMC::SECTION_COVERAGE,
+          BOMC::SECTION_ENCODING_CONTRACT
         ]
         sections = if @sparse
                      all_sections.select { |entry| required.include?(entry[:type]) || entry[:count] > 0 }
@@ -145,7 +169,7 @@ module BOMEngine
           sections,
           flags: flags,
           compact_directory: @compact_directory,
-          version_minor: @compact_directory ? 1 : 0,
+          version_minor: @compact_directory ? 2 : 0,
           compression_level: @compression_level,
           checkpoint: @checkpoint
         )

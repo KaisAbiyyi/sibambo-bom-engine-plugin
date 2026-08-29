@@ -1,4 +1,4 @@
-# Deterministic BOMC 1.0/1.1 container primitives.
+# Deterministic BOMC 1.0/1.1/1.2 container primitives.
 
 require 'zlib'
 
@@ -6,7 +6,7 @@ module BOMEngine
   module BOMC
     MAGIC = "BOMC\r\n\x1a\n".b.freeze
     VERSION_MAJOR = 1
-    VERSION_MINOR = 1
+    VERSION_MINOR = 2
     HEADER_BYTES = 32
     # BOMC 1.0 descriptor size. Kept as the compatibility constant for callers
     # that need to inspect or construct a legacy directory.
@@ -44,6 +44,8 @@ module BOMEngine
     SECTION_COVERAGE = 17
     SECTION_FALLBACK = 18
     SECTION_SCENES = 19
+    SECTION_ENCODING_CONTRACT = 20
+    SECTION_CLIP_PLANES = 21
     SECTION_DEBUG = 240
 
     SURFACE_TYPES = {

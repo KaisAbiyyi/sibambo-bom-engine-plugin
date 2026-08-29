@@ -1,8 +1,9 @@
-# Standalone pure-Ruby BOMC 1.0/1.1 reference decoder.
+# Standalone pure-Ruby BOMC 1.0/1.1/1.2 reference decoder.
 
 require 'digest'
 require_relative 'bomc_format'
 require_relative 'bomc_codecs'
+require_relative 'bomc_encoding_contract'
 require_relative 'scene_visibility_resolver'
 
 module BOMEngine
@@ -117,6 +118,11 @@ module BOMEngine
         measure(timings, :validation_ms) do
           validate_references!(model, materials, tags, meshes, definitions, instances, transforms, textures, coverage, fallback)
         end
+
+        encoding_contract = if @sections[BOMC::SECTION_ENCODING_CONTRACT]
+                              BOMCEncodingContract.decode(section_bytes(BOMC::SECTION_ENCODING_CONTRACT))
+                            end
+
         {
           format: { name: 'BOMC', version: "#{@container[:header][:major]}.#{@container[:header][:minor]}", profile: model[:profile] },
           source: model[:source],
@@ -136,6 +142,7 @@ module BOMEngine
           coverage: coverage,
           fallback: fallback,
           debug: debug,
+          encoding_contract: encoding_contract,
           container: {
             flags: @container.dig(:header, :flags) || @container[:flags] || 0,
             version_major: @container.dig(:header, :major) || @container[:version_major],
