@@ -1,9 +1,10 @@
-# Saved-SKP size diagnostics with bounded, deterministic lossless escalation.
-# Callers may enforce a strict smaller-than-SKP target; the interactive exporter
-# treats that target as advisory so complete texture-heavy models still publish.
+# frozen_string_literal: true
+# Saved-SKP size diagnostics with bounded, deterministic profile budget solving.
 
 require 'fileutils'
 require_relative 'bomc_writer'
+require_relative 'bomc_profile'
+require_relative 'bomc_budget_solver'
 
 module BOMEngine
   module BOMCSizeGate
@@ -14,16 +15,17 @@ module BOMEngine
     ].freeze
 
     class TargetNotMet < StandardError
-      attr_reader :source_bytes, :best_candidate_bytes, :delta_bytes, :attempts, :dominant_sections
+      attr_reader :source_bytes, :best_candidate_bytes, :delta_bytes, :attempts, :dominant_sections, :hard_budget_bytes
 
-      def initialize(source_bytes:, best_candidate_bytes:, attempts:, dominant_sections:)
+      def initialize(source_bytes:, best_candidate_bytes:, attempts:, dominant_sections:, hard_budget_bytes: nil)
         @source_bytes = source_bytes
         @best_candidate_bytes = best_candidate_bytes
-        @delta_bytes = best_candidate_bytes - source_bytes
+        @hard_budget_bytes = hard_budget_bytes || source_bytes
+        @delta_bytes = best_candidate_bytes - @hard_budget_bytes
         @attempts = attempts
         @dominant_sections = dominant_sections
         labels = dominant_sections.map { |section| "#{section[:name]}=#{section[:stored_bytes]}" }.join(', ')
-        super("BOMC target not met: source=#{source_bytes}, best=#{best_candidate_bytes}, delta=+#{@delta_bytes}; dominant sections: #{labels}")
+        super("BOMC target not met: source=#{source_bytes}, hard_budget=#{@hard_budget_bytes}, best=#{best_candidate_bytes}, delta=+#{@delta_bytes}; dominant sections: #{labels}")
       end
     end
 
@@ -37,21 +39,74 @@ module BOMEngine
       { path: File.expand_path(source_path), bytes: File.size(source_path), available: true }
     end
 
-    def evaluate(candidate_bytes:, source_info:)
-      return :unavailable unless source_info && source_info[:available]
-      Integer(candidate_bytes) < Integer(source_info.fetch(:bytes)) ? :pass : :fail
+    def evaluate(candidate_bytes:, source_info:, profile: :visual, profile_contract: nil)
+      contract = if profile_contract
+                   profile_contract.is_a?(BOMCProfile::Profile) ? profile_contract : BOMCProfile.fetch(profile_contract)
+                 elsif [:exact, :research, :visual, :production, :debug].include?(profile.to_sym)
+                   BOMCProfile.fetch(profile.to_sym)
+                 else
+                   BOMCProfile.fetch(:visual)
+                 end
+
+      return :pass unless contract.requires_source_size?
+      return :unavailable unless source_info && source_info[:available] && source_info[:bytes].to_i > 0
+
+      hard_target = (Integer(source_info.fetch(:bytes)) * contract.hard_ratio).floor
+      Integer(candidate_bytes) <= hard_target ? :pass : :fail
     end
 
-    def compile(graph:, source_info:, base_path:, checkpoint: nil, output_path: nil, enforce_smaller: true)
+    def compile(graph:, source_info:, base_path:, profile: :visual, profile_contract: nil, checkpoint: nil, output_path: nil, enforce_smaller: true)
+      contract = if profile_contract
+                   profile_contract.is_a?(BOMCProfile::Profile) ? profile_contract : BOMCProfile.fetch(profile_contract)
+                 elsif [:exact, :research, :visual, :production, :debug].include?(profile.to_sym)
+                   BOMCProfile.fetch(profile.to_sym)
+                 else
+                   BOMCProfile.fetch(:visual)
+                 end
+
       info = source_info || { available: false, bytes: nil }
+
+      if contract.profile == :exact
+        result = BOMCWriter.pack(
+          graph,
+          profile: :exact,
+          profile_contract: contract,
+          base_path: base_path,
+          sparse: true,
+          compact_directory: true,
+          checkpoint: checkpoint
+        )
+        candidate_size = result[:bytes].bytesize
+        publish_result(output_path, result, candidate_size, checkpoint, nil) if output_path
+        return result.merge(
+          status: :pass,
+          strategy: :exact,
+          candidate_bytes: candidate_size,
+          source_bytes: info[:bytes],
+          savings_bytes: info[:available] ? info[:bytes] - candidate_size : nil,
+          attempts: [{ strategy: :exact, candidate_bytes: candidate_size, status: :pass }]
+        )
+      end
+
+      if contract.requires_source_size? && (!info[:available] || info[:bytes].to_i <= 0)
+        raise BOMCBudgetSolver::SourceSizeRequiredError.new(
+          "Profile #{contract.name} requires positive source SKP byte size.",
+          profile: contract.name,
+          source_info: info
+        )
+      end
+
       strategies = info[:available] ? STRATEGIES : [STRATEGIES.first]
       attempts = []
       best = nil
+      hard_target = info[:available] ? (Integer(info[:bytes]) * contract.hard_ratio).floor : nil
 
       strategies.each_with_index do |strategy, index|
         result = BOMCWriter.pack(
           graph,
-          profile: :production,
+          profile: contract.name,
+          profile_contract: contract,
+          source_skp_bytes: info[:bytes].to_i,
           base_path: base_path,
           sparse: true,
           compact_directory: true,
@@ -64,7 +119,7 @@ module BOMEngine
           raise 'BOMC export refused: detached graph contains unaccounted geometry.'
         end
         candidate_size = result[:bytes].bytesize
-        status = evaluate(candidate_bytes: candidate_size, source_info: info)
+        status = evaluate(candidate_bytes: candidate_size, source_info: info, profile_contract: contract)
         attempt = {
           strategy: strategy[:name],
           candidate_bytes: candidate_size,
@@ -83,8 +138,8 @@ module BOMEngine
         )
         best = best_result(best, result, strategy)
 
-        if status == :pass || status == :unavailable
-          publish_result(output_path, result, candidate_size, checkpoint) if output_path
+        if status == :pass || (status == :unavailable && !contract.requires_source_size?)
+          publish_result(output_path, result, candidate_size, checkpoint, hard_target) if output_path
           return result.merge(
             status: status,
             strategy: strategy[:name],
@@ -97,10 +152,11 @@ module BOMEngine
         result = nil
       end
 
-      unless enforce_smaller
+      # For backward compatibility with legacy non-profile calls only
+      if !enforce_smaller && [:production, :debug].include?(contract.name)
         selected = best.fetch(:result)
         candidate_size = best.fetch(:candidate_bytes)
-        publish_result(output_path, selected, candidate_size, checkpoint) if output_path
+        publish_result(output_path, selected, candidate_size, checkpoint, nil) if output_path
         return selected.merge(
           status: :over_budget,
           strategy: best.fetch(:strategy),
@@ -114,6 +170,7 @@ module BOMEngine
 
       raise TargetNotMet.new(
         source_bytes: Integer(info.fetch(:bytes)),
+        hard_budget_bytes: hard_target,
         best_candidate_bytes: best[:candidate_bytes],
         attempts: attempts,
         dominant_sections: dominant_sections(best[:metrics])
@@ -147,7 +204,7 @@ module BOMEngine
     end
     private_class_method :invoke_checkpoint
 
-    def publish_result(output_path, result, candidate_size, checkpoint)
+    def publish_result(output_path, result, candidate_size, checkpoint, hard_budget_bytes)
       invoke_checkpoint(
         checkpoint,
         stage: :write_container,
@@ -156,7 +213,7 @@ module BOMEngine
         candidate_bytes: candidate_size,
         force: true
       )
-      publish(output_path, result[:bytes])
+      publish(output_path, result[:bytes], hard_budget_bytes: hard_budget_bytes)
       invoke_checkpoint(
         checkpoint,
         stage: :write_container,
@@ -168,13 +225,21 @@ module BOMEngine
     end
     private_class_method :publish_result
 
-    def publish(path, bytes)
+    def publish(path, bytes, hard_budget_bytes: nil)
       temporary_path = "#{path}.#{Process.pid}.part"
       begin
         File.open(temporary_path, 'wb') do |file|
           file.write(bytes)
           file.flush
           file.fsync rescue nil
+        end
+        actual_bytes = File.size(temporary_path)
+        if hard_budget_bytes && actual_bytes > hard_budget_bytes
+          raise BOMCBudgetSolver::BudgetNotFeasibleError.new(
+            "Final published file size #{actual_bytes} exceeds hard budget #{hard_budget_bytes}.",
+            actual_bytes: actual_bytes,
+            hard_budget_bytes: hard_budget_bytes
+          )
         end
         FileUtils.mv(temporary_path, path, force: true)
       ensure

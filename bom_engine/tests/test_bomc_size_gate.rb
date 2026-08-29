@@ -20,8 +20,8 @@ module BOMEngine
         test_boundaries
         test_source_capture
         test_escalation_and_invariants
-        test_advisory_gate_publishes_best_complete_candidate
         test_failed_candidates_are_not_published
+        test_research_and_visual_never_allow_over_budget
         puts 'BOMC Size Gate Tests: ALL PASSED'
         true
       rescue StandardError => error
@@ -32,10 +32,15 @@ module BOMEngine
 
       def test_boundaries
         source = { available: true, bytes: 100 }
-        assert(BOMCSizeGate.evaluate(candidate_bytes: 99, source_info: source) == :pass, 'strictly smaller candidate passes')
-        assert(BOMCSizeGate.evaluate(candidate_bytes: 100, source_info: source) == :fail, 'equal-size candidate fails')
-        assert(BOMCSizeGate.evaluate(candidate_bytes: 101, source_info: source) == :fail, 'larger candidate fails')
-        assert(BOMCSizeGate.evaluate(candidate_bytes: 1, source_info: { available: false }) == :unavailable, 'unknown source size is explicit')
+        # Research / Visual (90% hard limit)
+        assert(BOMCSizeGate.evaluate(candidate_bytes: 90, source_info: source, profile: :research) == :pass, 'research: <=90% candidate passes')
+        assert(BOMCSizeGate.evaluate(candidate_bytes: 91, source_info: source, profile: :research) == :fail, 'research: >90% candidate fails')
+        assert(BOMCSizeGate.evaluate(candidate_bytes: 90, source_info: source, profile: :visual) == :pass, 'visual: <=90% candidate passes')
+        assert(BOMCSizeGate.evaluate(candidate_bytes: 91, source_info: source, profile: :visual) == :fail, 'visual: >90% candidate fails')
+
+        # Exact (no size gate)
+        assert(BOMCSizeGate.evaluate(candidate_bytes: 140, source_info: source, profile: :exact) == :pass, 'exact: ignores size gate')
+        assert(BOMCSizeGate.evaluate(candidate_bytes: 1, source_info: { available: false }, profile: :research) == :unavailable, 'unknown source size is explicit')
       end
 
       def test_source_capture
@@ -54,17 +59,19 @@ module BOMEngine
 
       def test_escalation_and_invariants
         graph = graph_fixture
-        standard = BOMCWriter.pack(graph, compression_level: 6, minimal_metadata: false)
-        compact = BOMCWriter.pack(graph, compression_level: 9, minimal_metadata: false)
+        standard = BOMCWriter.pack(graph, profile: :production, compression_level: 6, minimal_metadata: false)
+        compact = BOMCWriter.pack(graph, profile: :production, compression_level: 9, minimal_metadata: false)
         events = []
         result = BOMCSizeGate.compile(
           graph: graph,
+          profile: :production,
           source_info: { available: true, bytes: compact[:bytes].bytesize },
           base_path: nil,
           checkpoint: ->(**event) { events << event }
         )
         repeated = BOMCSizeGate.compile(
           graph: graph,
+          profile: :production,
           source_info: { available: true, bytes: compact[:bytes].bytesize },
           base_path: nil
         )
@@ -90,6 +97,7 @@ module BOMEngine
           begin
             BOMCSizeGate.compile(
               graph: graph_fixture,
+              profile: :production,
               source_info: { available: true, bytes: 1 },
               base_path: nil,
               output_path: output
@@ -98,7 +106,7 @@ module BOMEngine
             error = caught
           end
           assert(!error.nil? && error.source_bytes == 1 && error.best_candidate_bytes > 1, 'unreachable target returns actionable source and best sizes')
-          assert(error.delta_bytes == error.best_candidate_bytes - error.source_bytes, 'gate failure reports exact positive delta')
+          assert(error.delta_bytes == error.best_candidate_bytes - error.hard_budget_bytes, 'gate failure reports exact positive delta')
           assert(!error.dominant_sections.empty?, 'gate failure identifies dominant stored sections')
           assert(File.binread(output) == 'keep-me', 'failed candidates never replace an existing output')
           assert(Dir.glob(File.join(directory, '*.part')).empty?, 'failed size gate leaves no partial files')
@@ -113,6 +121,7 @@ module BOMEngine
           output = File.join(directory, 'texture-heavy.bomc')
           result = BOMCSizeGate.compile(
             graph: graph_fixture,
+            profile: :production,
             source_info: { available: true, bytes: 1 },
             base_path: nil,
             output_path: output,
@@ -123,6 +132,31 @@ module BOMEngine
           assert(result[:attempts].length == BOMCSizeGate::STRATEGIES.length, 'advisory export still evaluates every bounded lossless strategy')
           assert(File.binread(output) == result[:bytes], 'advisory export atomically publishes the best complete lossless candidate')
           assert(BOMCDecoder.decode(result[:bytes]).dig(:coverage, :unaccounted).to_i.zero?, 'published over-budget candidate retains complete geometry coverage')
+        ensure
+          FileUtils.remove_entry(directory) if directory && Dir.exist?(directory)
+        end
+      end
+
+      def test_research_and_visual_never_allow_over_budget
+        directory = Dir.mktmpdir('bomc-profile-gate')
+        begin
+          output = File.join(directory, 'test.bomc')
+          [:research, :visual].each do |prof|
+            error = nil
+            begin
+              BOMCSizeGate.compile(
+                graph: graph_fixture,
+                profile: prof,
+                source_info: { available: true, bytes: 1 },
+                base_path: nil,
+                output_path: output,
+                enforce_smaller: false
+              )
+            rescue BOMCSizeGate::TargetNotMet => caught
+              error = caught
+            end
+            assert(!error.nil?, "profile #{prof} never returns success with over_budget")
+          end
         ensure
           FileUtils.remove_entry(directory) if directory && Dir.exist?(directory)
         end

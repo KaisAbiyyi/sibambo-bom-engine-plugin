@@ -116,6 +116,7 @@ module BOMEngine
 
     def fetch(name)
       key = name.to_s.downcase.to_sym
+      key = :visual if key == :production || key == :debug
       profile = PROFILES[key]
       return profile if profile
 

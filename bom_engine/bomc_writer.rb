@@ -70,7 +70,32 @@ module BOMEngine
       )
       temporary_path = "#{path}.#{Process.pid}.part"
       begin
-        File.open(temporary_path, 'wb') { |file| file.write(result[:bytes]) }
+        File.open(temporary_path, 'wb') do |file|
+          file.write(result[:bytes])
+          file.flush
+          file.fsync rescue nil
+        end
+        actual_bytes = File.size(temporary_path)
+        contract = if profile_contract
+                     profile_contract.is_a?(BOMCProfile::Profile) ? profile_contract : BOMCProfile.fetch(profile_contract)
+                   elsif [:exact, :research, :visual, :production, :debug].include?(profile.to_sym)
+                     BOMCProfile.fetch(profile.to_sym)
+                   else
+                     BOMCProfile.fetch(:visual)
+                   end
+
+        if contract.requires_source_size? && source_skp_bytes.to_i > 0
+          hard_limit = (source_skp_bytes.to_i * contract.hard_ratio).floor
+          if actual_bytes > hard_limit
+            raise BOMCBudgetSolver::BudgetNotFeasibleError.new(
+              "Written file size #{actual_bytes} exceeds hard budget #{hard_limit} (#{contract.hard_ratio * 100}% of source #{source_skp_bytes}).",
+              actual_bytes: actual_bytes,
+              hard_budget_bytes: hard_limit,
+              source_skp_bytes: source_skp_bytes,
+              profile: contract.name
+            )
+          end
+        end
         FileUtils.mv(temporary_path, path, force: true)
       ensure
         File.delete(temporary_path) if File.file?(temporary_path)
