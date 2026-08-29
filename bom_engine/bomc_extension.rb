@@ -89,6 +89,9 @@ module BOMEngine
       menu.add_item('Sibambo BOMC Engine: Export BOMC 1.2...') do
         export_interactive
       end
+      menu.add_item('About Sibambo BOMC Engine') do
+        Core.show_about
+      end
     end
 
     def choose_processing_settings
@@ -242,12 +245,5 @@ module BOMEngine
       ['.png', '.jpg', '.jpeg', '.webp'].include?(extension)
     end
     private_class_method :supported_texture_path?
-  end
-end
-
-if defined?(Sketchup) && defined?(UI) && defined?(file_loaded?)
-  unless file_loaded?(__FILE__)
-    BOMEngine::BOMCExtension.register_menu(UI.menu('Plugins'))
-    file_loaded(__FILE__)
   end
 end

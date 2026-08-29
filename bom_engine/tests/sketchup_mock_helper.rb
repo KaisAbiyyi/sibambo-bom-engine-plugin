@@ -959,9 +959,12 @@ module UI
   end
 
   class Menu
+    attr_reader :name, :items, :submenus
+
     def initialize(name = '')
       @name = name
       @items = []
+      @submenus = []
     end
 
     def add_item(name, &block)
@@ -970,7 +973,9 @@ module UI
     end
 
     def add_submenu(name)
-      Menu.new(name)
+      submenu = Menu.new(name)
+      @submenus << submenu
+      submenu
     end
 
     def add_separator; end

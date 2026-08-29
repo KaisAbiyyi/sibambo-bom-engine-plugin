@@ -37,7 +37,10 @@ module BOMEngine
         assert(BOMCExtension::FORMAT_EXTENSION == '.bomc', 'compiled user-facing extension is stable')
         menu = FakeMenu.new
         BOMCExtension.register_menu(menu)
-        assert(menu.labels == ['Sibambo BOMC Engine: Export BOMC 1.2...'], 'compiled export command uses the public BOMC product identity')
+        assert(
+          menu.labels == ['Sibambo BOMC Engine: Export BOMC 1.2...', 'About Sibambo BOMC Engine'],
+          'product menu exposes only BOMC export and version information'
+        )
 
         texture_dir = Dir.mktmpdir('bomc-texture-choice')
         begin

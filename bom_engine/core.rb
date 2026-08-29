@@ -25,6 +25,7 @@ require_relative 'ui_dialog'
 require_relative 'conversion_job'
 require_relative 'quick_export_options'
 require_relative 'observer'
+require_relative 'bomc_extension'
 require 'json'
 require 'zlib'
 require 'fileutils'
@@ -38,34 +39,7 @@ module BOMEngine
       plugins_menu = UI.menu("Plugins")
       display_name = defined?(BOMEngine::PLUGIN_DISPLAY_NAME) ? BOMEngine::PLUGIN_DISPLAY_NAME : Branding::EXTENSION_NAME
       bom_menu     = plugins_menu.add_submenu(display_name)
-
-      bom_menu.add_item("Quick Export for Model-Eval") { quick_export_for_model_eval }
-      bom_menu.add_item("Export With Options...") { export_with_dialog }
-      bom_menu.add_item("Quick Export (last settings)") { quick_export }
-      bom_menu.add_item("Open Last Export Folder") { open_last_export_folder }
-      bom_menu.add_separator
-
-      sel_item = bom_menu.add_item("Export Selection to JSON...") { export_selection_with_dialog }
-      bom_menu.set_validation_proc(sel_item) do
-        model = Sketchup.active_model
-        model && !model.selection.empty? ? MF_ENABLED : MF_GRAYED
-      end
-
-      bom_menu.add_separator
-      bom_menu.add_item("Toggle Real-Time Observer") { toggle_observer }
-      bom_menu.add_separator
-      bom_menu.add_item("About #{display_name}") { show_about }
-
-      # Toolbar
-      toolbar = UI::Toolbar.new(display_name)
-      cmd = UI::Command.new("Quick Export for Model-Eval") { quick_export_for_model_eval }
-      icon_path = File.join(File.dirname(__FILE__), "ui", "toolbar_icon.png")
-      cmd.small_icon       = icon_path
-      cmd.large_icon       = icon_path
-      cmd.tooltip          = "#{display_name}: Quick Export for Model-Eval"
-      cmd.status_bar_text  = "Pilih batch optimal perangkat lalu export Model-Eval JSON"
-      toolbar.add_item(cmd)
-      toolbar.restore
+      BOMCExtension.register_menu(bom_menu)
 
       file_loaded(__FILE__)
     end
