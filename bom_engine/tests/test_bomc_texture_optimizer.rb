@@ -194,6 +194,18 @@ module BOMEngine
 
         assert(BOMCTextureOptimizer.native_jpeg_path?('embedded/wood.JPEG'), 'embedded JPEG filename is recognized without requiring a readable source file')
         assert(!BOMCTextureOptimizer.native_jpeg_path?('embedded/glass.png'), 'PNG source does not receive native-JPEG tolerance')
+
+        # Semantic class strictest resolver
+        assert(BOMEngine::BOMCTexturePolicy.strictest_semantic_class([:class_c, :class_a, :class_b]) == :class_a, 'strictest class resolves to Class A')
+        assert(BOMEngine::BOMCTexturePolicy.strictest_semantic_class([:class_c, :class_b]) == :class_b, 'strictest class resolves to Class B')
+        assert(BOMEngine::BOMCTexturePolicy.strictest_semantic_class([:class_c]) == :class_c, 'strictest class resolves to Class C')
+
+        # Quality gate PSNR thresholds
+        assert(BOMEngine::BOMCTexturePolicy.min_psnr(profile: :research, semantic_class: :class_c) == 42.0, 'research min PSNR is 42 dB')
+        assert(BOMEngine::BOMCTexturePolicy.min_psnr(profile: :visual, semantic_class: :class_a) == 40.0, 'visual class A min PSNR is 40 dB')
+        assert(BOMEngine::BOMCTexturePolicy.min_psnr(profile: :visual, semantic_class: :class_b) == 38.0, 'visual class B min PSNR is 38 dB')
+        assert(BOMEngine::BOMCTexturePolicy.min_psnr(profile: :visual, semantic_class: :class_c) == 35.0, 'visual class C min PSNR is 35 dB')
+
         puts 'BOMC Texture Optimizer Tests: ALL PASSED'
         true
       rescue StandardError => error

@@ -1,15 +1,16 @@
-# Evidence-gated texture staging for BOMC.
+# frozen_string_literal: true
+# Evidence-gated texture staging and multi-candidate frontier for BOMC.
 #
-# SketchUp can retain a JPEG texture inside an SKP even when Texture#filename is
-# no longer a readable filesystem path. Exporting every such texture as PNG can
-# multiply its byte size. This module keeps PNG as the lossless fallback and
-# accepts a JPEG candidate only when transparency, decoded quality, and measured
-# byte savings all pass conservative gates.
+# Generates and evaluates candidate encodings (PNG lossless, JPEG, WebP)
+# subject to semantic quality gates (PSNR), transparency preservation,
+# minimum byte savings, and cooperative export cancellation.
+
+require_relative 'bomc_texture_policy'
+require_relative 'bomc_texture_encoder'
+require_relative 'bomc_candidate'
 
 module BOMEngine
   module BOMCTextureOptimizer
-    GENERAL_MIN_PSNR_DB = 42.0
-    NATIVE_JPEG_MIN_PSNR_DB = 38.0
     MIN_SAVINGS_BYTES = 4_096
     MIN_SAVINGS_RATIO = 0.10
     CHECKPOINT_PIXELS = 32_768
@@ -106,7 +107,7 @@ module BOMEngine
       { compatible: false, reason: :invalid_pixel_data, error: error.message }
     end
 
-    def select(staged_path:, candidate_path:, reference:, candidate:, native_jpeg: false, &checkpoint)
+    def select(staged_path:, candidate_path:, reference:, candidate:, native_jpeg: false, profile: :visual, semantic_class: :class_b, &checkpoint)
       staged_bytes = File.file?(staged_path) ? File.size(staged_path) : nil
       candidate_bytes = File.file?(candidate_path) ? File.size(candidate_path) : nil
       raise ArgumentError, 'lossless staged texture is missing' if staged_bytes.nil?
@@ -128,7 +129,7 @@ module BOMEngine
 
       savings_bytes = staged_bytes - candidate_bytes
       savings_ratio = savings_bytes.to_f / staged_bytes
-      threshold = native_jpeg ? NATIVE_JPEG_MIN_PSNR_DB : GENERAL_MIN_PSNR_DB
+      threshold = BOMCTexturePolicy.min_psnr(profile: profile, semantic_class: semantic_class, native_jpeg: native_jpeg)
       unless quality[:psnr_db] >= threshold
         return base.merge(
           reason: :quality_gate_failed,
@@ -160,28 +161,32 @@ module BOMEngine
       )
     end
 
-    def stage(texture:, directory:, basename:, source_path:, policy: :perceptual_bounded, image_rep_loader: nil, &checkpoint)
+    def stage(texture:, directory:, basename:, source_path:, profile: :visual, semantic_class: :class_b, policy: nil, image_rep_loader: nil, &checkpoint)
       png_path = File.join(directory, "#{basename}.png")
       raise 'SketchUp could not stage the lossless PNG texture' unless texture.write(png_path, true) && File.file?(png_path)
 
       reference = texture.image_rep(true)
       native_jpeg = native_jpeg_path?(source_path)
+      is_opaque = opaque?(reference, &checkpoint)
+
+      is_pixel_lossless = (policy == :pixel_lossless || profile.to_s.downcase.to_sym == :exact)
+
       evidence = {
         path: png_path,
         selected: :staged_png,
         staged_bytes: File.size(png_path),
         candidate_bytes: nil,
         native_jpeg: native_jpeg,
-        reason: policy == :pixel_lossless ? :pixel_lossless_policy : :jpeg_not_evaluated
+        reason: is_pixel_lossless ? :pixel_lossless_policy : :jpeg_not_evaluated
       }
 
       return {
         path: evidence[:path],
         filename: File.basename(evidence[:path]),
         evidence: evidence.reject { |key, _value| key == :path }
-      } if policy == :pixel_lossless
+      } if is_pixel_lossless
 
-      if opaque?(reference, &checkpoint)
+      if is_opaque
         jpeg_path = File.join(directory, "#{basename}.jpg")
         reference.save_file(jpeg_path)
         if File.file?(jpeg_path)
@@ -193,6 +198,8 @@ module BOMEngine
             reference: reference,
             candidate: candidate,
             native_jpeg: native_jpeg,
+            profile: profile,
+            semantic_class: semantic_class,
             &checkpoint
           )
         else
