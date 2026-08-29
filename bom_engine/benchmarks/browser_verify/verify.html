@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BOMC WebP Browser Verification</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { max-width: 920px; margin: 0 auto; padding: 32px; background: #101418; color: #eef3f7; }
+    h1 { margin-bottom: 8px; }
+    .hint { color: #aebbc6; margin-bottom: 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
+    .card { padding: 18px; border: 1px solid #34414b; border-radius: 12px; background: #182027; }
+    .checkerboard {
+      display: grid;
+      place-items: center;
+      min-height: 190px;
+      overflow: hidden;
+      border-radius: 8px;
+      background-color: #fff;
+      background-image:
+        linear-gradient(45deg, #b9b9b9 25%, transparent 25%),
+        linear-gradient(-45deg, #b9b9b9 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #b9b9b9 75%),
+        linear-gradient(-45deg, transparent 75%, #b9b9b9 75%);
+      background-size: 32px 32px;
+      background-position: 0 0, 0 16px, 16px -16px, -16px 0;
+    }
+    img { width: 320px; height: 160px; image-rendering: pixelated; }
+    .result { margin-top: 12px; font-weight: 700; }
+    .pending { color: #ffd166; }
+    .pass { color: #54e38e; }
+    .fail { color: #ff6b6b; }
+    #summary { margin-top: 24px; padding: 16px; border-radius: 10px; font-size: 1.15rem; }
+    #summary.pass { background: #123823; }
+    #summary.fail { background: #461b1b; }
+  </style>
+</head>
+<body>
+  <h1>BOMC WebP Browser Verification</h1>
+  <p class="hint">Open this file in Chrome. Both cards must show PASS. Alpha card must reveal checkerboard through blue half.</p>
+
+  <main class="grid">
+    <section class="card">
+      <h2>Opaque WebP</h2>
+      <div class="checkerboard"><img id="opaque" src="opaque.webp" alt="Opaque WebP fixture"></div>
+      <div id="opaque-result" class="result pending">CHECKING...</div>
+    </section>
+
+    <section class="card">
+      <h2>Alpha WebP</h2>
+      <div class="checkerboard"><img id="alpha" src="alpha.webp" alt="Alpha WebP fixture"></div>
+      <div id="alpha-result" class="result pending">CHECKING...</div>
+    </section>
+  </main>
+
+  <div id="summary" class="pending">Waiting for browser decode...</div>
+  <p id="browser" class="hint"></p>
+
+  <script>
+    const expected = { width: 2, height: 1 };
+    const results = {};
+
+    function finish(name, passed, detail) {
+      results[name] = passed;
+      const output = document.getElementById(`${name}-result`);
+      output.className = `result ${passed ? 'pass' : 'fail'}`;
+      output.textContent = `${passed ? 'PASS' : 'FAIL'} — ${detail}`;
+
+      if (Object.keys(results).length !== 2) return;
+      const allPassed = Object.values(results).every(Boolean);
+      const summary = document.getElementById('summary');
+      summary.className = allPassed ? 'pass' : 'fail';
+      summary.textContent = allPassed
+        ? 'PASS — Chrome decoded opaque + alpha WebP. Take screenshot and send it back.'
+        : 'FAIL — Browser did not decode one or more WebP fixtures.';
+    }
+
+    document.getElementById('browser').textContent = `Browser: ${navigator.userAgent}`;
+
+    ['opaque', 'alpha'].forEach(async (name) => {
+      const image = document.getElementById(name);
+      try {
+        await image.decode();
+        const passed = image.naturalWidth === expected.width && image.naturalHeight === expected.height;
+        finish(name, passed, `decoded ${image.naturalWidth}×${image.naturalHeight}`);
+      } catch (error) {
+        finish(name, false, `decode error: ${error.name}`);
+      }
+    });
+  </script>
+</body>
+</html>

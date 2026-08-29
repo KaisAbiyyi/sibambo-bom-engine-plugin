@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "status": "pass",
+  "verification_date": "2026-08-29",
+  "verification_type": "manual_operator_chrome",
+  "browser": {
+    "name": "Google Chrome",
+    "version": "151.0.0.0",
+    "os": "Windows 10 x64",
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+  },
+  "opaque_texture": {
+    "file": "../browser_verify/opaque.webp",
+    "decoded": true,
+    "decoded_dimensions": [2, 1]
+  },
+  "alpha_texture": {
+    "file": "../browser_verify/alpha.webp",
+    "decoded": true,
+    "decoded_dimensions": [2, 1],
+    "transparency_visual_check": "pass"
+  },
+  "evidence": {
+    "verification_page": "../browser_verify/verify.html",
+    "screenshot": "BOMC_TEXTURE_ENCODER_BROWSER_CHROME_151.png",
+    "screenshot_sha256": "df75c3cce540989b8ecdcd7c066bbf20175fd2d325b1dee7d9e311b950c35137"
+  }
+}

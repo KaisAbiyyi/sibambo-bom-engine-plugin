@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "sketchup_version": "26.2.243",
+  "os": "x64-mswin64_140",
+  "ruby_version": "3.2.2",
+  "encoder": {
+    "available": true,
+    "webp": true,
+    "webp_alpha": true,
+    "webp_lossless": true,
+    "encoder_name": "libwebp/cwebp",
+    "version": "1.6.0\nlibsharpyuv: 0.4.2",
+    "binary_path": "D:/projects/sibambo/bom_engine_plugin/bom_engine/bin/win64/cwebp.exe",
+    "sha256": "6a2f5cb5dce71366353ab1d9caf9c636e039f25703acfce1c148eed346f2f72a",
+    "verified": true,
+    "source": "bundled",
+    "status": "ready"
+  },
+  "opaque_texture": {
+    "source_bytes": 71,
+    "candidate_bytes": 38,
+    "source_dimensions": [
+      2,
+      1
+    ],
+    "decoded_dimensions": [
+      2,
+      1
+    ],
+    "dimensions_preserved": true,
+    "alpha_preserved": true,
+    "pixel_metric": "lossless exact RGBA comparison",
+    "pixel_exact": true,
+    "webp_header_valid": true
+  },
+  "alpha_texture": {
+    "source_bytes": 71,
+    "candidate_bytes": 40,
+    "source_dimensions": [
+      2,
+      1
+    ],
+    "decoded_dimensions": [
+      2,
+      1
+    ],
+    "dimensions_preserved": true,
+    "alpha_preserved": true,
+    "pixel_metric": "lossless exact RGBA comparison",
+    "pixel_exact": true,
+    "webp_header_valid": true
+  },
+  "status": "pass"
+}

@@ -4,6 +4,7 @@
 require 'test/unit'
 require 'fileutils'
 require 'tmpdir'
+require 'zlib'
 require_relative '../bomc_texture_encoder'
 
 class TestBOMCTextureEncoder < Test::Unit::TestCase
@@ -49,6 +50,40 @@ class TestBOMCTextureEncoder < Test::Unit::TestCase
 
       assert BOMEngine::BOMCTextureEncoder.valid_webp_header?(valid_webp)
       assert !BOMEngine::BOMCTextureEncoder.valid_webp_header?(invalid_webp)
+    end
+  end
+
+  def test_bundled_encoder_is_verified_and_encodes_real_opaque_and_alpha_png
+    BOMEngine::BOMCTextureEncoder.configured_binary_path = nil
+    caps = BOMEngine::BOMCTextureEncoder.capabilities(force_refresh: true)
+
+    assert_equal true, caps[:available]
+    assert_equal true, caps[:verified]
+    assert_equal :bundled, caps[:source]
+    assert_match(/1\.6\.0/, caps[:version])
+    assert_equal BOMEngine::BOMCTextureEncoder::BUNDLED_CWEBP_SHA256, caps[:sha256]
+
+    Dir.mktmpdir('real-webp') do |dir|
+      opaque_png = File.join(dir, 'opaque.png')
+      alpha_png = File.join(dir, 'alpha.png')
+      write_rgba_png(opaque_png, [255, 0, 0, 255, 0, 255, 0, 255])
+      write_rgba_png(alpha_png, [255, 0, 0, 255, 0, 0, 255, 64])
+
+      opaque = BOMEngine::BOMCTextureEncoder.encode_webp(
+        source_path: opaque_png,
+        output_path: File.join(dir, 'opaque.webp'),
+        lossless: true
+      )
+      alpha = BOMEngine::BOMCTextureEncoder.encode_webp(
+        source_path: alpha_png,
+        output_path: File.join(dir, 'alpha.webp'),
+        lossless: true
+      )
+
+      assert_equal true, opaque[:success]
+      assert_equal true, alpha[:success]
+      assert BOMEngine::BOMCTextureEncoder.valid_webp_header?(opaque[:path])
+      assert BOMEngine::BOMCTextureEncoder.valid_webp_header?(alpha[:path])
     end
   end
 
@@ -141,5 +176,22 @@ class TestBOMCTextureEncoder < Test::Unit::TestCase
       assert Dir.glob(File.join(dir, '*.part')).empty?, 'cancelled transcoding leaves no partial files'
       assert !File.file?(target_webp), 'target file is not created on cancellation'
     end
+  end
+
+
+  private
+
+  def write_rgba_png(path, pixels)
+    width = 2
+    height = 1
+    raw = "\x00".b + pixels.pack('C*')
+    signature = "\x89PNG\r\n\x1a\n".b
+    ihdr = [width, height, 8, 6, 0, 0, 0].pack('NNC5')
+    File.binwrite(path, signature + png_chunk('IHDR', ihdr) + png_chunk('IDAT', Zlib::Deflate.deflate(raw)) + png_chunk('IEND', ''.b))
+  end
+
+  def png_chunk(type, data)
+    payload = type.b + data
+    [data.bytesize].pack('N') + payload + [Zlib.crc32(payload)].pack('N')
   end
 end

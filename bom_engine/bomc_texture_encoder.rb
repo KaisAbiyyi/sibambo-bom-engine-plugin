@@ -8,6 +8,8 @@ require 'open3'
 module BOMEngine
   module BOMCTextureEncoder
     DEFAULT_TIMEOUT_SEC = 10
+    BUNDLED_CWEBP_VERSION = '1.6.0'
+    BUNDLED_CWEBP_SHA256 = '6a2f5cb5dce71366353ab1d9caf9c636e039f25703acfce1c148eed346f2f72a'
 
     class EncoderError < StandardError; end
     class EncoderUnavailableError < EncoderError; end
@@ -26,7 +28,7 @@ module BOMEngine
     end
 
     def bundled_binary_path
-      base = File.expand_path('../bin', __dir__)
+      base = File.expand_path('bin', __dir__)
       if Gem.win_platform?
         File.join(base, 'win64', 'cwebp.exe')
       else
@@ -35,15 +37,15 @@ module BOMEngine
     end
 
     def locate_binary
-      return configured_binary_path if configured_binary_path && File.file?(configured_binary_path)
-      return ENV['SIBAMBO_CWEBP_PATH'] if ENV['SIBAMBO_CWEBP_PATH'] && File.file?(ENV['SIBAMBO_CWEBP_PATH'])
+      return configured_binary_path if configured_binary_path
+      return ENV['SIBAMBO_CWEBP_PATH'] if ENV['SIBAMBO_CWEBP_PATH']
 
       bundled = bundled_binary_path
       return bundled if File.file?(bundled)
 
       # Search PATH
-      lookup_cmd = Gem.win_platform? ? 'where.exe cwebp.exe' : 'which cwebp'
-      stdout, status = Open3.capture2(lookup_cmd) rescue ['', nil]
+      lookup_command = Gem.win_platform? ? ['where.exe', 'cwebp.exe'] : ['which', 'cwebp']
+      stdout, status = Open3.capture2(*lookup_command) rescue ['', nil]
       if status && status.success?
         found = stdout.lines.first.to_s.strip
         return found if !found.empty? && File.file?(found)
@@ -66,6 +68,8 @@ module BOMEngine
           version: 'unavailable',
           binary_path: nil,
           sha256: nil,
+          verified: false,
+          source: nil,
           status: :binary_not_found
         }.freeze
         return @cached_capabilities
@@ -73,6 +77,24 @@ module BOMEngine
 
       version_str = probe_version(path)
       sha256_hex = Digest::SHA256.file(path).hexdigest rescue nil
+      source = binary_source(path)
+      verified = source == :bundled && sha256_hex == BUNDLED_CWEBP_SHA256
+      if source == :bundled && !verified
+        @cached_capabilities = {
+          available: false,
+          webp: false,
+          webp_alpha: false,
+          webp_lossless: false,
+          encoder_name: 'libwebp/cwebp',
+          version: version_str || 'unknown',
+          binary_path: path,
+          sha256: sha256_hex,
+          verified: false,
+          source: source,
+          status: :checksum_mismatch
+        }.freeze
+        return @cached_capabilities
+      end
 
       @cached_capabilities = {
         available: !version_str.nil?,
@@ -83,6 +105,8 @@ module BOMEngine
         version: version_str || 'unknown',
         binary_path: path,
         sha256: sha256_hex,
+        verified: verified,
+        source: source,
         status: version_str ? :ready : :probe_failed
       }.freeze
       @cached_capabilities
@@ -178,6 +202,16 @@ module BOMEngine
       nil
     end
     private_class_method :probe_version
+
+    def binary_source(path)
+      expanded = File.expand_path(path)
+      return :bundled if expanded == File.expand_path(bundled_binary_path)
+      return :configured if configured_binary_path && expanded == File.expand_path(configured_binary_path)
+      return :environment if ENV['SIBAMBO_CWEBP_PATH'] && expanded == File.expand_path(ENV['SIBAMBO_CWEBP_PATH'])
+
+      :path
+    end
+    private_class_method :binary_source
 
     def execute_process(args, timeout_sec:, checkpoint:)
       pid = Process.spawn(*args, out: File::NULL, err: File::NULL)
