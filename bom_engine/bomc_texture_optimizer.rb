@@ -160,7 +160,7 @@ module BOMEngine
       )
     end
 
-    def stage(texture:, directory:, basename:, source_path:, image_rep_loader: nil, &checkpoint)
+    def stage(texture:, directory:, basename:, source_path:, policy: :perceptual_bounded, image_rep_loader: nil, &checkpoint)
       png_path = File.join(directory, "#{basename}.png")
       raise 'SketchUp could not stage the lossless PNG texture' unless texture.write(png_path, true) && File.file?(png_path)
 
@@ -172,8 +172,14 @@ module BOMEngine
         staged_bytes: File.size(png_path),
         candidate_bytes: nil,
         native_jpeg: native_jpeg,
-        reason: :jpeg_not_evaluated
+        reason: policy == :pixel_lossless ? :pixel_lossless_policy : :jpeg_not_evaluated
       }
+
+      return {
+        path: evidence[:path],
+        filename: File.basename(evidence[:path]),
+        evidence: evidence.reject { |key, _value| key == :path }
+      } if policy == :pixel_lossless
 
       if opaque?(reference, &checkpoint)
         jpeg_path = File.join(directory, "#{basename}.jpg")

@@ -16,6 +16,7 @@ module BOMEngine
                   :geometry_policy,
                   :allow_topology_simplification
 
+      alias profile name
       alias requires_source_size? requires_source_size
       alias allow_topology_simplification? allow_topology_simplification
 

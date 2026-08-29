@@ -174,6 +174,24 @@ module BOMEngine
           FileUtils.remove_entry(extraction_dir) if extraction_dir && Dir.exist?(extraction_dir)
         end
 
+        lossless_dir = Dir.mktmpdir('lossless-texture-staging')
+        begin
+          Sketchup::ImageRep.decoded_candidate = close_candidate
+          texture = FakeTexture.new('embedded/wood.jpg', reference)
+          lossless_result = BOMCTextureOptimizer.stage(
+            texture: texture,
+            directory: lossless_dir,
+            basename: 'Wood',
+            source_path: 'embedded/wood.jpg',
+            policy: :pixel_lossless
+          )
+          assert(lossless_result[:path].end_with?('.png'), 'pixel_lossless policy produces PNG')
+          assert(lossless_result.dig(:evidence, :selected) == :staged_png, 'pixel_lossless policy selects staged PNG')
+          assert(lossless_result.dig(:evidence, :reason) == :pixel_lossless_policy, 'pixel_lossless policy records reason')
+        ensure
+          FileUtils.remove_entry(lossless_dir) if lossless_dir && Dir.exist?(lossless_dir)
+        end
+
         assert(BOMCTextureOptimizer.native_jpeg_path?('embedded/wood.JPEG'), 'embedded JPEG filename is recognized without requiring a readable source file')
         assert(!BOMCTextureOptimizer.native_jpeg_path?('embedded/glass.png'), 'PNG source does not receive native-JPEG tolerance')
         puts 'BOMC Texture Optimizer Tests: ALL PASSED'

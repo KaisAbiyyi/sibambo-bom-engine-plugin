@@ -117,9 +117,12 @@ module BOMEngine
       def build
         notify(:compile_metadata, 0, 1)
         geometry = build_geometry
-        normal_block = BOMC::NormalCodec.encode(geometry[:normals])
+        is_exact = @profile_contract.profile == :exact
+        forced_normal_codec = is_exact ? BOMC::NormalCodec::FLOAT64 : nil
+        forced_transform_codec = is_exact ? BOMC::TransformCodec::FLOAT64_3X4 : nil
+        normal_block = BOMC::NormalCodec.encode(geometry[:normals], forced_codec: forced_normal_codec)
         notify(:encode_normals, geometry[:normals].length / 3, geometry[:normals].length / 3)
-        transform_block = BOMC::TransformCodec.encode(@model[:transforms], checkpoint: @checkpoint)
+        transform_block = BOMC::TransformCodec.encode(@model[:transforms], forced_codec: forced_transform_codec, checkpoint: @checkpoint)
         notify(:encode_transforms, @model[:transforms].length, @model[:transforms].length)
         all_sections = [
           section(BOMC::SECTION_MODEL, 1, build_model_section(geometry), true),
@@ -457,11 +460,15 @@ module BOMEngine
         edges = []
         uv_block_count = 0
 
+        is_exact = @profile_contract.profile == :exact
+        forced_pos_codec = is_exact ? BOMC::PositionCodec::FLOAT64_ABSOLUTE : nil
+        forced_uv_codec = is_exact ? BOMC::UVCodec::FLOAT64 : nil
+
         @model[:meshes].each_with_index do |mesh, mesh_index|
           mesh_face_start = faces.length
           mesh_edge_start = edges.length
           loops_for_gate = mesh[:faces].map { |face| [face[:outer]] + face[:holes] }.flatten(1)
-          position = BOMC::PositionCodec.encode(mesh[:positions], loops: loops_for_gate)
+          position = BOMC::PositionCodec.encode(mesh[:positions], loops: loops_for_gate, forced_codec: forced_pos_codec)
           position_offset, position_length = append_aligned(position_stream, pack_position_block(position))
           @position_metrics << position.reject { |key, _value| key == :bytes }
           notify(:encode_positions, mesh_index + 1, @model[:meshes].length)
@@ -513,7 +520,7 @@ module BOMEngine
           uv_offset = 0
           uv_length = 0
           unless mesh_uv_values.empty?
-            uv = BOMC::UVCodec.encode(mesh_uv_values)
+            uv = BOMC::UVCodec.encode(mesh_uv_values, forced_codec: forced_uv_codec)
             uv_offset, uv_length = append_aligned(uv_stream, pack_uv_block(uv))
             @uv_metrics << uv.reject { |key, _value| key == :bytes }
             uv_block_count += 1

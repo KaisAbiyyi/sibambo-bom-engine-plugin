@@ -63,10 +63,25 @@ module BOMEngine
 
       module_function
 
-      def encode(values, loops: [], max_error_m: MAX_ERROR_M)
+      def encode(values, loops: [], max_error_m: MAX_ERROR_M, forced_codec: nil)
         source = Array(values).map(&:to_f)
         raise ArgumentError, 'Position buffer must contain XYZ triples.' unless (source.length % 3).zero?
         CodecMath.finite_values!(source, 'Position buffer')
+
+        if forced_codec == FLOAT64_ABSOLUTE || max_error_m.to_f == 0.0
+          float64_bytes = source.pack('E*')
+          return {
+            codec: FLOAT64_ABSOLUTE,
+            bytes: float64_bytes,
+            origin: [0.0, 0.0, 0.0],
+            scale: [0.0, 0.0, 0.0],
+            errors: { max: 0.0, p95: 0.0, rms: 0.0 },
+            count: source.length / 3,
+            candidates: [
+              { name: 'float64_absolute', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true }
+            ]
+          }
+        end
 
         minimum, maximum = bounds(source, 3)
         center = 3.times.map { |axis| (minimum[axis] + maximum[axis]) * 0.5 }
@@ -264,14 +279,28 @@ module BOMEngine
     module NormalCodec
       FLOAT32 = 1
       OCT16 = 2
+      FLOAT64 = 3
       MAX_ANGULAR_ERROR_DEG = 0.1
 
       module_function
 
-      def encode(values)
+      def encode(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, forced_codec: nil)
         source = Array(values).map(&:to_f)
         raise ArgumentError, 'Normal buffer must contain XYZ triples.' unless (source.length % 3).zero?
         CodecMath.finite_values!(source, 'Normal buffer')
+
+        if forced_codec == FLOAT64 || max_error_deg.to_f == 0.0
+          float64_bytes = source.pack('E*')
+          return {
+            codec: FLOAT64,
+            bytes: float64_bytes,
+            count: source.length / 3,
+            errors: { max: 0.0, p95: 0.0, rms: 0.0 },
+            candidates: [
+              { name: 'float64x3', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true }
+            ]
+          }
+        end
 
         float_bytes = source.pack('e*')
         float_decoded = float_bytes.unpack('e*')
@@ -296,7 +325,7 @@ module BOMEngine
         oct_errors = angular_errors(source, oct_decoded)
         oct_summary = CodecMath.error_summary(oct_errors)
         float_summary = CodecMath.error_summary(float_errors)
-        use_oct = oct_summary[:max] <= MAX_ANGULAR_ERROR_DEG + 1.0e-12
+        use_oct = oct_summary[:max] <= max_error_deg.to_f + 1.0e-12
         selected_codec = use_oct ? OCT16 : FLOAT32
         selected_bytes = use_oct ? oct_bytes : float_bytes
         selected_errors = use_oct ? oct_summary : float_summary
@@ -307,7 +336,7 @@ module BOMEngine
           count: source.length / 3,
           errors: selected_errors,
           candidates: [
-            { name: 'float32x3', raw_bytes: float_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float_bytes), errors: float_summary, passed: float_summary[:max] <= MAX_ANGULAR_ERROR_DEG },
+            { name: 'float32x3', raw_bytes: float_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float_bytes), errors: float_summary, passed: float_summary[:max] <= max_error_deg.to_f },
             { name: 'oct16x2', raw_bytes: oct_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(oct_bytes), errors: oct_summary, passed: use_oct }
           ]
         }
@@ -330,6 +359,10 @@ module BOMEngine
               oct_unproject(pair[0] / 32_767.0, pair[1] / 32_767.0)
             end
           end
+        when FLOAT64
+          values = block[:bytes].unpack('E*')
+          raise 'BOMC invalid: normal float64 count mismatch.' unless values.length == count * 3
+          values
         else
           raise "BOMC invalid: unsupported normal codec #{block[:codec]}."
         end
@@ -388,10 +421,25 @@ module BOMEngine
 
       module_function
 
-      def encode(values, max_error: MAX_ERROR)
+      def encode(values, max_error: MAX_ERROR, forced_codec: nil)
         source = Array(values).map(&:to_f)
         raise ArgumentError, 'UV buffer must contain pairs.' unless (source.length % 2).zero?
         CodecMath.finite_values!(source, 'UV buffer')
+
+        if forced_codec == FLOAT64 || max_error.to_f == 0.0
+          float64_bytes = source.pack('E*')
+          return {
+            codec: FLOAT64,
+            bytes: float64_bytes,
+            origin: [0.0, 0.0],
+            scale: [0.0, 0.0],
+            errors: { max: 0.0, p95: 0.0, rms: 0.0 },
+            count: source.length / 2,
+            candidates: [
+              { name: 'float64', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true }
+            ]
+          }
+        end
 
         candidates = []
         float32_bytes = source.pack('e*')
@@ -555,9 +603,23 @@ module BOMEngine
 
       module_function
 
-      def encode(values, max_error: MAX_ERROR, checkpoint: nil)
+      def encode(values, max_error: MAX_ERROR, forced_codec: nil, checkpoint: nil)
         transforms = normalize_transforms(values, checkpoint)
         CodecMath.finite_values!(transforms.flatten, 'Transform buffer')
+
+        if forced_codec == FLOAT64_3X4 || max_error.to_f == 0.0
+          float64_bytes = checkpoint_map(transforms, checkpoint) { |matrix| affine(matrix).pack('E*') }.join.b
+          return {
+            codec: FLOAT64_3X4,
+            bytes: float64_bytes,
+            count: transforms.length,
+            errors: { max: 0.0, p95: 0.0, rms: 0.0 },
+            candidates: [
+              { name: 'float64_3x4', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true }
+            ]
+          }
+        end
+
         candidates = []
 
         float64_bytes = checkpoint_map(transforms, checkpoint) { |matrix| affine(matrix).pack('E*') }.join.b
