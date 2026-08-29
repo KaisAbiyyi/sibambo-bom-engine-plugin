@@ -2,6 +2,8 @@
 
 require 'fileutils'
 require 'tmpdir'
+require_relative 'branding'
+require_relative 'bomc_dialog'
 require_relative 'bomc_decoder'
 require_relative 'bomc_export_job'
 require_relative 'bomc_processing'
@@ -19,6 +21,8 @@ module BOMEngine
   module BOMCExtension
     DEFAULT_PROFILE = :visual
     FORMAT_EXTENSION = '.bomc'.freeze
+    VERSION_SUFFIX = "__SIBAMBO-BOMC-v#{Branding::EXTENSION_VERSION}#{FORMAT_EXTENSION}".freeze
+    ALLOWED_BATCH_SIZES = [96, 128, 256, 512, 1_024, 2_048, 4_096, 8_192].freeze
 
     module_function
 
@@ -34,7 +38,32 @@ module BOMEngine
     def output_path(model)
       source_path = model.path.to_s
       base_name = source_path.empty? ? 'Untitled' : File.basename(source_path, File.extname(source_path))
-      File.join(output_directory(model), "#{base_name}#{FORMAT_EXTENSION}")
+      normalize_output_path(File.join(output_directory(model), base_name))
+    end
+
+    def normalize_output_path(path)
+      base = path.to_s.strip
+      base = base.sub(/(?:_(?:bom|canonical|model-eval|runtime))?\.(?:json|bome2|cleanpkg|bomc)(?:\.gz)?\z/i, '')
+      base = base.sub(/__SBE-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9A-Z]+\z/i, '')
+      base = base.sub(/__SIBAMBO-BOMC-v[0-9]+\.[0-9]+\.[0-9]+\z/i, '')
+      "#{base}#{VERSION_SUFFIX}"
+    end
+
+    def normalize_dialog_settings(payload)
+      values = payload.transform_keys(&:to_sym)
+      profile = values[:profile].to_s.downcase.to_sym
+      profile = DEFAULT_PROFILE unless [:visual, :research, :exact].include?(profile)
+      batch_size = Integer(values[:batch_size]) rescue 512
+      batch_size = 512 unless ALLOWED_BATCH_SIZES.include?(batch_size)
+      processing = BOMCProcessing.settings(
+        :custom,
+        custom: { max_items: batch_size, max_ms: 24.0, max_items_limit: 8_192 }
+      )
+      {
+        output_path: normalize_output_path(values[:output_path]),
+        profile: profile,
+        processing: processing
+      }
     end
 
     def publish_graph(path, graph, profile: DEFAULT_PROFILE, base_path: nil)
@@ -59,15 +88,19 @@ module BOMEngine
       model = Sketchup.active_model
       return UI.messagebox('Model SketchUp tidak tersedia.', MB_OK) if model.nil?
 
-      suggested = output_path(model)
-      chosen = UI.savepanel('Export Compiled BOMC', File.dirname(suggested), File.basename(suggested))
-      return nil if chosen.nil?
-      chosen += FORMAT_EXTENSION unless chosen.downcase.end_with?(FORMAT_EXTENSION)
-      opts = choose_processing_settings
-      return nil if opts.nil?
-      selected_profile, settings = opts
+      BOMCDialog.show(default_path: output_path(model)) do |dialog_settings|
+        start_dialog_export(model, normalize_dialog_settings(dialog_settings))
+      end
+    rescue StandardError => error
+      report_interactive_error(error)
+    end
+
+    def start_dialog_export(model, options)
+      chosen = options.fetch(:output_path)
+      selected_profile = options.fetch(:profile)
+      settings = options.fetch(:processing)
       ConversionJob.start(
-        title: 'Export Compiled BOMC 1.2',
+        title: "#{Branding::EXTENSION_NAME} #{Branding::EXTENSION_VERSION} — Export BOMC #{Branding::BOMC_FORMAT_VERSION}",
         output_path: chosen,
         batch_size: settings[:max_items]
       ) do |progress|
@@ -80,10 +113,16 @@ module BOMEngine
         )
       end
     rescue StandardError => error
+      report_interactive_error(error)
+    end
+    private_class_method :start_dialog_export
+
+    def report_interactive_error(error)
       Logger.error("BOMC export failed: #{error.message}\n#{Array(error.backtrace).first(8).join("\n")}") if defined?(Logger)
       UI.messagebox("BOMC export gagal:\n#{error.message}", MB_OK)
       nil
     end
+    private_class_method :report_interactive_error
 
     def register_menu(menu)
       menu.add_item('Sibambo BOMC Engine: Export BOMC 1.2...') do
@@ -93,40 +132,6 @@ module BOMEngine
         Core.show_about
       end
     end
-
-    def choose_processing_settings
-      answer = UI.inputbox(
-        ['Profile', 'Processing preset'],
-        ['Visual (Recommended for web)', 'Balanced'],
-        ['Visual (Recommended for web)|Research (Reproducible bounded)|Exact (Reference fidelity)', 'Light / Stable|Balanced|Fast|Custom'],
-        'BOMC 1.2 Options'
-      )
-      return nil if answer.nil?
-      prof_str = answer[0].to_s.downcase
-      profile = if prof_str.start_with?('exact')
-        :exact
-      elsif prof_str.start_with?('research')
-        :research
-      else
-        :visual
-      end
-
-      label = answer[1].to_s.downcase
-      mode = label.start_with?('light') ? :light : label.to_sym
-      settings = if mode == :custom
-        custom = UI.inputbox(
-          ['Maximum items per slice', 'Maximum milliseconds per slice'],
-          [256, 24.0],
-          'Custom BOMC Budget'
-        )
-        return nil if custom.nil?
-        BOMCProcessing.settings(:custom, custom: { max_items: custom[0], max_ms: custom[1] })
-      else
-        BOMCProcessing.settings(mode)
-      end
-      [profile, settings]
-    end
-    private_class_method :choose_processing_settings
 
     def export_context(output_path, yield_callback)
       texture_directory = Dir.mktmpdir('bomc-textures')

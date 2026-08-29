@@ -31,8 +31,30 @@ module BOMEngine
       def run
         saved = BOMCExtension.output_path(FakeModel.new('D:/models/RUMAH_L.skp'))
         unsaved = BOMCExtension.output_path(FakeModel.new(''))
-        assert(saved.tr('\\', '/').end_with?('/model-eval-exports/RUMAH_L.bomc'), 'saved model gets deterministic one-file BOMC path')
-        assert(unsaved.end_with?('Untitled.bomc'), 'unsaved model gets deterministic BOMC filename')
+        assert(
+          saved.tr('\\', '/').end_with?('/model-eval-exports/RUMAH_L__SIBAMBO-BOMC-v1.2.0.bomc'),
+          'saved model gets deterministic version-tagged BOMC path'
+        )
+        assert(
+          unsaved.end_with?('Untitled__SIBAMBO-BOMC-v1.2.0.bomc'),
+          'unsaved model gets deterministic version-tagged BOMC filename'
+        )
+        dialog = BOMCExtension.normalize_dialog_settings(
+          output_path: 'D:/exports/RUMAH_L.bomc',
+          profile: 'research',
+          batch_size: '1024'
+        )
+        assert(
+          dialog[:output_path].tr('\\', '/').end_with?('/RUMAH_L__SIBAMBO-BOMC-v1.2.0.bomc'),
+          'dialog enforces current extension version tag'
+        )
+        assert(dialog[:profile] == :research, 'dialog profile reaches exporter')
+        assert(
+          dialog.dig(:processing, :mode) == :custom &&
+            dialog.dig(:processing, :max_items) == 1024 &&
+            dialog.dig(:processing, :max_items_limit) == 8192,
+          'dialog batch control reaches cooperative processing settings'
+        )
         assert(BOMCExtension::DEFAULT_PROFILE == :visual, 'visual profile is the preferred web-first default')
         assert(BOMCExtension::FORMAT_EXTENSION == '.bomc', 'compiled user-facing extension is stable')
         menu = FakeMenu.new
