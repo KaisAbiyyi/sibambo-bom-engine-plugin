@@ -919,6 +919,7 @@ module BOMEngine
             is_active_at_export: is_active,
             source: 'sketchup-page',
             source_binding: { provider: 'sketchup', persistent_id: stable_id.sub(/\Ascene:doc:/, '') },
+            section_version: version,
             camera: {
               projection: is_persp ? 'perspective' : 'orthographic',
               eye_m: [eye_x.round(6), eye_y.round(6), eye_z.round(6)],

@@ -76,11 +76,11 @@ module BOMEngine
       BOMCWriter.write(path, graph, profile: profile, base_path: base_path)
     end
 
-    def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil)
+    def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil)
       profile = normalize_profile(profile)
       processing = settings || BOMCProcessing.settings(:balanced)
       yield_callback = progress || ->(_event) {}
-      context = export_context(output_path, yield_callback, profile: profile)
+      context = export_context(output_path, yield_callback, profile: profile, diagnostics: diagnostics)
       BOMCExportJob.run(
         model: model,
         output_path: output_path,
@@ -138,7 +138,7 @@ module BOMEngine
       end
     end
 
-    def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE)
+    def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE, diagnostics: nil)
       texture_directory = Dir.mktmpdir('bomc-textures')
       {
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
@@ -146,7 +146,9 @@ module BOMEngine
         cancelled: -> { false },
         source_info: ->(model) { BOMCSizeGate.source_info(model.path.to_s) },
         snapshot: lambda do |model, checkpoint|
-          snapshot_model(model, texture_directory, checkpoint)
+          graph = snapshot_model(model, texture_directory, checkpoint)
+          diagnostics[:graph] = graph if diagnostics
+          graph
         end,
         compile: lambda do |graph, source, path, checkpoint|
           BOMCSizeGate.compile(
