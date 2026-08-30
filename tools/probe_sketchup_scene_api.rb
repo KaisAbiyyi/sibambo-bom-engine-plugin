@@ -61,6 +61,10 @@ module BOMEngine
           active_planes << { persistent_id: pid, plane_equation: eq }
         end
 
+        rendering_options = if page.respond_to?(:use_rendering_options?) && page.use_rendering_options? && page.respond_to?(:rendering_options)
+                              page.rendering_options
+                            end
+
         scene_entry = {
           name: page.name,
           persistent_id: (page.respond_to?(:persistent_id) ? page.persistent_id : nil),
@@ -72,6 +76,9 @@ module BOMEngine
           hidden_entities_count: hidden_ents.length,
           use_section_planes: (page.respond_to?(:use_section_planes?) ? page.use_section_planes? : false),
           active_section_planes: active_planes,
+          use_rendering_options: (page.respond_to?(:use_rendering_options?) ? page.use_rendering_options? : false),
+          display_section_cuts: rendering_options ? rendering_options['DisplaySectionCuts'] : nil,
+          display_section_planes: rendering_options ? rendering_options['DisplaySectionPlanes'] : nil,
           api_capabilities: {
             has_get_drawingelement_visibility: page.respond_to?(:get_drawingelement_visibility),
             has_hidden_entities: page.respond_to?(:hidden_entities),

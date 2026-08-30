@@ -783,6 +783,8 @@ module BOMEngine
           is_persp = (flags & 0x40) != 0
           fov_is_height = (flags & 0x80) != 0
           is_2d = (flags & 0x100) != 0
+          section_cuts_displayed = (flags & 0x200) != 0
+          section_planes_displayed = (flags & 0x400) != 0
 
           bitset_bytes = bytes.byteslice(cursor, tag_bitset_bytes).unpack('C*')
           cursor += tag_bitset_bytes
@@ -907,7 +909,8 @@ module BOMEngine
           stable_id = strings[id_idx].to_s
           stable_id = "scene:doc:#{name_idx}" if stable_id.empty?
 
-          rendering_support = (version >= 5 && (primitive[:active_clip_plane_indices]&.any? || !primitive[:active_section_plane_ids].empty?)) ? 'full' : 'metadata-only'
+          has_section_cuts = primitive[:active_clip_plane_indices]&.any? || !primitive[:active_section_plane_ids].empty?
+          rendering_support = (version >= 5 && section_cuts_displayed && has_section_cuts) ? 'full' : 'metadata-only'
 
           {
             id: stable_id,
@@ -960,6 +963,8 @@ module BOMEngine
             section_state: {
               active_section_plane_ids: primitive[:active_section_plane_ids],
               active_clip_plane_indices: primitive[:active_clip_plane_indices] || [],
+              section_cuts_displayed: section_cuts_displayed,
+              section_planes_displayed: section_planes_displayed,
               rendering_support: rendering_support
             },
             visibility_signature: strings[sig_idx].to_s
@@ -1013,7 +1018,7 @@ module BOMEngine
           stores_hidden_objects: true,
           stores_hidden_geometry: false,
           stores_section_planes: false,
-          section_state: { active_section_plane_ids: [], rendering_support: 'none' },
+          section_state: { active_section_plane_ids: [], section_cuts_displayed: false, section_planes_displayed: false, rendering_support: 'none' },
           visibility_signature: signature
         }]
       end

@@ -81,6 +81,8 @@ module BOMEngine
           stores_section_planes: false,
           section_state: {
             active_section_plane_ids: [],
+            section_cuts_displayed: false,
+            section_planes_displayed: false,
             rendering_support: 'metadata-only'
           },
           visibility_signature: signature
@@ -117,6 +119,8 @@ module BOMEngine
       visible_node_overrides = overrides[:visible_nodes]
       hidden_node_overrides = overrides[:hidden_nodes]
       active_section_plane_ids = extract_active_section_planes(page)
+      section_rendering_state = extract_section_rendering_state(page)
+      section_cuts_displayed = section_rendering_state[:section_cuts_displayed]
 
       model_clip_planes = collect_model_clip_planes(model)
       rendering_support = 'none'
@@ -125,7 +129,7 @@ module BOMEngine
           cp = model_clip_planes.find { |p| p[:stable_id] == sid }
           cp && cp[:owner_definition_id].nil?
         end
-        rendering_support = all_resolved ? 'full' : 'metadata-only'
+        rendering_support = all_resolved && section_cuts_displayed ? 'full' : 'metadata-only'
       end
 
       signature = compute_visibility_signature(
@@ -137,7 +141,9 @@ module BOMEngine
         hidden_face_overrides: overrides[:hidden_faces],
         visible_edge_overrides: overrides[:visible_edges],
         hidden_edge_overrides: overrides[:hidden_edges],
-        active_section_plane_ids: active_section_plane_ids
+        active_section_plane_ids: active_section_plane_ids,
+        section_cuts_displayed: section_cuts_displayed,
+        section_planes_displayed: section_rendering_state[:section_planes_displayed]
       )
 
       profile = {
@@ -170,6 +176,8 @@ module BOMEngine
         stores_section_planes: stores_sections,
         section_state: {
           active_section_plane_ids: active_section_plane_ids.sort.uniq,
+          section_cuts_displayed: section_cuts_displayed,
+          section_planes_displayed: section_rendering_state[:section_planes_displayed],
           rendering_support: rendering_support
         },
         visibility_signature: signature,
@@ -563,7 +571,7 @@ module BOMEngine
       visible_in_any
     end
 
-    def compute_visibility_signature(visible_tag_ids:, hidden_tag_ids:, visible_node_overrides:, hidden_node_overrides:, active_section_plane_ids:, visible_face_overrides: [], hidden_face_overrides: [], visible_edge_overrides: [], hidden_edge_overrides: [])
+    def compute_visibility_signature(visible_tag_ids:, hidden_tag_ids:, visible_node_overrides:, hidden_node_overrides:, active_section_plane_ids:, section_cuts_displayed: false, section_planes_displayed: false, visible_face_overrides: [], hidden_face_overrides: [], visible_edge_overrides: [], hidden_edge_overrides: [])
       payload = [
         Array(visible_tag_ids).map(&:to_s).sort.uniq,
         Array(hidden_tag_ids).map(&:to_s).sort.uniq,
@@ -573,7 +581,9 @@ module BOMEngine
         Array(hidden_face_overrides).map(&:to_s).sort.uniq,
         Array(visible_edge_overrides).map(&:to_s).sort.uniq,
         Array(hidden_edge_overrides).map(&:to_s).sort.uniq,
-        Array(active_section_plane_ids).map(&:to_s).sort.uniq
+        Array(active_section_plane_ids).map(&:to_s).sort.uniq,
+        section_cuts_displayed == true,
+        section_planes_displayed == true
       ]
       Digest::SHA256.hexdigest(JSON.generate(payload))
     end
@@ -601,6 +611,7 @@ module BOMEngine
           active_clip_indices: active_planes.map { |plane| planes.index(plane) },
           clip_plane_equation_hash: Digest::SHA256.hexdigest(JSON.generate(active_planes.map { |plane| [plane[:stable_id], plane[:origin_m], plane[:normal], plane[:plane_constant], plane[:keep_side]] })),
           rendering_support: scene.dig(:section_state, :rendering_support).to_s,
+          section_cuts_displayed: scene.dig(:section_state, :section_cuts_displayed) == true,
           unresolved_scene_semantics_count: Array(visibility[:unresolved_primitive_overrides]).length + Array(scene[:scene_diagnostics]).length
         }
       end
@@ -737,6 +748,19 @@ module BOMEngine
       planes
     rescue StandardError
       []
+    end
+
+    def extract_section_rendering_state(page)
+      return { section_cuts_displayed: false, section_planes_displayed: false } unless page.respond_to?(:use_rendering_options?) && page.use_rendering_options?
+      return { section_cuts_displayed: false, section_planes_displayed: false } unless page.respond_to?(:rendering_options)
+
+      options = page.rendering_options
+      {
+        section_cuts_displayed: options['DisplaySectionCuts'] == true,
+        section_planes_displayed: options['DisplaySectionPlanes'] == true
+      }
+    rescue StandardError
+      { section_cuts_displayed: false, section_planes_displayed: false }
     end
 
     def collect_model_clip_planes(model)

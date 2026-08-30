@@ -695,7 +695,8 @@ module Sketchup
     attr_accessor :name, :description, :camera, :use_camera, :use_hidden_layers, :layers,
                   :use_hidden_objects, :use_hidden_geometry, :hidden_entities,
                   :persistent_id, :transition_time, :drawingelement_visibility,
-                  :use_section_planes, :active_section_planes, :layer_folders
+                  :use_section_planes, :active_section_planes, :layer_folders,
+                  :use_rendering_options, :rendering_options
 
     def initialize(name)
       @name = name
@@ -713,6 +714,8 @@ module Sketchup
       @transition_time = 0.0
       @use_section_planes = true
       @active_section_planes = []
+      @use_rendering_options = true
+      @rendering_options = { 'DisplaySectionCuts' => true, 'DisplaySectionPlanes' => false }
     end
 
     def set_drawingelement_visibility(element, visible)
@@ -753,6 +756,10 @@ module Sketchup
 
     def use_section_planes?
       @use_section_planes
+    end
+
+    def use_rendering_options?
+      @use_rendering_options
     end
   end
 

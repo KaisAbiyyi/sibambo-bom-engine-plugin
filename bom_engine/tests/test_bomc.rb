@@ -677,7 +677,7 @@ module BOMEngine
             stores_hidden_objects: true,
             stores_hidden_geometry: false,
             stores_section_planes: true,
-            section_state: { active_section_plane_ids: ['section:plane-1'] },
+            section_state: { active_section_plane_ids: ['section:plane-1'], section_cuts_displayed: true },
             visibility_signature: 'sig-cut-test'
           }
         ]

@@ -374,7 +374,7 @@ module BOMEngine
             stores_hidden_objects: scene[:stores_hidden_objects] != false,
             stores_hidden_geometry: scene[:stores_hidden_geometry] == true,
             stores_section_planes: scene[:stores_section_planes] == true,
-            section_state: scene[:section_state] || { active_section_plane_ids: [], rendering_support: 'metadata-only' },
+            section_state: scene[:section_state] || { active_section_plane_ids: [], section_cuts_displayed: false, section_planes_displayed: false, rendering_support: 'metadata-only' },
             visibility_signature: scene[:visibility_signature].to_s
           }
         end

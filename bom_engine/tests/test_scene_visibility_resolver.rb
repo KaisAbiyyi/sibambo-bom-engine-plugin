@@ -61,13 +61,15 @@ module BOMEngine
       attr_accessor :name, :description, :camera, :use_camera, :use_hidden_layers, :layers,
                     :use_hidden_objects, :use_hidden_geometry, :hidden_entities,
                     :use_section_planes, :active_section_planes, :persistent_id,
-                    :transition_time, :layer_folders
+                    :transition_time, :layer_folders, :use_rendering_options,
+                    :rendering_options
 
       def initialize(name, persistent_id: nil, camera: nil, use_camera: true,
                      use_hidden_layers: true, layers: [],
                      use_hidden_objects: true, use_hidden_geometry: false, hidden_entities: [],
                      use_section_planes: false, active_section_planes: [],
-                     transition_time: 0.0, layer_folders: [])
+                     transition_time: 0.0, layer_folders: [], use_rendering_options: true,
+                     rendering_options: { 'DisplaySectionCuts' => true, 'DisplaySectionPlanes' => false })
         @name = name
         @description = "Description for #{name}"
         @persistent_id = persistent_id || "pid_#{name.downcase}"
@@ -82,6 +84,8 @@ module BOMEngine
         @active_section_planes = active_section_planes
         @transition_time = transition_time
         @layer_folders = layer_folders
+        @use_rendering_options = use_rendering_options
+        @rendering_options = rendering_options
       end
 
       def use_camera?; @use_camera; end
@@ -89,6 +93,7 @@ module BOMEngine
       def use_hidden_objects?; @use_hidden_objects; end
       def use_hidden_geometry?; @use_hidden_geometry; end
       def use_section_planes?; @use_section_planes; end
+      def use_rendering_options?; @use_rendering_options; end
 
       def get_drawingelement_visibility(element)
         if @drawingelement_visibility && @drawingelement_visibility.key?(element)
@@ -667,7 +672,7 @@ module BOMEngine
             stores_hidden_objects: true,
             stores_hidden_geometry: false,
             stores_section_planes: true,
-            section_state: { active_section_plane_ids: ['section:global_cut'] },
+            section_state: { active_section_plane_ids: ['section:global_cut'], section_cuts_displayed: true },
             visibility_signature: 'sig_cut_1'
           },
           {
@@ -683,7 +688,7 @@ module BOMEngine
             stores_hidden_objects: true,
             stores_hidden_geometry: false,
             stores_section_planes: true,
-            section_state: { active_section_plane_ids: ['section:table_cut'] },
+            section_state: { active_section_plane_ids: ['section:table_cut'], section_cuts_displayed: true },
             visibility_signature: 'sig_cut_2'
           },
           {

@@ -886,6 +886,8 @@ module BOMEngine
           flags |= 0x40 if camera[:projection] != 'orthographic'
           flags |= 0x80 if camera[:fov_is_height] != false
           flags |= 0x100 if camera[:is_2d] == true
+          flags |= 0x200 if scene.dig(:section_state, :section_cuts_displayed) == true
+          flags |= 0x400 if scene.dig(:section_state, :section_planes_displayed) == true
 
           eye = Array(camera[:eye_m])
           target = Array(camera[:target_m])
@@ -978,8 +980,8 @@ module BOMEngine
           data << BOMC::Binary.write_varuint(section_ids.length)
           section_ids.each { |id| data << BOMC::Binary.write_varuint(@string_index[id.to_s] || 0) }
 
-          clip_indices = Array(scene.dig(:section_state, :active_clip_plane_indices))
-          if clip_indices.empty? && !section_ids.empty?
+          clip_indices = scene.dig(:section_state, :section_cuts_displayed) == true ? Array(scene.dig(:section_state, :active_clip_plane_indices)) : []
+          if clip_indices.empty? && !section_ids.empty? && scene.dig(:section_state, :section_cuts_displayed) == true
             clip_indices = section_ids.map { |pid| plane_index_by_id[pid.to_s] }.compact
           end
           data << BOMC::Binary.write_varuint(clip_indices.length)
