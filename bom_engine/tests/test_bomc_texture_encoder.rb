@@ -3,6 +3,7 @@
 
 require 'test/unit'
 require 'fileutils'
+require 'rbconfig'
 require 'tmpdir'
 require 'zlib'
 require_relative '../bomc_texture_encoder'
@@ -54,6 +55,8 @@ class TestBOMCTextureEncoder < Test::Unit::TestCase
   end
 
   def test_bundled_encoder_is_verified_and_encodes_real_opaque_and_alpha_png
+    omit('bundled cwebp.exe integration is Windows-only') unless Gem.win_platform?
+
     BOMEngine::BOMCTextureEncoder.configured_binary_path = nil
     caps = BOMEngine::BOMCTextureEncoder.capabilities(force_refresh: true)
 
@@ -107,11 +110,7 @@ class TestBOMCTextureEncoder < Test::Unit::TestCase
         RUBY
       end
 
-      # On Windows create a batch file or ruby wrapper
-      mock_exec = File.join(dir, 'mock_cwebp.bat')
-      File.open(mock_exec, 'w') do |f|
-        f.puts "@ruby \"#{mock_script}\" %*"
-      end
+      mock_exec = create_mock_executable(dir, 'mock_cwebp', mock_script)
 
       BOMEngine::BOMCTextureEncoder.configured_binary_path = mock_exec
       caps = BOMEngine::BOMCTextureEncoder.capabilities(force_refresh: true)
@@ -151,10 +150,7 @@ class TestBOMCTextureEncoder < Test::Unit::TestCase
         RUBY
       end
 
-      mock_exec = File.join(dir, 'mock_slow.bat')
-      File.open(mock_exec, 'w') do |f|
-        f.puts "@ruby \"#{mock_script}\" %*"
-      end
+      mock_exec = create_mock_executable(dir, 'mock_slow', mock_script)
 
       BOMEngine::BOMCTextureEncoder.configured_binary_path = mock_exec
       source_png = File.join(dir, 'test.png')
@@ -180,6 +176,18 @@ class TestBOMCTextureEncoder < Test::Unit::TestCase
 
 
   private
+
+  def create_mock_executable(dir, name, ruby_script)
+    if Gem.win_platform?
+      path = File.join(dir, "#{name}.bat")
+      File.write(path, "@\"#{RbConfig.ruby}\" \"#{ruby_script}\" %*\n")
+    else
+      path = File.join(dir, name)
+      File.write(path, "#!/bin/sh\nexec \"#{RbConfig.ruby}\" \"#{ruby_script}\" \"$@\"\n")
+      FileUtils.chmod(0o755, path)
+    end
+    path
+  end
 
   def write_rgba_png(path, pixels)
     width = 2
