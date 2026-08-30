@@ -7,7 +7,7 @@ require 'open3'
 begin
   require 'zip'
 rescue LoadError
-  # zip gem not present, will use PowerShell Compress-Archive
+  # zip gem is optional; the platform archive command is used below.
 end
 
 module EvolutionLabBuilder
@@ -1496,8 +1496,15 @@ module EvolutionLabBuilder
     FileUtils.rm_f(temp_zip)
     FileUtils.rm_f(zip_file_path)
 
-    ps_cmd = "powershell -NoProfile -Command \"Compress-Archive -Path '#{folder_path}\\*' -DestinationPath '#{temp_zip}' -Force\""
-    stdout, stderr, status = Open3.capture3(ps_cmd)
+    if Gem.win_platform?
+      command = [
+        'powershell', '-NoProfile', '-Command',
+        "Compress-Archive -Path '#{folder_path}\\*' -DestinationPath '#{temp_zip}' -Force"
+      ]
+      _stdout, stderr, status = Open3.capture3(*command)
+    else
+      _stdout, stderr, status = Open3.capture3('zip', '-q', '-r', temp_zip, '.', chdir: folder_path)
+    end
     unless status.success?
       raise "Failed to compress #{temp_zip}: #{stderr}"
     end
