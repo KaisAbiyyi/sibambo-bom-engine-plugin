@@ -2,7 +2,7 @@ name: Producer CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/*, 'feat/**']
     tags: ['*']
   pull_request:
     branches: [main]
