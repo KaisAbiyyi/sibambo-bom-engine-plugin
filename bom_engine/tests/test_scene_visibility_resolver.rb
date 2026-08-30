@@ -89,6 +89,27 @@ module BOMEngine
       def use_hidden_objects?; @use_hidden_objects; end
       def use_hidden_geometry?; @use_hidden_geometry; end
       def use_section_planes?; @use_section_planes; end
+
+      def get_drawingelement_visibility(element)
+        if @drawingelement_visibility && @drawingelement_visibility.key?(element)
+          @drawingelement_visibility[element]
+        elsif @hidden_entities.include?(element) || (element.respond_to?(:hidden?) && element.hidden?)
+          false
+        else
+          true
+        end
+      end
+
+      def set_drawingelement_visibility(element, visible)
+        @drawingelement_visibility ||= {}
+        val = visible ? true : false
+        @drawingelement_visibility[element] = val
+        if val
+          @hidden_entities.delete(element)
+        else
+          @hidden_entities << element unless @hidden_entities.include?(element)
+        end
+      end
     end
 
     class MockModel
@@ -717,6 +738,88 @@ module BOMEngine
       assert_equal [], scenes[2].dig(:section_state, :active_section_plane_ids)
       assert_equal [], scenes[2].dig(:section_state, :active_clip_plane_indices)
       assert_equal 'metadata-only', scenes[2].dig(:section_state, :rendering_support)
+    end
+
+    # 1. Official Page API surface regressions: Page DOES NOT have visible_entities or layer_visible?
+    def test_official_page_api_surface_does_not_expose_fake_methods
+      page = MockPage.new('PERS')
+      assert_equal false, page.respond_to?(:visible_entities), 'Page MUST NOT expose visible_entities'
+      assert_equal false, page.respond_to?(:layer_visible?), 'Page MUST NOT expose layer_visible?'
+      assert_equal true, page.respond_to?(:get_drawingelement_visibility), 'Page MUST expose get_drawingelement_visibility'
+      assert_equal true, page.respond_to?(:hidden_entities), 'Page MUST expose hidden_entities'
+    end
+
+    # 2. Conjunctive visibility: Hidden tag CANNOT be bypassed by positive DrawingElement state
+    def test_hidden_tag_cannot_be_bypassed_by_positive_drawingelement_state
+      layer_hidden = MockLayer.new('HiddenLayer', visible: true, persistent_id: '101')
+      elem = MockDrawingElement.new('comp_1', layer: layer_hidden, hidden: false)
+      page = MockPage.new('SCENE_TAG_HIDDEN', layers: [layer_hidden]) # layer_hidden is hidden in page
+
+      # Force positive DrawingElement visibility
+      page.define_singleton_method(:get_drawingelement_visibility) { |_ent| true }
+
+      effective = SceneVisibilityResolver.effective_entity_visibility(elem, page)
+      assert_equal false, effective, 'Positive DrawingElement visibility MUST NOT bypass hidden tag'
+    end
+
+    # 3. Conjunctive visibility: Hidden parent CANNOT be bypassed by positive child state
+    def test_hidden_parent_cannot_be_bypassed_by_positive_child_state
+      layer = MockLayer.new('Layer0', visible: true, persistent_id: '100')
+      child_elem = MockDrawingElement.new('child_1', layer: layer, hidden: false)
+      page = MockPage.new('SCENE_PARENT_HIDDEN')
+      page.define_singleton_method(:get_drawingelement_visibility) { |_ent| true }
+
+      effective = SceneVisibilityResolver.effective_entity_visibility(child_elem, page, parent_visibility: false)
+      assert_equal false, effective, 'Positive child state MUST NOT make child visible through an invisible parent'
+    end
+
+    # 4. Conjunctive visibility: Base-hidden element unhidden in Scene with visible tag and ancestors is visible
+    def test_base_hidden_element_unhidden_in_scene_is_visible
+      layer = MockLayer.new('Layer0', visible: true, persistent_id: '100')
+      elem_base_hidden = MockDrawingElement.new('comp_base_hidden', layer: layer, hidden: true)
+      page = MockPage.new('SCENE_UNHIDE')
+      page.define_singleton_method(:get_drawingelement_visibility) { |_ent| true }
+
+      effective = SceneVisibilityResolver.effective_entity_visibility(elem_base_hidden, page, parent_visibility: true)
+      assert_equal true, effective, 'Base-hidden element unhidden in Scene with visible tag & parent MUST be visible'
+    end
+
+    # 5. Non-unit section plane normalization (e.g. 2z - 100 = 0)
+    def test_non_unit_section_plane_normalization
+      plane_mock = Object.new
+      # 2z - 100 = 0 -> [0, 0, 2, -100] -> normal [0, 0, 1], dist = -50 inches
+      plane_mock.define_singleton_method(:get_plane) { [0.0, 0.0, 2.0, -100.0] }
+      plane_mock.define_singleton_method(:persistent_id) { 'plane_nonunit' }
+      plane_mock.define_singleton_method(:active?) { true }
+
+      record = SceneVisibilityResolver.create_clip_plane_record(plane_mock)
+      assert_equal [0.0, 0.0, 1.0], record[:normal], 'Normal must be normalized to unit vector'
+      # -d_norm = 50 inches = 1.27 meters
+      assert_in_delta 1.27, record[:origin_m][2], 1.0e-5, 'Origin Z must be 1.27 meters'
+      assert_in_delta(-1.27, record[:plane_constant], 1.0e-5)
+    end
+
+    # 6. Truthful rendering_support: unresolvable active section plane produces 'metadata-only'
+    def test_unresolved_active_section_plane_produces_metadata_only
+      page = MockPage.new('SCENE_UNRESOLVED', use_section_planes: true, active_section_planes: [Object.new])
+      page.define_singleton_method(:active_section_planes) { [] }
+      page.define_singleton_method(:active_section_plane) { nil }
+      # Override extract_active_section_planes to return an ID that does not exist in model
+      def page.active_section_planes; ['section:nonexistent_id']; end
+
+      profile = SceneVisibilityResolver.build_scene_profile(page)
+      assert_equal 'metadata-only', profile.dig(:section_state, :rendering_support)
+    end
+
+    # 7. DrawingElement applicability: Nested faces/edges are not independently scene controlled
+    def test_nested_face_edge_not_scene_applicable
+      page = MockPage.new('SCENE_TEST', use_hidden_geometry: true)
+
+      nested_face = Object.new
+      nested_face.define_singleton_method(:parent) { Object.new } # Parent is a ComponentDefinition, not Model
+
+      applicable = SceneVisibilityResolver.drawingelement_scene_applicable?(nested_face, page, is_root: false)
+      assert_equal false, applicable, 'Nested faces must NOT be independently Scene-controlled'
     end
   end
 end

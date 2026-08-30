@@ -633,12 +633,8 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     col_inst.layer = tag_str
     col_inst.hidden = true # hidden in base state!
 
-    # Made visible in STR page
-    if page_str.respond_to?(:visible_entities=)
-      page_str.visible_entities = [col_inst]
-    elsif page_str.respond_to?(:set_drawingelement_visibility)
-      page_str.set_drawingelement_visibility(col_inst, true)
-    end
+    # Made visible in STR page via official DrawingElement visibility
+    page_str.set_drawingelement_visibility(col_inst, true)
 
     graph = BOMEngine::CanonicalGraphBuilder.build(
       model: @model,

@@ -118,6 +118,16 @@ module BOMEngine
       hidden_node_overrides = overrides[:hidden_nodes]
       active_section_plane_ids = extract_active_section_planes(page)
 
+      model_clip_planes = collect_model_clip_planes(model)
+      rendering_support = 'none'
+      if !active_section_plane_ids.empty?
+        all_resolved = active_section_plane_ids.all? do |sid|
+          cp = model_clip_planes.find { |p| p[:stable_id] == sid }
+          cp && cp[:owner_definition_id].nil?
+        end
+        rendering_support = all_resolved ? 'full' : 'metadata-only'
+      end
+
       signature = compute_visibility_signature(
         visible_tag_ids: visible_tag_ids,
         hidden_tag_ids: hidden_tag_ids,
@@ -160,7 +170,7 @@ module BOMEngine
         stores_section_planes: stores_sections,
         section_state: {
           active_section_plane_ids: active_section_plane_ids.sort.uniq,
-          rendering_support: active_section_plane_ids.empty? ? 'metadata-only' : 'full'
+          rendering_support: rendering_support
         },
         visibility_signature: signature
       }
@@ -170,6 +180,26 @@ module BOMEngine
       end
 
       profile
+    end
+
+    def drawingelement_scene_applicable?(entity, page, is_root: false)
+      return false if page.nil? || entity.nil?
+
+      stores_objects = page.respond_to?(:use_hidden_objects?) ? page.use_hidden_objects? : (page.respond_to?(:use_hidden?) ? page.use_hidden? : true)
+      stores_geometry = page.respond_to?(:use_hidden_geometry?) ? page.use_hidden_geometry? : false
+
+      is_instance = (defined?(Sketchup::ComponentInstance) && entity.is_a?(Sketchup::ComponentInstance) rescue false) ||
+                    (defined?(Sketchup::Group) && entity.is_a?(Sketchup::Group) rescue false) ||
+                    (defined?(Sketchup::Image) && entity.is_a?(Sketchup::Image) rescue false) ||
+                    entity.respond_to?(:definition) ||
+                    entity.class.name.to_s =~ /Instance|Group|Image|MockDrawingElement|DrawingElement/i
+
+      if is_instance
+        stores_objects
+      else
+        is_root_entity = is_root || (entity.respond_to?(:parent) && (entity.parent.is_a?(Sketchup::Model) rescue false))
+        stores_geometry && is_root_entity
+      end
     end
 
     def extract_node_overrides(page, model, nodes = nil)
@@ -192,10 +222,6 @@ module BOMEngine
       hidden_entities_list = page.respond_to?(:hidden_entities) ? ((begin page.hidden_entities.to_a rescue [] end) || []) : []
       hidden_entities_set = hidden_entities_list.to_set
       hidden_pids_set = hidden_entities_list.map { |he| safe_persistent_id(he).to_s }.to_set
-
-      visible_entities_list = page.respond_to?(:visible_entities) ? ((begin page.visible_entities.to_a rescue [] end) || []) : []
-      visible_entities_set = visible_entities_list.to_set
-      visible_pids_set = visible_entities_list.map { |ve| safe_persistent_id(ve).to_s }.to_set
 
       nodes_by_entity = {}
       nodes_by_pid = {}
@@ -234,35 +260,28 @@ module BOMEngine
           entity = node[:_entity] || node[:entity]
           pid = node.dig(:source_identity, :persistent_id) || node[:persistent_id]
 
-          is_instance = (node[:kind].to_s =~ /instance|component|group|image|text/) ||
-                        (defined?(Sketchup::ComponentInstance) && entity.is_a?(Sketchup::ComponentInstance) rescue false) ||
-                        (defined?(Sketchup::Group) && entity.is_a?(Sketchup::Group) rescue false) ||
-                        (entity.respond_to?(:definition) || entity.respond_to?(:entities))
+          applies = drawingelement_scene_applicable?(entity, page, is_root: false)
+          next unless applies
 
-          applies = is_instance ? stores_objects : stores_geometry
+          base_hidden = (entity.respond_to?(:hidden?) && entity.hidden?) || (node[:visible] == false)
 
-          if applies
-            flag = nil
-            if entity && has_drawingelement_visibility
-              flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
-            end
-
+          if entity && has_drawingelement_visibility
+            flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
             if flag == false
               hidden_overrides << node_id
-            elsif flag == true
+            elsif flag == true && base_hidden
+              # Only encode positive visible override if the base element was hidden
               visible_overrides << node_id
-            else
-              if (entity && hidden_entities_set.include?(entity)) || (pid && hidden_pids_set.include?(pid.to_s))
-                hidden_overrides << node_id
-              elsif (entity && visible_entities_set.include?(entity)) || (pid && visible_pids_set.include?(pid.to_s))
-                visible_overrides << node_id
-              end
+            end
+          else
+            if (entity && hidden_entities_set.include?(entity)) || (pid && hidden_pids_set.include?(pid.to_s))
+              hidden_overrides << node_id
             end
           end
         end
       end
 
-      # 2. Match any remaining hidden/visible entities that correspond to known instance nodes
+      # Match top-level hidden entities from page.hidden_entities
       hidden_entities_list.each do |ent|
         node_id = stores_objects ? (nodes_by_entity[ent] || nodes_by_pid[safe_persistent_id(ent).to_s]) : nil
         primitive = stores_geometry ? (primitives_by_entity[ent] || primitives_by_pid[safe_persistent_id(ent).to_s]) : nil
@@ -270,18 +289,6 @@ module BOMEngine
           hidden_overrides << node_id
         elsif primitive
           (primitive[0] == :face ? result[:hidden_faces] : result[:hidden_edges]) << primitive[1]
-        elsif (stores_objects || stores_geometry) && ent.class.to_s !~ /SectionPlane/
-          result[:unresolved] << "drawingelement:#{safe_persistent_id(ent)}"
-        end
-      end
-
-      visible_entities_list.each do |ent|
-        node_id = stores_objects ? (nodes_by_entity[ent] || nodes_by_pid[safe_persistent_id(ent).to_s]) : nil
-        primitive = stores_geometry ? (primitives_by_entity[ent] || primitives_by_pid[safe_persistent_id(ent).to_s]) : nil
-        if node_id
-          visible_overrides << node_id
-        elsif primitive
-          (primitive[0] == :face ? result[:visible_faces] : result[:visible_edges]) << primitive[1]
         elsif (stores_objects || stores_geometry) && ent.class.to_s !~ /SectionPlane/
           result[:unresolved] << "drawingelement:#{safe_persistent_id(ent)}"
         end
@@ -372,11 +379,6 @@ module BOMEngine
         end
       end
 
-      # Check explicit page query if available (SketchUp 2020+)
-      if page.respond_to?(:layer_visible?)
-        return page.layer_visible?(layer)
-      end
-
       # In official SketchUp API:
       # Page#layers returns layers whose visibility in this page differs from their default visibility.
       # Bit 0x0001 in layer.page_behavior indicates hidden by default on new pages:
@@ -399,7 +401,7 @@ module BOMEngine
       end
     end
 
-    def effective_entity_visibility(entity, page, parent_visibility: true)
+    def effective_entity_visibility(entity, page, parent_visibility: true, is_root: false)
       return false unless parent_visibility
       return false if entity.nil? || (entity.respond_to?(:deleted?) && entity.deleted?)
 
@@ -413,43 +415,25 @@ module BOMEngine
       base_hidden = entity.respond_to?(:hidden?) ? entity.hidden? : false
       return false if base_hidden || !base_visible if page.nil?
 
-      stores_objects = page.respond_to?(:use_hidden_objects?) ? page.use_hidden_objects? : (page.respond_to?(:use_hidden?) ? page.use_hidden? : true)
-      stores_geometry = page.respond_to?(:use_hidden_geometry?) ? page.use_hidden_geometry? : false
-
-      is_instance = entity.is_a?(Sketchup::ComponentInstance) || entity.is_a?(Sketchup::Group) rescue false
-      is_instance ||= (entity.respond_to?(:definition) || entity.respond_to?(:entities))
-
-      applies = is_instance ? stores_objects : stores_geometry
+      applies = drawingelement_scene_applicable?(entity, page, is_root: is_root)
 
       if applies
-        # 3. Page DrawingElement override (Boolean return: true = visible, false = hidden)
+        # 3. Page DrawingElement query
         if page.respond_to?(:get_drawingelement_visibility)
           flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
           return false if flag == false
           return true if flag == true
         end
 
-        # 4. Page visible entities
-        if page.respond_to?(:visible_entities)
-          visible_list = (begin page.visible_entities.to_a rescue nil end)
-          return true if visible_list && visible_list.respond_to?(:include?) && visible_list.include?(entity)
-        end
-
-        # 5. Page hidden entities
+        # 4. Page hidden entities fallback
         if page.respond_to?(:hidden_entities)
           hidden_list = (begin page.hidden_entities.to_a rescue nil end)
           return false if hidden_list && hidden_list.respond_to?(:include?) && hidden_list.include?(entity)
         end
       end
 
-      # 6. Hidden objects / geometry flags
-      if applies && base_hidden
-        return false
-      end
-      if !applies && (base_hidden || !base_visible)
-        return false
-      end
-
+      # 5. Default to base visibility
+      return false if base_hidden || !base_visible
       true
     rescue StandardError
       true
@@ -642,10 +626,20 @@ module BOMEngine
       if page.respond_to?(:active_section_planes)
         raw = (begin page.active_section_planes.to_a rescue [] end) || []
         raw.each do |plane|
-          planes << "section:#{safe_persistent_id(plane)}"
+          next if plane.nil?
+          if plane.is_a?(String)
+            planes << (plane.start_with?('section:') ? plane : "section:#{plane}")
+          else
+            planes << "section:#{safe_persistent_id(plane)}"
+          end
         end
       elsif page.respond_to?(:active_section_plane) && page.active_section_plane
-        planes << "section:#{safe_persistent_id(page.active_section_plane)}"
+        sp = page.active_section_plane
+        if sp.is_a?(String)
+          planes << (sp.start_with?('section:') ? sp : "section:#{sp}")
+        else
+          planes << "section:#{safe_persistent_id(sp)}"
+        end
       end
       planes
     rescue StandardError
@@ -693,12 +687,19 @@ module BOMEngine
       if plane.respond_to?(:get_plane)
         eq = (begin plane.get_plane.to_a rescue nil end)
         if eq && eq.length == 4
-          norm = [eq[0].to_f, eq[1].to_f, eq[2].to_f]
-          dist_in = eq[3].to_f
-          # In SketchUp ax + by + cz + d = 0 in inches
-          # Normal is unit vector. Origin point on plane = -d * normal * IN_TO_M
-          dist_m = dist_in * Constants::IN_TO_M
-          orig = [-norm[0] * dist_m, -norm[1] * dist_m, -norm[2] * dist_m]
+          a = eq[0].to_f
+          b = eq[1].to_f
+          c = eq[2].to_f
+          d = eq[3].to_f
+          len = Math.sqrt(a * a + b * b + c * c)
+          if len > 1e-9
+            norm = [(a / len).round(9), (b / len).round(9), (c / len).round(9)]
+            d_norm = d / len
+            # Point on plane in SketchUp inches: p0 = -d_norm * norm
+            # In meters:
+            dist_m = d_norm * Constants::IN_TO_M
+            orig = [(-norm[0] * dist_m).round(9), (-norm[1] * dist_m).round(9), (-norm[2] * dist_m).round(9)]
+          end
         end
       elsif plane.respond_to?(:origin) && plane.respond_to?(:normal)
         orig = point_array(plane.origin)
@@ -714,6 +715,7 @@ module BOMEngine
         source_persistent_id: pid,
         origin_m: orig,
         normal: norm,
+        plane_constant: (-orig[0] * norm[0] - orig[1] * norm[1] - orig[2] * norm[2]).round(9),
         keep_side: 1,
         owner_definition_id: owner_definition_id,
         owner_instance_id: owner_instance_id,
