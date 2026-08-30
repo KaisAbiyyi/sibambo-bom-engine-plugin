@@ -21,6 +21,11 @@ jobs:
         with:
           ruby-version: '3.2'
 
+      - name: Fetch provenance source histories
+        run: |
+          git fetch origin feature/clean-json-export
+          git fetch https://github.com/rdwnilyas-coder/sibambo-bom-engine.git main
+
       - name: Run BOM Engine Production Tests
         run: |
           for f in bom_engine/tests/test_*.rb; do
@@ -37,4 +42,3 @@ jobs:
             echo "Running $f..."
             ruby "$f"
           done
-
