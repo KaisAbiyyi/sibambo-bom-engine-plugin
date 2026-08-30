@@ -122,15 +122,23 @@ module EvolutionLabBuilder
 
   def self.extract_git_snapshot(sha, raw_dir, _ver)
     temp_zip = File.join(raw_dir, 'temp_archive.zip')
-    cmd = "git archive --format=zip #{sha} -o \"#{temp_zip}\""
-    stdout, stderr, status = Open3.capture3(cmd, chdir: ROOT_DIR)
+    _stdout, stderr, status = Open3.capture3(
+      'git', 'archive', '--format=zip', sha, '-o', temp_zip,
+      chdir: ROOT_DIR
+    )
     unless status.success?
       raise "Failed to git archive #{sha}: #{stderr}"
     end
 
-    # Unzip using PowerShell Expand-Archive (portable on Windows)
-    ps_cmd = "powershell -NoProfile -Command \"Expand-Archive -Path '#{temp_zip}' -DestinationPath '#{raw_dir}' -Force\""
-    stdout, stderr, status = Open3.capture3(ps_cmd)
+    if Gem.win_platform?
+      command = [
+        'powershell', '-NoProfile', '-Command',
+        "Expand-Archive -Path '#{temp_zip}' -DestinationPath '#{raw_dir}' -Force"
+      ]
+      _stdout, stderr, status = Open3.capture3(*command)
+    else
+      _stdout, stderr, status = Open3.capture3('unzip', '-q', '-o', temp_zip, '-d', raw_dir)
+    end
     unless status.success?
       raise "Failed to unzip archive for #{sha}: #{stderr}"
     end
