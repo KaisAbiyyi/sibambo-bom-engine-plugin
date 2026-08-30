@@ -546,4 +546,111 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     assert_equal ["edge:#{edge.persistent_id}"], decoded_scene[:visibility][:hidden_edge_overrides]
     assert_equal 0, decoded_scene[:visibility][:unresolved_hidden_primitive_override_count]
   end
+
+  # 11. Authored scene non-origin camera targets are faithfully extracted and preserved
+  def test_authored_scene_camera_target_preserves_non_origin_coordinates
+    page = @model.pages.add('PERS_Target_Test')
+    # Set camera target far from origin
+    cam = page.camera
+    cam.set([100.0, 200.0, 50.0], [55.5, 77.7, 12.3], [0.0, 0.0, 1.0])
+
+    graph = BOMEngine::CanonicalGraphBuilder.build(
+      model: @model,
+      entities: @model.entities,
+      parent_transform: Geom::Transformation.new,
+      settings: { scene_scope: 'all', output_format: 'bomc_v1_1' },
+      spatial: {},
+      texture_writer: nil
+    )
+
+    scene = graph[:scenes].find { |s| s[:name] == 'PERS_Target_Test' }
+    assert_not_nil scene
+    target_m = scene[:camera][:target_m]
+    # Verify in meters
+    expected_x = (55.5 * 0.0254).round(6)
+    expected_y = (77.7 * 0.0254).round(6)
+    expected_z = (12.3 * 0.0254).round(6)
+    assert_in_delta expected_x, target_m[0], 1e-4
+    assert_in_delta expected_y, target_m[1], 1e-4
+    assert_in_delta expected_z, target_m[2], 1e-4
+
+    packed = BOMEngine::BOMCWriter.pack(graph, profile: :production)
+    decoded = BOMEngine::BOMCDecoder.decode(packed[:bytes])
+    decoded_scene = decoded[:scenes].find { |s| s[:name] == 'PERS_Target_Test' }
+    assert_not_nil decoded_scene
+    assert_in_delta expected_x, decoded_scene[:camera][:target_m][0], 1e-4
+    assert_in_delta expected_y, decoded_scene[:camera][:target_m][1], 1e-4
+    assert_in_delta expected_z, decoded_scene[:camera][:target_m][2], 1e-4
+  end
+
+  # 12. Section planes are collected and compiled into Section 21 & Section 19 clip indices
+  def test_section_plane_geometry_equation_and_active_clip_plane_index_export
+    # Add a section plane to model
+    plane_ent = @model.entities.add_section_plane([0.0, 0.0, 50.0], [0.0, 0.0, 1.0]) if @model.entities.respond_to?(:add_section_plane)
+    if plane_ent.nil?
+      # Create mock section plane if mock doesn't implement add_section_plane directly
+      plane_ent = Sketchup::SectionPlane.new
+      plane_ent.set_plane([0.0, 0.0, 1.0, -50.0])
+      @model.entities.add(plane_ent) if @model.entities.respond_to?(:add)
+    end
+
+    page_cut = @model.pages.add('LT1_Cut')
+    page_cut.use_section_planes = true
+    page_cut.active_section_planes = [plane_ent] if page_cut.respond_to?(:active_section_planes=)
+
+    graph = BOMEngine::CanonicalGraphBuilder.build(
+      model: @model,
+      entities: @model.entities,
+      parent_transform: Geom::Transformation.new,
+      settings: { scene_scope: 'all', output_format: 'bomc_v1_1' },
+      spatial: {},
+      texture_writer: nil
+    )
+
+    assert_not_nil graph[:clip_planes]
+    assert_equal 1, graph[:clip_planes].length
+    clip = graph[:clip_planes].first
+    assert_equal "section:#{plane_ent.persistent_id}", clip[:stable_id]
+
+    packed = BOMEngine::BOMCWriter.pack(graph, profile: :production)
+    decoded = BOMEngine::BOMCDecoder.decode(packed[:bytes])
+    assert_not_nil decoded[:clip_planes]
+    assert_equal 1, decoded[:clip_planes].length
+    assert_equal "section:#{plane_ent.persistent_id}", decoded[:clip_planes][0][:stable_id]
+  end
+
+  # 13. Structural entities hidden in base model but unhidden in STR scene survive in canonical universe
+  def test_base_hidden_structural_instance_visible_in_str_exported_to_bomc_universe
+    tag_str = @model.layers.add('STR_Tag')
+    page_pers = @model.pages.add('PERS')
+    page_str = @model.pages.add('STR')
+    page_str.use_hidden_objects = true
+
+    # Component definition for structural column
+    def_col = @model.definitions.add('Structure_Beam')
+    def_col.entities.add_face([0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0])
+    col_inst = @model.entities.add_instance(def_col, Geom::Transformation.new)
+    col_inst.layer = tag_str
+    col_inst.hidden = true # hidden in base state!
+
+    # Made visible in STR page
+    if page_str.respond_to?(:visible_entities=)
+      page_str.visible_entities = [col_inst]
+    elsif page_str.respond_to?(:set_drawingelement_visibility)
+      page_str.set_drawingelement_visibility(col_inst, true)
+    end
+
+    graph = BOMEngine::CanonicalGraphBuilder.build(
+      model: @model,
+      entities: @model.entities,
+      parent_transform: Geom::Transformation.new,
+      settings: { scene_scope: 'all', output_format: 'bomc_v1_1' },
+      spatial: {},
+      texture_writer: nil
+    )
+
+    node_ids = graph[:nodes].map { |n| n[:name] }
+    assert node_ids.include?('Structure_Beam') || graph[:definitions].any? { |d| d[:name] == 'Structure_Beam' },
+           'Structure_Beam must be exported into canonical graph even though hidden in base model'
+  end
 end

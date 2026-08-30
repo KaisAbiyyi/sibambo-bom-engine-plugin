@@ -30,7 +30,7 @@ module BOMEngine
         @settings = settings || {}
         @spatial = spatial || {}
         @texture_writer = texture_writer
-        @scene_scope = (@settings[:scene_scope] || (@settings[:output_format].to_s =~ /bomc/ ? 'all' : 'active')).to_s
+        @scene_scope = (@settings[:scene_scope] || 'all').to_s
         @scenes = SceneVisibilityResolver.resolve_scenes(@model)
         @active_page = @model.respond_to?(:pages) && @model.pages.respond_to?(:selected_page) ? @model.pages.selected_page : nil
         @definitions = []
@@ -113,6 +113,7 @@ module BOMEngine
           definitions: @definitions,
           nodes: @nodes,
           scenes: build_scenes,
+          clip_planes: SceneVisibilityResolver.collect_model_clip_planes(@model),
           spaces: extract_spaces,
           relationships: build_relationships,
           analysis: @spatial,

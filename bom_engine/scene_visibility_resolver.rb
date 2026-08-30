@@ -97,7 +97,7 @@ module BOMEngine
       stores_tags = page.respond_to?(:use_hidden_layers?) ? page.use_hidden_layers? : true
       stores_objects = page.respond_to?(:use_hidden_objects?) ? page.use_hidden_objects? : (page.respond_to?(:use_hidden?) ? page.use_hidden? : true)
       stores_geometry = page.respond_to?(:use_hidden_geometry?) ? page.use_hidden_geometry? : false
-      stores_sections = page.respond_to?(:use_section_planes?) ? page.use_section_planes? : false
+      stores_sections = page.respond_to?(:use_section_planes?) ? page.use_section_planes? : true
 
       visible_tag_ids = []
       hidden_tag_ids = []
@@ -160,7 +160,7 @@ module BOMEngine
         stores_section_planes: stores_sections,
         section_state: {
           active_section_plane_ids: active_section_plane_ids.sort.uniq,
-          rendering_support: 'metadata-only'
+          rendering_support: active_section_plane_ids.empty? ? 'metadata-only' : 'full'
         },
         visibility_signature: signature
       }
@@ -242,20 +242,20 @@ module BOMEngine
           applies = is_instance ? stores_objects : stores_geometry
 
           if applies
+            flag = nil
             if entity && has_drawingelement_visibility
               flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
-              if flag == false
-                hidden_overrides << node_id
-              elsif flag == true
-                base_hidden = entity.respond_to?(:hidden?) ? entity.hidden? : false
-                visible_overrides << node_id if base_hidden
-              end
+            end
+
+            if flag == false
+              hidden_overrides << node_id
+            elsif flag == true
+              visible_overrides << node_id
             else
               if (entity && hidden_entities_set.include?(entity)) || (pid && hidden_pids_set.include?(pid.to_s))
                 hidden_overrides << node_id
               elsif (entity && visible_entities_set.include?(entity)) || (pid && visible_pids_set.include?(pid.to_s))
-                base_hidden = entity.respond_to?(:hidden?) ? entity.hidden? : false
-                visible_overrides << node_id if base_hidden
+                visible_overrides << node_id
               end
             end
           end
@@ -429,14 +429,20 @@ module BOMEngine
           return true if flag == true
         end
 
-        # 4. Page hidden entities
+        # 4. Page visible entities
+        if page.respond_to?(:visible_entities)
+          visible_list = (begin page.visible_entities.to_a rescue nil end)
+          return true if visible_list && visible_list.respond_to?(:include?) && visible_list.include?(entity)
+        end
+
+        # 5. Page hidden entities
         if page.respond_to?(:hidden_entities)
           hidden_list = (begin page.hidden_entities.to_a rescue nil end)
           return false if hidden_list && hidden_list.respond_to?(:include?) && hidden_list.include?(entity)
         end
       end
 
-      # 5. Hidden objects / geometry flags
+      # 6. Hidden objects / geometry flags
       if applies && base_hidden
         return false
       end
@@ -458,7 +464,7 @@ module BOMEngine
 
       if !pages.empty?
         if scope.to_s == 'all' || scope.to_s == 'union' || scope.to_s == 'all_scenes'
-          # Visible if visible in ANY page in model
+          # Visible if visible in ANY page in model (or base model if none hidden)
           return pages.any? { |page| effective_entity_visibility(entity, page) }
         else
           active_page = model.pages.respond_to?(:selected_page) ? model.pages.selected_page : pages.first
@@ -502,7 +508,6 @@ module BOMEngine
         visible_nodes = scene.dig(:visibility, :visible_node_overrides) || []
 
         next true if visible_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
-        next false if base_hidden
         next false if hidden_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
 
         if tag_id
@@ -513,10 +518,10 @@ module BOMEngine
           elsif visible_tags.include?(tag_id)
             true
           else
-            true
+            !base_hidden
           end
         else
-          true
+          !base_hidden
         end
       end
 

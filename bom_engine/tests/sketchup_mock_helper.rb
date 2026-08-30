@@ -551,6 +551,19 @@ module Sketchup
       @items << edge
       edge
     end
+
+    def add_section_plane(plane_or_point = [0, 0, 0], normal = [0, 0, 1])
+      plane = if plane_or_point.is_a?(Array) && plane_or_point.length == 4
+                plane_or_point
+              elsif normal
+                [normal[0].to_f, normal[1].to_f, normal[2].to_f, -(plane_or_point[0] * normal[0] + plane_or_point[1] * normal[1] + plane_or_point[2] * normal[2]).to_f]
+              else
+                [0.0, 0.0, 1.0, 0.0]
+              end
+      sp = SectionPlane.new(plane)
+      @items << sp
+      sp
+    end
   end
 
   class Group < Drawingelement
@@ -643,12 +656,46 @@ module Sketchup
     def is_2d?
       false
     end
+
+    def set(eye, target, up)
+      @eye = eye.is_a?(Geom::Point3d) ? eye : Geom::Point3d.new(eye)
+      @target = target.is_a?(Geom::Point3d) ? target : Geom::Point3d.new(target)
+      @up = up.is_a?(Geom::Vector3d) ? up : Geom::Vector3d.new(up)
+    end
+  end
+
+  class SectionPlane < Drawingelement
+    attr_accessor :plane, :active
+
+    def initialize(normal = [0, 0, 1], dist = 0.0)
+      super()
+      if normal.is_a?(Array) && normal.length == 4
+        @plane = normal.map(&:to_f)
+      else
+        n = normal.is_a?(Geom::Vector3d) ? normal : Geom::Vector3d.new(normal)
+        @plane = [n.x.to_f, n.y.to_f, n.z.to_f, dist.to_f]
+      end
+      @active = true
+    end
+
+    def get_plane
+      @plane
+    end
+
+    def set_plane(plane)
+      @plane = plane.map(&:to_f)
+    end
+
+    def active?
+      @active
+    end
   end
 
   class Page
     attr_accessor :name, :description, :camera, :use_camera, :use_hidden_layers, :layers,
-                  :use_hidden_objects, :use_hidden_geometry, :hidden_entities, :persistent_id,
-                  :transition_time, :drawingelement_visibility
+                  :use_hidden_objects, :use_hidden_geometry, :hidden_entities, :visible_entities,
+                  :persistent_id, :transition_time, :drawingelement_visibility,
+                  :use_section_planes, :active_section_planes
 
     def initialize(name)
       @name = name
@@ -660,9 +707,12 @@ module Sketchup
       @use_hidden_objects = true
       @use_hidden_geometry = false
       @hidden_entities = []
+      @visible_entities = []
       @drawingelement_visibility = {}
       @persistent_id = "pid_#{name.downcase}"
       @transition_time = 0.0
+      @use_section_planes = true
+      @active_section_planes = []
     end
 
     def set_drawingelement_visibility(element, visible)
@@ -702,7 +752,7 @@ module Sketchup
     end
 
     def use_section_planes?
-      false
+      @use_section_planes
     end
   end
 
