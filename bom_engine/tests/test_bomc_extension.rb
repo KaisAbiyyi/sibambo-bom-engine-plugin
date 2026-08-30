@@ -32,11 +32,11 @@ module BOMEngine
         saved = BOMCExtension.output_path(FakeModel.new('D:/models/RUMAH_L.skp'))
         unsaved = BOMCExtension.output_path(FakeModel.new(''))
         assert(
-          saved.tr('\\', '/').end_with?('/model-eval-exports/RUMAH_L__SIBAMBO-BOMC-v1.2.0.bomc'),
+          saved.tr('\\', '/').end_with?('/model-eval-exports/RUMAH_L__SIBAMBO-BOMC-v1.2.0__VISUAL.bomc'),
           'saved model gets deterministic version-tagged BOMC path'
         )
         assert(
-          unsaved.end_with?('Untitled__SIBAMBO-BOMC-v1.2.0.bomc'),
+          unsaved.end_with?('Untitled__SIBAMBO-BOMC-v1.2.0__VISUAL.bomc'),
           'unsaved model gets deterministic version-tagged BOMC filename'
         )
         dialog = BOMCExtension.normalize_dialog_settings(
@@ -45,7 +45,7 @@ module BOMEngine
           batch_size: '1024'
         )
         assert(
-          dialog[:output_path].tr('\\', '/').end_with?('/RUMAH_L__SIBAMBO-BOMC-v1.2.0.bomc'),
+          dialog[:output_path].tr('\\', '/').end_with?('/RUMAH_L__SIBAMBO-BOMC-v1.2.0__RESEARCH.bomc'),
           'dialog enforces current extension version tag'
         )
         assert(dialog[:profile] == :research, 'dialog profile reaches exporter')
@@ -57,6 +57,32 @@ module BOMEngine
         )
         assert(BOMCExtension::DEFAULT_PROFILE == :visual, 'visual profile is the preferred web-first default')
         assert(BOMCExtension::FORMAT_EXTENSION == '.bomc', 'compiled user-facing extension is stable')
+        [:exact, :research, :visual].each do |profile|
+          filename = BOMCExtension.normalize_output_path(
+            'D:/exports/House__SIBAMBO-BOMC-v1.2.0__VISUAL.bomc', profile: profile
+          )
+          assert(filename.end_with?("House__SIBAMBO-BOMC-v1.2.0__#{profile.to_s.upcase}.bomc"), "profile #{profile} has one normalized filename suffix")
+        end
+        seen_profile = nil
+        gate_singleton = class << BOMCSizeGate; self; end
+        original_compile = gate_singleton.instance_method(:compile)
+        gate_singleton.define_method(:compile) do |**kwargs|
+          seen_profile = kwargs[:profile]
+          { path: kwargs[:output_path], candidate_bytes: 1, bytes: 'x', savings_bytes: 0 }
+        end
+        context = nil
+        begin
+          context = BOMCExtension.send(:export_context, 'fixture.bomc', ->(_event) {}, profile: :exact)
+          context[:compile].call({}, {}, 'fixture.bomc', ->(_event) {})
+        ensure
+          gate_singleton.define_method(:compile, original_compile)
+          context[:cleanup].call if context
+        end
+        assert(seen_profile == :exact, 'interactive export context propagates selected profile into size gate compiler')
+        [:exact, :research, :visual].each do |profile|
+          decoded = BOMCDecoder.decode(BOMCWriter.pack(fixture_graph, profile: profile)[:bytes])
+          assert(decoded.dig(:encoding_contract, :profile) == profile, "Section 20 preserves #{profile} profile")
+        end
         menu = FakeMenu.new
         BOMCExtension.register_menu(menu)
         assert(

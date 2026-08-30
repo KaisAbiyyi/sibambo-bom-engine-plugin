@@ -2,6 +2,7 @@
 
 require 'test/unit'
 require 'json'
+require 'digest'
 require_relative 'sketchup_mock_helper' unless defined?(Sketchup)
 require_relative '../constants'
 require_relative '../traversal'
@@ -547,7 +548,89 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     assert_equal 0, decoded_scene[:visibility][:unresolved_hidden_primitive_override_count]
   end
 
-  # 11. Authored scene non-origin camera targets are faithfully extracted and preserved
+  # 11. Top-level primitive positive overrides survive base-hidden state.
+  def test_top_level_face_positive_scene_override_is_preserved
+    face = @model.entities.add_face([0, 0, 0], [4, 0, 0], [4, 4, 0])
+    face.hidden = true
+    model = @model
+    face.define_singleton_method(:parent) { model }
+
+    page = @model.pages.add('Scene_FaceVisible')
+    page.use_hidden_geometry = true
+    page.set_drawingelement_visibility(face, true)
+
+    graph = BOMEngine::CanonicalGraphBuilder.build(
+      model: @model,
+      entities: @model.entities,
+      parent_transform: Geom::Transformation.new,
+      settings: { scene_scope: 'all', output_format: 'bomc_v1_1', include_edges: true },
+      spatial: {},
+      texture_writer: nil
+    )
+
+    scene = graph[:scenes].find { |s| s[:name] == 'Scene_FaceVisible' }
+    assert_not_nil scene
+    assert_equal ["face:#{face.persistent_id}"], scene[:visibility][:visible_face_overrides]
+  end
+
+  # 12. Active Scene selection cannot contaminate canonical/base graph fields.
+  def test_scene_selection_permutation_preserves_canonical_graph
+    layer_a = @model.layers.add('Permutation_A')
+    layer_b = @model.layers.add('Permutation_B')
+    defn = @model.definitions.add('Permutation_Definition')
+    defn.entities.add_face([0, 0, 0], [3, 0, 0], [3, 3, 0])
+    instance = @model.entities.add_instance(defn, Geom::Transformation.new)
+    instance.layer = layer_a
+
+    scene_a = @model.pages.add('Permutation_A')
+    scene_a.use_hidden_layers = true
+    scene_a.layers = [layer_b]
+    scene_b = @model.pages.add('Permutation_B')
+    scene_b.use_hidden_layers = true
+    scene_b.layers = [layer_a]
+
+    build = lambda do |selected_page|
+      @model.pages.selected_page = selected_page
+      BOMEngine::CanonicalGraphBuilder.build(
+        model: @model,
+        entities: @model.entities,
+        parent_transform: Geom::Transformation.new,
+        settings: { scene_scope: 'all', output_format: 'bomc_v1_1', include_edges: true },
+        spatial: {},
+        texture_writer: nil
+      )
+    end
+
+    graph_a = build.call(scene_a)
+    graph_b = build.call(scene_b)
+    project = lambda do |graph|
+      {
+        tags: graph[:tags].map { |tag| [tag[:id], tag[:visible]] },
+        nodes: graph[:nodes].map { |node| [node[:id], node[:kind], node[:definition_id], node[:tag_id], node[:visible]] },
+        definitions: graph[:definitions].map { |definition| [definition[:id], definition[:node_ids], definition[:mesh_id]] },
+        meshes: graph[:meshes].map { |mesh| [mesh[:id], mesh[:positions_m], mesh[:topology]] },
+        scenes: graph[:scenes].sort_by { |scene| scene[:id].to_s }.map { |scene| scene.reject { |key, _| key == :is_active_at_export } }
+      }
+    end
+
+    assert_equal project.call(graph_a), project.call(graph_b)
+
+    hash_a = Digest::SHA256.hexdigest(JSON.generate(project.call(graph_a)))
+    hash_b = Digest::SHA256.hexdigest(JSON.generate(project.call(graph_b)))
+    puts "SCENE_PERMUTATION_HASH active_A=#{hash_a} active_B=#{hash_b}"
+    assert_equal hash_a, hash_b
+
+    @model.pages.instance_variable_set(:@items, [scene_b, scene_a])
+    graph_reordered = build.call(scene_a)
+    scene_map = lambda do |graph|
+      graph[:scenes].sort_by { |scene| scene[:id].to_s }.map { |scene| scene.reject { |key, _| key == :is_active_at_export } }
+    end
+    assert_equal scene_map.call(graph_a), scene_map.call(graph_reordered)
+    reordered_hash = Digest::SHA256.hexdigest(JSON.generate(project.call(graph_reordered)))
+    puts "SCENE_ORDER_PERMUTATION_HASH ordered=#{hash_a} reordered=#{reordered_hash}"
+  end
+
+  # 13. Authored scene non-origin camera targets are faithfully extracted and preserved
   def test_authored_scene_camera_target_preserves_non_origin_coordinates
     page = @model.pages.add('PERS_Target_Test')
     # Set camera target far from origin

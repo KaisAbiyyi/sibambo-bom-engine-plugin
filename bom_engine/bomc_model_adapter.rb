@@ -97,7 +97,7 @@ module BOMEngine
             source_persistent_id: cp[:source_persistent_id] || cp[:persistent_id] || cp[:id],
             origin_m: cp[:origin_m] || cp[:origin] || [0.0, 0.0, 0.0],
             normal: cp[:normal] || [0.0, 0.0, 1.0],
-            keep_side: cp[:keep_side] || 1,
+            keep_side: cp.key?(:keep_side) ? cp[:keep_side] : 1,
             owner_definition_id: cp[:owner_definition_id] || cp[:definition_id],
             owner_instance_id: cp[:owner_instance_id] || cp[:instance_id],
             flags: cp[:flags] || 0
@@ -236,7 +236,7 @@ module BOMEngine
             source_persistent_id: cp[:source_persistent_id] || cp[:persistent_id] || cp[:id],
             origin_m: cp[:origin_m] || cp[:origin] || [0.0, 0.0, 0.0],
             normal: cp[:normal] || [0.0, 0.0, 1.0],
-            keep_side: cp[:keep_side] || 1,
+            keep_side: cp.key?(:keep_side) ? cp[:keep_side] : 1,
             owner_definition_id: cp[:owner_definition_id] || cp[:definition_id],
             owner_instance_id: cp[:owner_instance_id] || cp[:instance_id],
             flags: cp[:flags] || 0

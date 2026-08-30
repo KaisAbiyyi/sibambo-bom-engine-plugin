@@ -32,7 +32,6 @@ module BOMEngine
         @texture_writer = texture_writer
         @scene_scope = (@settings[:scene_scope] || 'all').to_s
         @scenes = SceneVisibilityResolver.resolve_scenes(@model)
-        @active_page = @model.respond_to?(:pages) && @model.pages.respond_to?(:selected_page) ? @model.pages.selected_page : nil
         @definitions = []
         @definition_index = {}
         @meshes = []
@@ -80,6 +79,8 @@ module BOMEngine
         )
 
         checkpoint('Finalizing canonical graph', force: true)
+        scenes = build_scenes
+        clip_planes = SceneVisibilityResolver.collect_model_clip_planes(@model)
         result = {
           format: {
             name: FORMAT_NAME,
@@ -112,8 +113,9 @@ module BOMEngine
           meshes: @meshes,
           definitions: @definitions,
           nodes: @nodes,
-          scenes: build_scenes,
-          clip_planes: SceneVisibilityResolver.collect_model_clip_planes(@model),
+          scenes: scenes,
+          clip_planes: clip_planes,
+          scene_fidelity_manifest: SceneVisibilityResolver.build_fidelity_manifest(scenes, clip_planes),
           spaces: extract_spaces,
           relationships: build_relationships,
           analysis: @spatial,
@@ -404,7 +406,9 @@ module BOMEngine
           rescue StandardError
             nil
           end
-          visible = SceneVisibilityResolver.effective_tag_visibility(layer, @active_page)
+          # Canonical tag state is model state. Page presentation is encoded only
+          # in each SceneProfile below.
+          visible = layer.respond_to?(:visible?) ? layer.visible? : true
           @tags << {
             id: id,
             source_identity: entity_source_identity(layer),
@@ -733,7 +737,9 @@ module BOMEngine
       end
 
       def entity_visible?(entity)
-        SceneVisibilityResolver.effective_entity_visibility(entity, @active_page)
+        # Do not let export-time active Page contaminate canonical node state.
+        # Scene overrides are resolved independently by SceneVisibilityResolver.
+        SceneVisibilityResolver.effective_entity_visibility(entity, nil)
       rescue StandardError
         true
       end

@@ -41,14 +41,14 @@
     <section>
       <label for="outputPath">Output file</label>
       <div class="path-row"><input id="outputPath" type="text"><button type="button" onclick="sketchup.browse()">Browse</button></div>
-      <div class="suffix">Tag versi terkunci: __SIBAMBO-BOMC-v1.2.0.bomc</div>
+      <div class="suffix" id="suffix">Tag versi/profile: __SIBAMBO-BOMC-v1.2.0__VISUAL.bomc</div>
     </section>
 
     <section class="panel">
       <h2>Profile Fidelity</h2>
       <div class="profile-row">
         <span>Target export</span>
-        <select id="profile">
+        <select id="profile" onchange="updateProfilePath()">
           <option value="visual" selected>Visual — web recommended</option>
           <option value="research">Research — reproducible</option>
           <option value="exact">Exact — reference fidelity</option>
@@ -82,19 +82,26 @@
     <div class="actions"><button type="button" onclick="sketchup.cancel()">Cancel</button><button class="primary" type="button" onclick="doExport()">Export BOMC 1.2</button></div>
   </main>
   <script>
-    var OUTPUT_SUFFIX = "__SIBAMBO-BOMC-v1.2.0.bomc";
+    var OUTPUT_VERSION = "__SIBAMBO-BOMC-v1.2.0";
 
-    function normalizeOutputPath(path) {
+    function normalizeOutputPath(path, profile) {
       path = String(path || '').trim();
       if (!path) return path;
       path = path.replace(/(?:_(?:bom|canonical|model-eval|runtime))?\.(?:json|bome2|cleanpkg|bomc)(?:\.gz)?$/i, '');
       path = path.replace(/__SBE-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9A-Z]+$/i, '');
-      path = path.replace(/__SIBAMBO-BOMC-v[0-9]+\.[0-9]+\.[0-9]+$/i, '');
-      return path + OUTPUT_SUFFIX;
+      path = path.replace(/__SIBAMBO-BOMC-v[0-9]+\.[0-9]+\.[0-9]+(?:__(?:EXACT|RESEARCH|VISUAL))?$/i, '');
+      profile = String(profile || document.getElementById('profile').value || 'visual').toUpperCase();
+      return path + OUTPUT_VERSION + '__' + profile + '.bomc';
     }
 
-    function setDefaultPath(path) { document.getElementById('outputPath').value = normalizeOutputPath(path); }
-    function setPath(path) { document.getElementById('outputPath').value = normalizeOutputPath(path); }
+    function setDefaultPath(path) { document.getElementById('outputPath').value = normalizeOutputPath(path, 'visual'); updateProfilePath(); }
+    function setPath(path) { document.getElementById('outputPath').value = normalizeOutputPath(path); updateProfilePath(); }
+    function updateProfilePath() {
+      var input = document.getElementById('outputPath');
+      input.value = normalizeOutputPath(input.value, document.getElementById('profile').value);
+      var match = input.value.match(/(__SIBAMBO-BOMC-v[0-9]+\\.[0-9]+\\.[0-9]+__(?:EXACT|RESEARCH|VISUAL)\\.bomc)$/i);
+      document.getElementById('suffix').textContent = 'Tag versi/profile: ' + (match ? match[1] : input.value);
+    }
 
     function recommendedBatchSize() {
       var cores = Number(navigator.hardwareConcurrency || 4);
@@ -117,7 +124,7 @@
     }
 
     function doExport() {
-      var outputPath = normalizeOutputPath(document.getElementById('outputPath').value);
+      var outputPath = normalizeOutputPath(document.getElementById('outputPath').value, document.getElementById('profile').value);
       if (!outputPath) { alert('Pilih output file terlebih dahulu.'); return; }
       document.getElementById('outputPath').value = outputPath;
       sketchup.export(JSON.stringify({

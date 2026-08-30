@@ -172,7 +172,8 @@ module BOMEngine
           active_section_plane_ids: active_section_plane_ids.sort.uniq,
           rendering_support: rendering_support
         },
-        visibility_signature: signature
+        visibility_signature: signature,
+        scene_diagnostics: overrides[:diagnostics]
       }
 
       if nodes && !nodes.empty?
@@ -197,7 +198,8 @@ module BOMEngine
       if is_instance
         stores_objects
       else
-        is_root_entity = is_root || (entity.respond_to?(:parent) && (entity.parent.is_a?(Sketchup::Model) rescue false))
+        parent = entity.respond_to?(:parent) ? entity.parent : nil
+        is_root_entity = is_root || (parent && (parent.is_a?(Sketchup::Model) rescue false))
         stores_geometry && is_root_entity
       end
     end
@@ -212,14 +214,23 @@ module BOMEngine
       hidden_overrides = []
       result = {
         visible_nodes: visible_overrides, hidden_nodes: hidden_overrides,
-        visible_faces: [], hidden_faces: [], visible_edges: [], hidden_edges: [], unresolved: []
+        visible_faces: [], hidden_faces: [], visible_edges: [], hidden_edges: [], unresolved: [], diagnostics: []
       }
       return result if page.nil?
 
       stores_objects = page.respond_to?(:use_hidden_objects?) ? page.use_hidden_objects? : (page.respond_to?(:use_hidden?) ? page.use_hidden? : true)
       stores_geometry = page.respond_to?(:use_hidden_geometry?) ? page.use_hidden_geometry? : false
 
-      hidden_entities_list = page.respond_to?(:hidden_entities) ? ((begin page.hidden_entities.to_a rescue [] end) || []) : []
+      hidden_entities_list = if page.respond_to?(:hidden_entities)
+                              begin
+                                (page.hidden_entities.to_a rescue []) || []
+                              rescue StandardError => error
+                                result[:diagnostics] << extraction_failure(page, nil, :hidden_entities, error, :empty)
+                                []
+                              end
+                            else
+                              []
+                            end
       hidden_entities_set = hidden_entities_list.to_set
       hidden_pids_set = hidden_entities_list.map { |he| safe_persistent_id(he).to_s }.to_set
 
@@ -266,7 +277,12 @@ module BOMEngine
           base_hidden = (entity.respond_to?(:hidden?) && entity.hidden?) || (node[:visible] == false)
 
           if entity && has_drawingelement_visibility
-            flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
+            begin
+              flag = page.get_drawingelement_visibility(entity)
+            rescue StandardError => error
+              result[:diagnostics] << extraction_failure(page, entity, :drawingelement_visibility, error, :base_visibility)
+              flag = nil
+            end
             if flag == false
               hidden_overrides << node_id
             elsif flag == true && base_hidden
@@ -277,6 +293,26 @@ module BOMEngine
             if (entity && hidden_entities_set.include?(entity)) || (pid && hidden_pids_set.include?(pid.to_s))
               hidden_overrides << node_id
             end
+          end
+        end
+      end
+
+      # Faces and edges are DrawingElements too, but only top-level geometry is
+      # independently scene-controlled. Preserve both negative and positive
+      # page overrides without treating nested definition geometry as scoped.
+      if stores_geometry && page.respond_to?(:get_drawingelement_visibility)
+        primitives_by_entity.each do |entity, primitive|
+          next unless entity && drawingelement_scene_applicable?(entity, page, is_root: false)
+          base_hidden = (entity.respond_to?(:hidden?) && entity.hidden?) || (entity.respond_to?(:visible?) && !entity.visible?)
+          begin
+            flag = page.get_drawingelement_visibility(entity)
+            if flag == false
+              (primitive[0] == :face ? result[:hidden_faces] : result[:hidden_edges]) << primitive[1]
+            elsif flag == true && base_hidden
+              (primitive[0] == :face ? result[:visible_faces] : result[:visible_edges]) << primitive[1]
+            end
+          rescue StandardError => error
+            result[:diagnostics] << extraction_failure(page, entity, :primitive_drawingelement_visibility, error, :base_visibility)
           end
         end
       end
@@ -294,7 +330,10 @@ module BOMEngine
         end
       end
 
-      result.each_value { |values| values.replace(values.compact.map(&:to_s).sort.uniq) }
+      result.each do |key, values|
+        next if key == :diagnostics
+        values.replace(values.compact.map(&:to_s).sort.uniq)
+      end
       result
     end
 
@@ -320,14 +359,13 @@ module BOMEngine
         return false if hidden_nodes.include?(node[:id])
         pid = node.dig(:source_identity, :persistent_id) || node[:persistent_id]
         return false if pid && (hidden_nodes.include?(pid.to_s) || hidden_nodes.include?("node:pid:#{pid}"))
-        return true if visible_nodes.include?(node[:id])
-        return true if pid && (visible_nodes.include?(pid.to_s) || visible_nodes.include?("node:pid:#{pid}"))
-
         tag_id = node[:tag_id]
         if stores_tags && tag_id
           return false if hidden_tags.include?(tag_id)
           return true if visible_tags.include?(tag_id)
         end
+        return true if visible_nodes.include?(node[:id])
+        return true if pid && (visible_nodes.include?(pid.to_s) || visible_nodes.include?("node:pid:#{pid}"))
         node[:visible] != false
       end
 
@@ -352,8 +390,6 @@ module BOMEngine
       root_def_id = root_node[:definition_id]
       traverse.call(root_def_id, [root_def_id]) if root_def_id
       count
-    rescue StandardError
-      0
     end
 
     def effective_tag_visibility(layer, page)
@@ -401,7 +437,7 @@ module BOMEngine
       end
     end
 
-    def effective_entity_visibility(entity, page, parent_visibility: true, is_root: false)
+    def effective_entity_visibility(entity, page, parent_visibility: true, is_root: false, diagnostics: nil)
       return false unless parent_visibility
       return false if entity.nil? || (entity.respond_to?(:deleted?) && entity.deleted?)
 
@@ -420,14 +456,24 @@ module BOMEngine
       if applies
         # 3. Page DrawingElement query
         if page.respond_to?(:get_drawingelement_visibility)
-          flag = (begin page.get_drawingelement_visibility(entity) rescue nil end)
+          begin
+            flag = page.get_drawingelement_visibility(entity)
+          rescue StandardError => error
+            diagnostics << extraction_failure(page, entity, :drawingelement_visibility, error, :base_visibility) if diagnostics
+            flag = nil
+          end
           return false if flag == false
           return true if flag == true
         end
 
         # 4. Page hidden entities fallback
         if page.respond_to?(:hidden_entities)
-          hidden_list = (begin page.hidden_entities.to_a rescue nil end)
+          begin
+            hidden_list = page.hidden_entities.to_a
+          rescue StandardError => error
+            diagnostics << extraction_failure(page, entity, :hidden_entities, error, :base_visibility) if diagnostics
+            hidden_list = nil
+          end
           return false if hidden_list && hidden_list.respond_to?(:include?) && hidden_list.include?(entity)
         end
       end
@@ -435,7 +481,8 @@ module BOMEngine
       # 5. Default to base visibility
       return false if base_hidden || !base_visible
       true
-    rescue StandardError
+    rescue StandardError => error
+      diagnostics << extraction_failure(page, entity, :effective_entity_visibility, error, :retain_conservatively) if diagnostics
       true
     end
 
@@ -467,17 +514,14 @@ module BOMEngine
         hidden_nodes = active_scene.dig(:visibility, :hidden_node_overrides) || []
         visible_nodes = active_scene.dig(:visibility, :visible_node_overrides) || []
 
+        if tag_id && active_scene.dig(:visibility, :hidden_tag_ids)&.include?(tag_id)
+          return false
+        end
         if visible_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
           return true
         end
-
         return false if base_hidden
-
         if hidden_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
-          return false
-        end
-
-        if tag_id && active_scene.dig(:visibility, :hidden_tag_ids)&.include?(tag_id)
           return false
         end
 
@@ -491,9 +535,6 @@ module BOMEngine
         hidden_nodes = scene.dig(:visibility, :hidden_node_overrides) || []
         visible_nodes = scene.dig(:visibility, :visible_node_overrides) || []
 
-        next true if visible_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
-        next false if hidden_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
-
         if tag_id
           hidden_tags = scene.dig(:visibility, :hidden_tag_ids) || []
           visible_tags = scene.dig(:visibility, :visible_tag_ids) || []
@@ -501,17 +542,25 @@ module BOMEngine
             false
           elsif visible_tags.include?(tag_id)
             true
+          elsif visible_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
+            true
+          elsif hidden_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
+            false
           else
             !base_hidden
           end
         else
-          !base_hidden
+          if visible_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
+            true
+          elsif hidden_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
+            false
+          else
+            !base_hidden
+          end
         end
       end
 
       visible_in_any
-    rescue StandardError
-      true
     end
 
     def compute_visibility_signature(visible_tag_ids:, hidden_tag_ids:, visible_node_overrides:, hidden_node_overrides:, active_section_plane_ids:, visible_face_overrides: [], hidden_face_overrides: [], visible_edge_overrides: [], hidden_edge_overrides: [])
@@ -527,6 +576,46 @@ module BOMEngine
         Array(active_section_plane_ids).map(&:to_s).sort.uniq
       ]
       Digest::SHA256.hexdigest(JSON.generate(payload))
+    end
+
+    def build_fidelity_manifest(scenes, clip_planes)
+      planes = Array(clip_planes)
+      Array(scenes).map do |scene|
+        visibility = scene[:visibility] || {}
+        active_ids = Array(scene.dig(:section_state, :active_section_plane_ids)).map(&:to_s).sort
+        active_planes = planes.select { |plane| active_ids.include?(plane[:stable_id].to_s) || active_ids.include?(plane[:source_persistent_id].to_s) }
+        {
+          scene_id: scene[:id].to_s,
+          camera_hash: Digest::SHA256.hexdigest(JSON.generate(scene[:camera] || {})),
+          visible_tag_hash: Digest::SHA256.hexdigest(JSON.generate([visibility[:visible_tag_ids], visibility[:hidden_tag_ids]])),
+          effective_occurrence_visibility_hash: Digest::SHA256.hexdigest(JSON.generate([
+            visibility[:visible_node_overrides], visibility[:hidden_node_overrides],
+            visibility[:visible_face_overrides], visibility[:hidden_face_overrides],
+            visibility[:visible_edge_overrides], visibility[:hidden_edge_overrides]
+          ])),
+          primitive_visibility_hash: Digest::SHA256.hexdigest(JSON.generate([
+            visibility[:visible_face_overrides], visibility[:hidden_face_overrides],
+            visibility[:visible_edge_overrides], visibility[:hidden_edge_overrides]
+          ])),
+          active_section_plane_ids: active_ids,
+          active_clip_indices: active_planes.map { |plane| planes.index(plane) },
+          clip_plane_equation_hash: Digest::SHA256.hexdigest(JSON.generate(active_planes.map { |plane| [plane[:stable_id], plane[:origin_m], plane[:normal], plane[:plane_constant], plane[:keep_side]] })),
+          rendering_support: scene.dig(:section_state, :rendering_support).to_s,
+          unresolved_scene_semantics_count: Array(visibility[:unresolved_primitive_overrides]).length + Array(scene[:scene_diagnostics]).length
+        }
+      end
+    end
+
+    def extraction_failure(page, entity, operation, error, fallback)
+      {
+        stage: 'scene_visibility_extraction',
+        entity_identity: entity.nil? ? nil : safe_persistent_id(entity),
+        scene_identity: page.nil? ? nil : safe_persistent_id(page),
+        api_operation: operation.to_s,
+        error_class: error.class.name,
+        error_message: error.message.to_s,
+        fallback_decision: fallback.to_s
+      }
     end
 
     def tag_stable_id(layer)
@@ -623,8 +712,12 @@ module BOMEngine
     def extract_active_section_planes(page)
       planes = []
       return planes if page.nil?
+      # Page#active_section_planes is stored Page state. Current model state
+      # must not leak when this Page does not store section planes.
+      return planes if page.respond_to?(:use_section_planes?) && !page.use_section_planes?
       if page.respond_to?(:active_section_planes)
-        raw = (begin page.active_section_planes.to_a rescue [] end) || []
+        stored = (begin page.active_section_planes rescue nil end)
+        raw = stored.nil? ? [] : (begin stored.to_a rescue [] end)
         raw.each do |plane|
           next if plane.nil?
           if plane.is_a?(String)

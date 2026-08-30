@@ -36,23 +36,27 @@ module BOMEngine
     end
 
     def output_path(model)
-      source_path = model.path.to_s
-      base_name = source_path.empty? ? 'Untitled' : File.basename(source_path, File.extname(source_path))
-      normalize_output_path(File.join(output_directory(model), base_name))
+      output_path_for_profile(model, profile: DEFAULT_PROFILE)
     end
 
-    def normalize_output_path(path)
+    def output_path_for_profile(model, profile: DEFAULT_PROFILE)
+      source_path = model.path.to_s
+      base_name = source_path.empty? ? 'Untitled' : File.basename(source_path, File.extname(source_path))
+      normalize_output_path(File.join(output_directory(model), base_name), profile: profile)
+    end
+
+    def normalize_output_path(path, profile: DEFAULT_PROFILE)
       base = path.to_s.strip
       base = base.sub(/(?:_(?:bom|canonical|model-eval|runtime))?\.(?:json|bome2|cleanpkg|bomc)(?:\.gz)?\z/i, '')
       base = base.sub(/__SBE-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9A-Z]+\z/i, '')
-      base = base.sub(/__SIBAMBO-BOMC-v[0-9]+\.[0-9]+\.[0-9]+\z/i, '')
-      "#{base}#{VERSION_SUFFIX}"
+      base = base.sub(/__SIBAMBO-BOMC-v[0-9]+\.[0-9]+\.[0-9]+(?:__(?:EXACT|RESEARCH|VISUAL))?\z/i, '')
+      normalized_profile = normalize_profile(profile)
+      "#{base}__SIBAMBO-BOMC-v#{Branding::EXTENSION_VERSION}__#{normalized_profile.to_s.upcase}#{FORMAT_EXTENSION}"
     end
 
     def normalize_dialog_settings(payload)
       values = payload.transform_keys(&:to_sym)
-      profile = values[:profile].to_s.downcase.to_sym
-      profile = DEFAULT_PROFILE unless [:visual, :research, :exact].include?(profile)
+      profile = normalize_profile(values[:profile])
       batch_size = Integer(values[:batch_size]) rescue 512
       batch_size = 512 unless ALLOWED_BATCH_SIZES.include?(batch_size)
       processing = BOMCProcessing.settings(
@@ -60,7 +64,7 @@ module BOMEngine
         custom: { max_items: batch_size, max_ms: 24.0, max_items_limit: 8_192 }
       )
       {
-        output_path: normalize_output_path(values[:output_path]),
+        output_path: normalize_output_path(values[:output_path], profile: profile),
         profile: profile,
         processing: processing
       }
@@ -73,9 +77,10 @@ module BOMEngine
     end
 
     def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil)
+      profile = normalize_profile(profile)
       processing = settings || BOMCProcessing.settings(:balanced)
       yield_callback = progress || ->(_event) {}
-      context = export_context(output_path, yield_callback)
+      context = export_context(output_path, yield_callback, profile: profile)
       BOMCExportJob.run(
         model: model,
         output_path: output_path,
@@ -133,7 +138,7 @@ module BOMEngine
       end
     end
 
-    def export_context(output_path, yield_callback)
+    def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE)
       texture_directory = Dir.mktmpdir('bomc-textures')
       {
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
@@ -148,6 +153,7 @@ module BOMEngine
             graph: graph,
             source_info: source,
             base_path: texture_directory,
+            profile: profile,
             checkpoint: checkpoint,
             output_path: path,
             enforce_smaller: false
@@ -162,6 +168,12 @@ module BOMEngine
       }
     end
     private_class_method :export_context
+
+    def normalize_profile(profile)
+      value = profile.to_s.downcase.to_sym
+      [:visual, :research, :exact].include?(value) ? value : DEFAULT_PROFILE
+    end
+    private_class_method :normalize_profile
 
     def snapshot_model(model, texture_directory, checkpoint)
       texture_writer = begin
