@@ -21,6 +21,7 @@ module BOMEngine
       dialog.set_file(File.join(__dir__, 'ui', 'bomc_export_dialog.html'))
 
       dialog.add_action_callback('onReady') do |_context|
+        dialog.execute_script("setBuildProvenance(#{JSON.generate(Branding.short_build_sha)}, #{JSON.generate(Branding.build_sha)})")
         dialog.execute_script("setDefaultPath(#{JSON.generate(default_path)})")
       end
 

@@ -48,6 +48,7 @@ raise 'BOMC dialog HTML was not loaded.' unless File.basename(dialog.file) == 'b
 
 dialog.callbacks.fetch('onReady').call(nil)
 raise 'Default output path was not sent to dialog.' unless dialog.scripts.last.include?('House__SIBAMBO-BOMC-v1.2.0.bomc')
+raise 'Build provenance was not sent to dialog.' unless dialog.scripts.any? { |script| script.include?('setBuildProvenance') && script.include?('development') }
 
 UI.savepanel_result = 'D:/exports/Renamed.bomc'
 dialog.callbacks.fetch('browse').call(nil)

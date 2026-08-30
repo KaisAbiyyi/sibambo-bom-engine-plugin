@@ -34,7 +34,7 @@
 <body>
   <main class="shell">
     <header class="header">
-      <div class="title-row"><h1>Sibambo BOMC Engine</h1><span class="badge">v1.2.0 · BOMC 1.2</span></div>
+      <div class="title-row"><h1>Sibambo BOMC Engine</h1><span class="badge">v1.2.0 · BOMC 1.2 · build <span id="build-sha">loading</span></span></div>
       <p class="description">Exporter web-first dengan profile fidelity dan pemrosesan kooperatif agar SketchUp tetap responsif.</p>
     </header>
 
@@ -83,6 +83,11 @@
   </main>
   <script>
     var OUTPUT_VERSION = "__SIBAMBO-BOMC-v1.2.0";
+
+    function setBuildProvenance(shortSha, fullSha) {
+      document.getElementById('build-sha').textContent = shortSha || 'development';
+      document.body.dataset.buildSha = fullSha || 'development';
+    }
 
     function normalizeOutputPath(path, profile) {
       path = String(path || '').trim();

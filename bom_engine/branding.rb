@@ -17,13 +17,18 @@ module BOMEngine
       value.empty? ? 'development' : value
     end
 
+    def short_build_sha(value = self.build_sha)
+      value == 'development' ? value : value[0, 12]
+    end
+
     def about_text(build_sha: self.build_sha)
-      short_build = build_sha == 'development' ? build_sha : build_sha[0, 12]
+      short_build = short_build_sha(build_sha)
       <<~TEXT.strip
         #{EXTENSION_NAME}
         Extension version: #{EXTENSION_VERSION}
         BOMC format: #{BOMC_FORMAT_VERSION}
         Build: #{short_build}
+        Build SHA: #{build_sha}
 
         Compiled building export for web-first Sibambo workflows.
         Profiles: Exact, Research, Visual.

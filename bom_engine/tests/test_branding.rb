@@ -17,6 +17,7 @@ class TestBOMEngineBranding < Test::Unit::TestCase
     assert_include text, 'Extension version: 1.2.0'
     assert_include text, 'BOMC format: 1.2'
     assert_include text, 'Build: eca60c82b67c'
+    assert_include text, 'Build SHA: eca60c82b67c2aa12e47555d21be0b3eb98b562f'
   end
 
   def test_public_ui_uses_only_new_product_name
@@ -31,6 +32,7 @@ class TestBOMEngineBranding < Test::Unit::TestCase
     public_text = public_files.map { |path| File.read(path, encoding: 'UTF-8') }.join("\n")
 
     assert_include public_text, 'Sibambo BOMC Engine'
+    assert_include File.read(File.join(root, 'bom_engine', 'ui', 'bomc_export_dialog.html'), encoding: 'UTF-8'), 'build <span id="build-sha">'
     assert_not_match(/BOM Engine Semantic Exporter|BOM Engine —|BOM Engine Export/, public_text)
   end
 end

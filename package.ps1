@@ -1,9 +1,12 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '3.1.0'
+$Version = '1.2.0'
 $PluginDir = $PSScriptRoot
 $RootDir = Split-Path -Parent $PluginDir
-$OutputPath = Join-Path $RootDir "bom_engine_semantic_plugin_v$Version.rbz"
+$Head = (& git -C $PluginDir rev-parse HEAD).Trim()
+if ($Head -notmatch '^[0-9a-f]{40}$') { throw "Cannot resolve current producer HEAD: $Head" }
+$ShortHead = $Head.Substring(0, 12)
+$OutputPath = Join-Path $RootDir "Sibambo-BOMC-Engine-v$Version-build-$ShortHead.rbz"
 $StagingDir = Join-Path ([System.IO.Path]::GetTempPath()) "bom-engine-rbz-$([guid]::NewGuid())"
 $ZipPath = [System.IO.Path]::ChangeExtension($OutputPath, '.zip')
 
@@ -11,6 +14,7 @@ try {
     New-Item -ItemType Directory -Path $StagingDir | Out-Null
     Copy-Item -LiteralPath (Join-Path $PluginDir 'bom_engine_loader.rb') -Destination $StagingDir
     Copy-Item -LiteralPath (Join-Path $PluginDir 'bom_engine') -Destination $StagingDir -Recurse
+    [IO.File]::WriteAllText((Join-Path $StagingDir 'bom_engine\BUILD_SHA.txt'), "$Head`r`n", [Text.UTF8Encoding]::new($false))
     $TestsPath = Join-Path $StagingDir 'bom_engine\tests'
     if (Test-Path -LiteralPath $TestsPath) {
         Remove-Item -LiteralPath $TestsPath -Recurse -Force
