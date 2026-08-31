@@ -38,6 +38,23 @@ jobs:
           PY
       - name: Apply focused hardening patch
         run: python tools/apply_numeric_shape_hardening.py
+      - name: Preserve optional scene camera contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('bom_engine/bomc_model_adapter.rb')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+            "eye_m: NumericShape.vec3(camera[:eye_m], path: \"scenes[#{scene_index}].camera.eye_m\"),": "eye_m: Array(camera[:eye_m]).empty? ? [] : NumericShape.vec3(camera[:eye_m], path: \"scenes[#{scene_index}].camera.eye_m\"),",
+            "target_m: NumericShape.vec3(camera[:target_m], path: \"scenes[#{scene_index}].camera.target_m\"),": "target_m: Array(camera[:target_m]).empty? ? [] : NumericShape.vec3(camera[:target_m], path: \"scenes[#{scene_index}].camera.target_m\"),",
+            "up: NumericShape.vec3(camera[:up], path: \"scenes[#{scene_index}].camera.up\"),": "up: Array(camera[:up]).empty? ? [] : NumericShape.vec3(camera[:up], path: \"scenes[#{scene_index}].camera.up\"),",
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f'optional camera patch expected one match for {old!r}; found {text.count(old)}')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
       - name: Verify focused regression first
         run: ruby -I . bom_engine/tests/test_numeric_shape_hardening.rb
       - name: Run full producer test suite
