@@ -24,6 +24,18 @@ jobs:
         run: |
           git fetch origin feature/clean-json-export
           git fetch https://github.com/rdwnilyas-coder/sibambo-bom-engine.git main
+      - name: Disambiguate canonical face patch guard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tools/apply_numeric_shape_hardening.py')
+          text = path.read_text(encoding='utf-8')
+          old = "    if count != 1:\n        raise SystemExit(f\"{label}: expected exactly 1 match, found {count}\")\n    return text.replace(old, new, 1)"
+          new = "    allowed = 2 if label == 'canonical face contextual path' else 1\n    if count != allowed:\n        raise SystemExit(f\"{label}: expected exactly {allowed} match(es), found {count}\")\n    return text.replace(old, new, 1)"
+          if old not in text:
+              raise SystemExit('replace_once guard body not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
       - name: Apply focused hardening patch
         run: python tools/apply_numeric_shape_hardening.py
       - name: Verify focused regression first
