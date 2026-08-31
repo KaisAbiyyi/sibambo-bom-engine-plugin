@@ -7,4 +7,12 @@ new = '''    def page_selected?(page)\n      return false if page.nil? || !page.
 if old not in text:
     raise SystemExit('guard failed: effective_tag_visibility block not found exactly')
 path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+legacy_test = Path('bom_engine/tests/test_scene_visibility_resolver.rb')
+test_text = legacy_test.read_text(encoding='utf-8')
+old_test = "      page = MockPage.new('ARCH_VIEW', persistent_id: 'page_arch')\n\n      assert_equal false, SceneVisibilityResolver.effective_tag_visibility(layer, page)"
+new_test = "      page = MockPage.new('ARCH_VIEW', persistent_id: 'page_arch', layer_folders: [folder])\n\n      assert_equal false, SceneVisibilityResolver.effective_tag_visibility(layer, page)"
+if old_test not in test_text:
+    raise SystemExit('guard failed: legacy layer-folder test not found exactly')
+legacy_test.write_text(test_text.replace(old_test, new_test, 1), encoding='utf-8')
 print('scene tag-folder truth patch applied')
