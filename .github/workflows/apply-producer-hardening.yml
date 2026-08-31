@@ -1,0 +1,53 @@
+name: Apply Producer Numeric Shape Hardening
+
+on:
+  push:
+    branches:
+      - feat/producer-hardening-array-shape
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feat/producer-hardening-array-shape
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+      - name: Fetch provenance source histories
+        run: |
+          git fetch origin feature/clean-json-export
+          git fetch https://github.com/rdwnilyas-coder/sibambo-bom-engine.git main
+      - name: Apply focused hardening patch
+        run: python tools/apply_numeric_shape_hardening.py
+      - name: Verify focused regression first
+        run: ruby -I . bom_engine/tests/test_numeric_shape_hardening.rb
+      - name: Run full producer test suite
+        run: |
+          for f in bom_engine/tests/test_*.rb; do
+            echo "Running $f..."
+            ruby -I . "$f"
+          done
+      - name: Build Evolution Lab packages for provenance regression coverage
+        run: ruby tools/history/build_evolution_lab.rb
+      - name: Run history and provenance tests
+        run: |
+          for f in history/tests/test_*.rb; do
+            echo "Running $f..."
+            ruby "$f"
+          done
+      - name: Commit verified production patch
+        run: |
+          rm tools/apply_numeric_shape_hardening.py
+          rm .github/workflows/apply-producer-hardening.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bom_engine/numeric_shape.rb bom_engine/bomc_model_adapter.rb bom_engine/scene_clip_program.rb bom_engine/tests/test_numeric_shape_hardening.rb tools/apply_numeric_shape_hardening.py .github/workflows/apply-producer-hardening.yml
+          git commit -m "fix(bomc): harden structured numeric normalization"
+          git push origin HEAD:feat/producer-hardening-array-shape
