@@ -400,49 +400,68 @@ module BOMEngine
       count
     end
 
+    def page_selected?(page)
+      return false if page.nil? || !page.respond_to?(:parent)
+
+      pages = page.parent
+      pages && pages.respond_to?(:selected_page) && pages.selected_page.equal?(page)
+    rescue StandardError
+      false
+    end
+
+    def layer_folder_chain(layer)
+      folders = []
+      folder = layer.respond_to?(:folder) ? layer.folder : nil
+      seen = {}
+      while folder && !seen[folder.object_id]
+        seen[folder.object_id] = true
+        folders << folder
+        folder = folder.respond_to?(:folder) ? folder.folder : nil
+      end
+      folders
+    rescue StandardError
+      []
+    end
+
+    def live_tag_visibility(layer)
+      return true if layer.nil?
+      return false if layer.respond_to?(:visible?) && !layer.visible?
+
+      layer_folder_chain(layer).all? do |folder|
+        !folder.respond_to?(:visible?) || folder.visible?
+      end
+    rescue StandardError
+      true
+    end
+
     def effective_tag_visibility(layer, page)
       return true if layer.nil?
 
-      base_visible = layer.respond_to?(:visible?) ? layer.visible? : true
-      return base_visible if page.nil?
+      # SketchUp exposes the currently selected Page through live Layer / LayerFolder
+      # state. Page#layers and Page#layer_folders are snapshots for other Pages, so
+      # never let the selected Page's current folder state veto another Scene.
+      return live_tag_visibility(layer) if page.nil? || page_selected?(page)
 
-      # If page does not store hidden layers, inherit base visibility
+      # A Page that does not store tag visibility inherits the current/live model state.
       if page.respond_to?(:use_hidden_layers?) && !page.use_hidden_layers?
-        return base_visible
+        return live_tag_visibility(layer)
       end
 
-      # Check layer folders if supported
-      if layer.respond_to?(:folder) && layer.folder
-        folder = layer.folder
-        if folder.respond_to?(:visible?) && !folder.visible?
-          return false
-        end
-        if page.respond_to?(:layer_folders)
-          hidden_folders = (begin page.layer_folders.to_a rescue [] end) || []
-          return false if hidden_folders.include?(folder)
-        end
+      folder_chain = layer_folder_chain(layer)
+      if page.respond_to?(:layer_folders)
+        hidden_folders = (begin page.layer_folders.to_a rescue [] end) || []
+        return false if folder_chain.any? { |folder| hidden_folders.include?(folder) }
       end
 
-      # In official SketchUp API:
-      # Page#layers returns layers whose visibility in this page differs from their default visibility.
-      # Bit 0x0001 in layer.page_behavior indicates hidden by default on new pages:
-      # LAYER_IS_VISIBLE_ON_NEW_PAGES = 0x0000
-      # LAYER_IS_HIDDEN_ON_NEW_PAGES  = 0x0001
+      # Page#layers contains tags whose Page visibility differs from their default.
+      # Bit 0x0001 means hidden by default on new Pages.
       page_layers = (begin page.layers.to_a rescue [] end) || []
       in_page_layers = page_layers.include?(layer)
+      hidden_by_default = layer.respond_to?(:page_behavior) && (layer.page_behavior.to_i & 0x0001) != 0
 
-      hidden_by_default = false
-      if layer.respond_to?(:page_behavior)
-        hidden_by_default = (layer.page_behavior.to_i & 0x0001) != 0
-      end
-
-      if hidden_by_default
-        # If hidden by default, being in page.layers means it was made VISIBLE on this page
-        in_page_layers
-      else
-        # If visible by default, being in page.layers means it was made HIDDEN on this page
-        !in_page_layers
-      end
+      hidden_by_default ? in_page_layers : !in_page_layers
+    rescue StandardError
+      live_tag_visibility(layer)
     end
 
     def effective_entity_visibility(entity, page, parent_visibility: true, is_root: false, diagnostics: nil)

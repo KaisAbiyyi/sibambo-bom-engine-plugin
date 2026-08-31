@@ -241,7 +241,7 @@ module BOMEngine
     def test_layer_folder_visibility
       folder = MockLayerFolder.new('STRUCT_FOLDER', visible: false, persistent_id: 'f_struct')
       layer = MockLayer.new('BEAMS', visible: true, persistent_id: '106', folder: folder)
-      page = MockPage.new('ARCH_VIEW', persistent_id: 'page_arch')
+      page = MockPage.new('ARCH_VIEW', persistent_id: 'page_arch', layer_folders: [folder])
 
       assert_equal false, SceneVisibilityResolver.effective_tag_visibility(layer, page)
     end
