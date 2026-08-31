@@ -1,4 +1,5 @@
 require 'digest'
+require_relative 'numeric_shape'
 require_relative 'scene_clip_program'
 
 module BOMEngine
@@ -41,7 +42,7 @@ module BOMEngine
         end
         meshes = raw_meshes.each_with_index.map do |mesh, mesh_index_value|
           notify(checkpoint, :encode_positions, mesh_index_value + 1, raw_meshes.length)
-          positions = Array(mesh[:positions_m]).map(&:to_f)
+          positions = NumericShape.flat_xyz(mesh[:positions_m], path: "meshes[#{mesh_index_value}].positions_m")
           raw_faces = Array(mesh[:faces])
           {
             stable_id: mesh[:id].to_s,
@@ -49,7 +50,7 @@ module BOMEngine
             positions: positions,
             faces: raw_faces.each_with_index.map do |face, face_index|
               notify(checkpoint, :encode_topology, face_index + 1, raw_faces.length)
-              canonical_face(face, positions, material_index, tag_index, materials)
+              canonical_face(face, positions, material_index, tag_index, materials, path: "meshes[#{mesh_index_value}].faces[#{face_index}]")
             end,
             edges: Array(mesh[:edges]).map { |edge| canonical_edge(edge, tag_index) }
           }
@@ -260,7 +261,7 @@ module BOMEngine
       def adapt_scenes(raw_scenes, tag_index, node_index, face_index = {}, edge_index = {})
         return [] if raw_scenes.nil? || raw_scenes.empty?
 
-        raw_scenes.map do |scene|
+        raw_scenes.each_with_index.map do |scene, scene_index|
           camera = scene[:camera] || {}
           visibility = scene[:visibility] || {}
           visible_tag_ids = Array(visibility[:visible_tag_ids]).map(&:to_s)
@@ -323,9 +324,9 @@ module BOMEngine
             source_binding: scene[:source_binding] || {},
             camera: {
               projection: camera[:projection].to_s == 'orthographic' ? 'orthographic' : 'perspective',
-              eye_m: Array(camera[:eye_m]).map(&:to_f),
-              target_m: Array(camera[:target_m]).map(&:to_f),
-              up: Array(camera[:up]).map(&:to_f),
+              eye_m: Array(camera[:eye_m]).empty? ? [] : NumericShape.vec3(camera[:eye_m], path: "scenes[#{scene_index}].camera.eye_m"),
+              target_m: Array(camera[:target_m]).empty? ? [] : NumericShape.vec3(camera[:target_m], path: "scenes[#{scene_index}].camera.target_m"),
+              up: Array(camera[:up]).empty? ? [] : NumericShape.vec3(camera[:up], path: "scenes[#{scene_index}].camera.up"),
               field_of_view_degrees: camera[:field_of_view_degrees]&.to_f,
               fov_is_height: camera[:fov_is_height] != false,
               orthographic_height_m: camera[:orthographic_height_m]&.to_f,
@@ -459,7 +460,7 @@ module BOMEngine
       end
       private_class_method :texture_media_type
 
-      def canonical_face(face, positions, material_index, tag_index, materials)
+      def canonical_face(face, positions, material_index, tag_index, materials, path: 'face')
         semantic = face[:semantic] || {}
         outer = Array(face[:outer]).map(&:to_i)
         front_material = optional_reference(material_index, face[:front_material_id])
@@ -475,21 +476,21 @@ module BOMEngine
           front_appearance_required: true,
           back_appearance_required: !back_material.nil?,
           tag: optional_reference(tag_index, face[:tag_id]),
-          normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : Array(face[:normal]).map(&:to_f),
-          area_m2: face[:area_m2].to_f,
+          normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : NumericShape.vec3(face[:normal], path: "#{path}.normal"),
+          area_m2: NumericShape.scalar(face[:area_m2], path: "#{path}.area_m2"),
           surface_type: semantic[:role] || face[:surface_hint],
           hidden: face[:hidden] == true,
           semantic_label: semantic[:label],
           semantic_role: semantic[:role],
           semantic_source: semantic[:source],
           classification_policy: semantic[:classification_policy],
-          uv: normalize_uv_for_materials(face[:uv], front_material, back_material, materials)
+          uv: normalize_uv_for_materials(face[:uv], front_material, back_material, materials, path: "#{path}.uv")
         }
       end
       private_class_method :canonical_face
 
-      def normalize_uv_for_materials(uv, front_material, back_material, materials)
-        normalized = normalize_uv(uv)
+      def normalize_uv_for_materials(uv, front_material, back_material, materials, path: 'uv')
+        normalized = normalize_uv(uv, path: path)
         return nil if normalized.nil?
 
         result = {}
@@ -537,8 +538,8 @@ module BOMEngine
             base_path
           )
           {
-            kind: 'image', position: Array(image[:position]).map(&:to_f),
-            width_m: image[:width_m].to_f, height_m: image[:height_m].to_f,
+            kind: 'image', position: NumericShape.vec3(image[:position], path: "instances.fallback.image.position"),
+            width_m: NumericShape.scalar(image[:width_m], path: "instances.fallback.image.width_m"), height_m: NumericShape.scalar(image[:height_m], path: "instances.fallback.image.height_m"),
             text: node[:name].to_s, texture: texture
           }
         when 'text'
@@ -551,15 +552,21 @@ module BOMEngine
       end
       private_class_method :canonical_fallback
 
-      def normalize_uv(uv)
+      def normalize_uv(uv, path: 'uv')
         return nil unless uv.is_a?(Hash)
 
         result = {}
         [:front_outer, :back_outer].each do |key|
-          result[key] = Array(uv[key]).map { |pair| Array(pair).map(&:to_f) }
+          result[key] = Array(uv[key]).each_with_index.map do |pair, pair_index|
+            NumericShape.vec2(pair, path: "#{path}.#{key}[#{pair_index}]")
+          end
         end
         [:front_holes, :back_holes].each do |key|
-          result[key] = Array(uv[key]).map { |loop| Array(loop).map { |pair| Array(pair).map(&:to_f) } }
+          result[key] = Array(uv[key]).each_with_index.map do |loop, loop_index|
+            Array(loop).each_with_index.map do |pair, pair_index|
+              NumericShape.vec2(pair, path: "#{path}.#{key}[#{loop_index}][#{pair_index}]")
+            end
+          end
         end
         result
       end
@@ -571,11 +578,11 @@ module BOMEngine
         if values[0].is_a?(Array)
           values.each_with_index.map do |matrix, index|
             notify(checkpoint, :encode_transforms, index + 1, values.length)
-            Array(matrix).map(&:to_f)
+            NumericShape.flat_numeric(Array(matrix), path: "transforms[#{index}]", expected_length: 16)
           end
         else
           raise 'BOMC source invalid: transform table is not divisible by 16.' unless (values.length % 16).zero?
-          values.each_slice(16).map { |matrix| matrix.map(&:to_f) }
+          values.each_slice(16).with_index.map { |matrix, index| NumericShape.flat_numeric(matrix, path: "transforms[#{index}]", expected_length: 16) }
         end
       end
       private_class_method :normalize_transforms
@@ -587,8 +594,8 @@ module BOMEngine
 
       def decode_model_eval_positions(mesh)
         quantization = mesh[:quantization] || {}
-        minimum = Array(quantization[:minimum_m]).map(&:to_f)
-        scale = Array(quantization[:scale_m]).map(&:to_f)
+        minimum = NumericShape.vec3(quantization[:minimum_m], path: 'model_eval.quantization.minimum_m')
+        scale = NumericShape.vec3(quantization[:scale_m], path: 'model_eval.quantization.scale_m')
         Array(mesh[:positions]).each_with_index.map do |value, index|
           minimum[index % 3].to_f + value.to_f * scale[index % 3].to_f
         end

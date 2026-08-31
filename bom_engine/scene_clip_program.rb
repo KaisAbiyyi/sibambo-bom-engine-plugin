@@ -2,6 +2,7 @@
 # BOMC Executable Section Clip Program and Plane Records (Batch 9)
 
 require_relative 'bomc_format'
+require_relative 'numeric_shape'
 
 module BOMEngine
   module SceneClipProgram
@@ -11,8 +12,8 @@ module BOMEngine
     module_function
 
     def create_plane(stable_id:, source_persistent_id:, origin_m:, normal:, keep_side: 1, owner_definition_id: nil, owner_instance_id: nil, flags: 0)
-      orig = Array(origin_m).map(&:to_f)
-      norm = Array(normal).map(&:to_f)
+      orig = NumericShape.vec3(origin_m, path: 'clip_plane.origin_m')
+      norm = NumericShape.vec3(normal, path: 'clip_plane.normal')
       len = Math.sqrt(norm[0]**2 + norm[1]**2 + norm[2]**2)
       if len > 1.0e-9
         norm = [norm[0] / len, norm[1] / len, norm[2] / len]
@@ -47,8 +48,8 @@ module BOMEngine
         def_idx = p[:owner_definition_id] ? (string_index[p[:owner_definition_id].to_s] || MISSING) : MISSING
         inst_idx = p[:owner_instance_id] ? (string_index[p[:owner_instance_id].to_s] || MISSING) : MISSING
 
-        orig = Array(p[:origin_m]).map(&:to_f)
-        norm = Array(p[:normal]).map(&:to_f)
+        orig = NumericShape.vec3(p[:origin_m], path: "clip_planes[#{p[:stable_id]}].origin_m")
+        norm = NumericShape.vec3(p[:normal], path: "clip_planes[#{p[:stable_id]}].normal")
         const = p[:plane_constant].to_f
 
         body << [stable_idx, pid_idx].pack('VV')
