@@ -1,54 +1,84 @@
 {
-  "schema_version": 1,
-  "description": "Corpus manifest for SIBAMBO BOMC three-profile benchmarks",
+  "schema_version": 2,
+  "description": "Fail-closed corpus manifest for SIBAMBO BOMC three-profile benchmarks",
+  "units": "m",
   "items": [
     {
       "id": "tiny-box",
       "category": "tiny",
       "skp_path": "skps/test.skp",
+      "skp_sha256": "11e2282c96c3bda1ca88ae952c6f99df5753936b2e722b1239606118355ebc92",
       "model_eval_fixture": "examples/model-eval-json-v1-small.json",
+      "fixture_sha256": "22172a45593c4d20be5287260a7e71e4984edab810bb62c0e6250352070c1f86",
+      "source_of_truth": "sketchup_model",
+      "minimum_source_counts": { "meshes": 1 },
       "required_for_release": true
     },
     {
       "id": "small-textured-house2",
       "category": "small-textured",
       "skp_path": "skps/house2.skp",
+      "skp_sha256": "4da3321be5da8d1999ea6a2019d0c7d9b2b8b2d5f17db28831d54f5f8db46bd4",
       "model_eval_fixture": "skps/model-eval-exports/house2_model-eval.json",
+      "fixture_sha256": "52d1c53b73c2e2db8838d168560dae21eb1d66dc4e02878eafa48d87729dd2cd",
+      "source_of_truth": "sketchup_model",
+      "minimum_source_counts": { "textures": 1 },
       "required_for_release": true
     },
     {
       "id": "medium-architectural-presentation20",
       "category": "medium-architectural",
       "skp_path": "skps/presentation20.skp",
+      "skp_sha256": "d82c05d4fd062ebf0315f5fa3cc1dbfc5f39a1e421d33dd1fa1d459ed21c286e",
       "model_eval_fixture": "skps/model-eval-exports/presentation20_model-eval.json",
+      "fixture_sha256": "c896f681bc3b3ce9fdbaf8ebfcd5f0a8b59f287704898bdc26af6a4e7cfd58e4",
+      "source_of_truth": "sketchup_model",
+      "minimum_source_counts": { "faces": 1 },
       "required_for_release": true
     },
     {
       "id": "complex-architectural-sboost1",
       "category": "complex-architectural",
       "skp_path": "skps/PROJECT SBOOST 1.skp",
+      "skp_sha256": "a659761236552b4fa2f7d70882c83d7b1edb9d67e3bc84ae29ff556685684f8c",
       "model_eval_fixture": "skps/model-eval-exports/PROJECT SBOOST 1_model-eval.json",
+      "fixture_sha256": "b09a0936bc16e4c30d6123c3a010b8dd30a1f22b3da9e408045e2359d92d603b",
+      "source_of_truth": "sketchup_model",
+      "minimum_source_counts": { "instances": 2 },
       "required_for_release": true
     },
     {
       "id": "texture-heavy-rumah-y",
       "category": "texture-heavy",
       "skp_path": "skps/RUMAH Y.skp",
+      "skp_sha256": "5291179e1f4eac5ebf6b5eedc66135469a913f8df6a6d5a28238f497c75af119",
       "model_eval_fixture": "skps/model-eval-exports/RUMAH Y_model-eval.json",
-      "required_for_release": true
+      "fixture_sha256": "e3f9fe157b92f14cd899a9ce1e811d1156c5996003852d12f07af91a4ef7034b",
+      "source_of_truth": "sketchup_model",
+      "minimum_source_counts": { "textures": 1 },
+      "required_for_release": true,
+      "local_only": true
     },
     {
       "id": "scene-heavy-sboost2",
       "category": "scene-heavy",
       "skp_path": "skps/PROJECT SBOOST 2.skp",
+      "skp_sha256": "b367b9afe8b064d984393e552a836d2f10b1ee29f36fe72528326da17c43e265",
       "model_eval_fixture": "skps/model-eval-exports/PROJECT SBOOST 2_model-eval.json",
+      "fixture_sha256": "ec08f3e379dce4305c565000539cab5993302a31f7e131af22e83f0fddbb6ebe",
+      "source_of_truth": "sketchup_model",
+      "minimum_source_counts": { "scenes": 2 },
       "required_for_release": true
     },
     {
       "id": "section-cut-heavy-rumah-l",
       "category": "section-cut-heavy",
       "skp_path": "skps/RUMAH L.skp",
+      "skp_sha256": "e250ef5863e57b1f0026bdfcecd9759bb61ef29847803490b1d122176fb1e0ab",
       "model_eval_fixture": "skps/model-eval-exports/RUMAH L_model-eval.json",
+      "fixture_sha256": "d79229ca3247e394422b4e92a263da4945092d32ec20cb7f38afe17ae793fda2",
+      "source_of_truth": "sketchup_model",
+      "minimum_source_counts": { "clip_planes": 1 },
       "required_for_release": true,
       "local_only": true
     }
