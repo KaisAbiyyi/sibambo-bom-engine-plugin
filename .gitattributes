@@ -1,0 +1,12 @@
+# Preserve LF line endings for manifests and json so digests remain deterministic across platforms
+*.json text eol=lf
+*.sha256 text eol=lf
+*.md text eol=lf
+
+# Raw binary formats must never undergo line normalization
+*.bomc binary
+*.rbz binary
+*.zip binary
+*.bome2 binary
+*.cleanpkg binary
+*.skp binary

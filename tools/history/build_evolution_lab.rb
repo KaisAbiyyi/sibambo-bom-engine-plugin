@@ -4,11 +4,13 @@ require 'json'
 require 'fileutils'
 require 'digest'
 require 'open3'
+require 'time'
 begin
   require 'zip'
 rescue LoadError
   # zip gem is optional; the platform archive command is used below.
 end
+require_relative 'active_release_catalog'
 
 module EvolutionLabBuilder
   ROOT_DIR = File.expand_path('../..', __dir__)
@@ -17,11 +19,448 @@ module EvolutionLabBuilder
   DIST_DIR = File.join(ROOT_DIR, 'dist', 'history')
   STANDALONE_DIR = File.join(DIST_DIR, 'standalone')
   MANIFEST_FILE = File.join(HISTORY_DIR, 'versions.json')
+  ACTIVE_MANIFEST_FILE = File.join(HISTORY_DIR, 'active-releases.json')
   EVOLUTION_LAB_VERSION = '1.1.22'.freeze
+  TRANSFORMER_REVISION = '1.0'.freeze
 
-  def self.build
+  def self.build(catalog: 'active', candidate: nil, dist_dir: nil, generated_dir: nil)
+    mode = catalog.to_s.downcase == 'archive' ? 'archive' : 'active'
+    if mode == 'active'
+      build_active(candidate: candidate, dist_dir: dist_dir, generated_dir: generated_dir)
+    else
+      build_archive(dist_dir: dist_dir, generated_dir: generated_dir)
+    end
+  end
+
+  def self.compute_tree_sha(dir)
+    digest = Digest::SHA256.new
+    files = Dir.glob(File.join(dir, '**', '*')).reject { |f| File.directory?(f) || File.basename(f) == 'SNAPSHOT_METADATA.json' }.sort
+    files.each do |f|
+      rel = f.sub("#{dir}/", '')
+      digest.update(rel)
+      digest.update(Digest::SHA256.file(f).digest)
+    end
+    digest.hexdigest
+  end
+
+  def self.snapshot_valid?(ver_gen_dir, staged_dir, sha)
+    meta_file = File.join(ver_gen_dir, 'SNAPSHOT_METADATA.json')
+    return false unless File.file?(meta_file) && File.directory?(staged_dir)
+
+    meta = JSON.parse(File.read(meta_file)) rescue nil
+    return false unless meta
+    return false unless meta['producer_sha'] == sha
+    return false unless meta['transformer_revision'] == TRANSFORMER_REVISION
+
+    actual_tree_sha = compute_tree_sha(staged_dir)
+    return false unless meta['tree_sha256'] == actual_tree_sha
+
+    true
+  end
+
+  def self.record_snapshot_metadata(ver_gen_dir, staged_dir, sha)
+    meta = {
+      'producer_sha' => sha,
+      'transformer_revision' => TRANSFORMER_REVISION,
+      'tree_sha256' => compute_tree_sha(staged_dir),
+      'created_at' => Time.now.utc.iso8601
+    }
+    File.write(File.join(ver_gen_dir, 'SNAPSHOT_METADATA.json'), JSON.pretty_generate(meta))
+  end
+
+  def self.build_active(candidate: nil, dist_dir: nil, generated_dir: nil)
     puts "======================================================================"
-    puts "  SIBAMBO BOM ENGINE — EVOLUTION LAB BUILDER"
+    puts "  SIBAMBO BOM ENGINE — EVOLUTION LAB BUILDER (ACTIVE CATALOG)"
+    puts "======================================================================"
+
+    records = EvolutionActiveCatalog.load(path: ACTIVE_MANIFEST_FILE)
+    puts "Loaded 4 slots from active catalog."
+
+    target_dist_dir = dist_dir ? File.expand_path(dist_dir) : DIST_DIR
+    target_generated_dir = generated_dir ? File.expand_path(generated_dir) : GENERATED_DIR
+
+    FileUtils.mkdir_p(target_generated_dir)
+    FileUtils.mkdir_p(target_dist_dir)
+
+    if candidate
+      cand_record = EvolutionActiveCatalog.find_candidate(records, candidate)
+      raise "Candidate release '#{candidate}' not found or has no producerSha (e.g. unbuilt development release)" unless cand_record
+
+      cand_dist = File.join(target_dist_dir, 'candidate', candidate)
+      FileUtils.mkdir_p(cand_dist)
+      puts "Building candidate #{candidate} into #{cand_dist}..."
+
+      pkg = stage_and_package_active_release(cand_record, cand_dist, target_generated_dir)
+      checksums_content = "#{pkg[:sha256]}  #{File.basename(pkg[:rbz_path])}\n"
+      File.write(File.join(cand_dist, 'CHECKSUMS.sha256'), checksums_content, encoding: 'UTF-8')
+
+      puts "[CANDIDATE-BUILD-COMPLETE] Standalone package: #{pkg[:rbz_path]}"
+      return pkg
+    end
+
+    targets = EvolutionActiveCatalog.packagable(records)
+    puts "Packagable active releases: #{targets.map { |r| r['id'] }.join(', ')} (#{targets.length} of 4 ready)"
+
+    target_standalone_dir = File.join(target_dist_dir, 'standalone')
+    FileUtils.mkdir_p(target_standalone_dir)
+
+    master_staging_dir = File.join(target_dist_dir, 'staging')
+    FileUtils.rm_rf(master_staging_dir)
+    FileUtils.mkdir_p(master_staging_dir)
+
+    evolution_lab_dir = File.join(master_staging_dir, 'evolution_lab')
+    FileUtils.mkdir_p(evolution_lab_dir)
+
+    standalone_packages = []
+
+    targets.each do |rec|
+      disp = rec['id']
+      sha = rec['producerSha']
+      title = rec['title']
+      key = disp.gsub(/[^A-Za-z0-9_]/, '_').downcase
+
+      puts "\n----------------------------------------------------------------------"
+      puts "Processing active release #{disp}: #{title}"
+      puts "Commit: #{sha}"
+
+      ver_gen_dir = File.join(target_generated_dir, disp)
+      raw_dir = File.join(ver_gen_dir, 'raw')
+      staged_dir = File.join(ver_gen_dir, 'staged')
+
+      if snapshot_valid?(ver_gen_dir, staged_dir, sha)
+        puts "  Reusing verified active milestone snapshot for #{disp}"
+      else
+        FileUtils.rm_rf(ver_gen_dir)
+        FileUtils.mkdir_p(raw_dir)
+        FileUtils.mkdir_p(staged_dir)
+
+        extract_git_snapshot(sha, raw_dir, rec)
+        transform_snapshot(raw_dir, staged_dir, { 'display_version' => disp, 'is_active' => true }, key, "SibamboHistory::#{key.capitalize}")
+        create_active_engine_entry_point(staged_dir, rec, key, "SibamboHistory::#{key.capitalize}")
+
+        syntax_ok = verify_ruby_syntax(staged_dir)
+        raise "Syntax error in transformed Ruby files for #{disp}" unless syntax_ok
+
+        record_snapshot_metadata(ver_gen_dir, staged_dir, sha)
+      end
+
+      # Copy to Master Evolution Lab directory
+      target_dir_in_master = File.join(evolution_lab_dir, "engine_#{key}")
+      FileUtils.cp_r(staged_dir, target_dir_in_master)
+      FileUtils.rm_rf(File.join(target_dir_in_master, 'bom_engine', 'tests'))
+      FileUtils.rm_rf(File.join(target_dir_in_master, 'tests'))
+
+      # Package Standalone RBZ
+      standalone_rbz = File.join(target_standalone_dir, "sibambo_bom_engine_#{key}.rbz")
+      package_standalone_rbz(staged_dir, standalone_rbz, { 'display_version' => disp, 'label' => title, 'commit_sha' => sha }, key)
+      standalone_packages << {
+        version: rec,
+        rbz_path: standalone_rbz,
+        sha256: Digest::SHA256.file(standalone_rbz).hexdigest
+      }
+      puts "  -> Standalone RBZ: #{File.basename(standalone_rbz)}"
+    end
+
+    # Create active Master loader and menu
+    create_active_master_loader(master_staging_dir, evolution_lab_dir, targets)
+
+    # Package Master RBZ
+    master_rbz = File.join(target_dist_dir, "sibambo_bom_engine_evolution_lab_v#{EVOLUTION_LAB_VERSION}.rbz")
+    package_master_rbz(master_staging_dir, master_rbz)
+    master_sha256 = Digest::SHA256.file(master_rbz).hexdigest
+    puts "\n======================================================================"
+    puts "  ACTIVE EVOLUTION LAB RBZ CREATED"
+    puts "  Path:   #{master_rbz}"
+    puts "  SHA256: #{master_sha256}"
+    puts "======================================================================"
+
+    generate_active_checksums_and_manifest_md(master_rbz, master_sha256, standalone_packages, targets, target_dist_dir)
+    puts "\n[SUCCESS] Active Evolution Lab build completed cleanly!"
+    master_rbz
+  end
+
+  def self.stage_and_package_active_release(rec, target_dist_dir, target_generated_dir)
+    disp = rec['id']
+    sha = rec['producerSha']
+    title = rec['title']
+    key = disp.gsub(/[^A-Za-z0-9_]/, '_').downcase
+
+    ver_gen_dir = File.join(target_generated_dir, disp)
+    raw_dir = File.join(ver_gen_dir, 'raw')
+    staged_dir = File.join(ver_gen_dir, 'staged')
+
+    if snapshot_valid?(ver_gen_dir, staged_dir, sha)
+      puts "  Reusing verified candidate snapshot for #{disp}"
+    else
+      FileUtils.rm_rf(ver_gen_dir)
+      FileUtils.mkdir_p(raw_dir)
+      FileUtils.mkdir_p(staged_dir)
+
+      extract_git_snapshot(sha, raw_dir, rec)
+      transform_snapshot(raw_dir, staged_dir, { 'display_version' => disp, 'is_active' => true }, key, "SibamboHistory::#{key.capitalize}")
+      create_active_engine_entry_point(staged_dir, rec, key, "SibamboHistory::#{key.capitalize}")
+
+      syntax_ok = verify_ruby_syntax(staged_dir)
+      raise "Syntax error in transformed Ruby files for #{disp}" unless syntax_ok
+
+      record_snapshot_metadata(ver_gen_dir, staged_dir, sha)
+    end
+
+    standalone_rbz = File.join(target_dist_dir, "sibambo_bom_engine_#{key}.rbz")
+    package_standalone_rbz(staged_dir, standalone_rbz, { 'display_version' => disp, 'label' => title, 'commit_sha' => sha }, key)
+    {
+      version: rec,
+      rbz_path: standalone_rbz,
+      sha256: Digest::SHA256.file(standalone_rbz).hexdigest
+    }
+  end
+
+  def self.create_active_engine_entry_point(staged_dir, record, key, mod_name)
+    sub_mod = mod_name.split('::').last
+    entry_file = File.join(staged_dir, "entry_#{key.downcase}.rb")
+    engine_version = historical_plugin_version(staged_dir)
+    export_kind = record['entryKind'] == 'bomc-three-profile' ? :bomc_three_profile : :legacy_scene
+    create_cooperative_job(staged_dir, sub_mod)
+
+    code = <<~RUBY
+      # frozen_string_literal: true
+      # Entry point for active release: #{record['title']} (#{record['id']})
+
+      module SibamboHistory
+        EVOLUTION_LAB_EMBEDDED = true unless const_defined?(:EVOLUTION_LAB_EMBEDDED, false)
+
+        module #{sub_mod}
+          RELEASE_ID = #{record['id'].inspect}
+          LABEL = #{record['title'].inspect}
+          COMMIT_SHA = #{record['producerSha'].inspect}
+          ENTRY_KIND = #{export_kind.inspect}
+          EXPORT_KIND = #{export_kind.inspect}
+          PROFILES = #{record['profiles'].inspect}.freeze
+          PLUGIN_VERSION = #{engine_version.inspect} unless const_defined?(:PLUGIN_VERSION, false)
+
+          def self.load_engine
+            loader_path = File.join(__dir__, 'bom_engine', 'core.rb')
+            loader_path = File.join(__dir__, 'core.rb') unless File.exist?(loader_path)
+            loader_path = File.join(__dir__, 'clean_analysis', 'exporter.rb') unless File.exist?(loader_path)
+
+            if File.exist?(loader_path)
+              require loader_path
+            else
+              Dir.glob(File.join(__dir__, '**', '*.rb')).each do |f|
+                next if f == __FILE__
+                require f
+              end
+            end
+
+            require File.join(__dir__, 'evolution_cooperative_job.rb')
+            install_batch_wrapper
+          end
+
+          def self.install_batch_wrapper
+            return if @batch_wrapper_installed
+            return unless defined?(Core) && Core.respond_to?(:run_export)
+
+            original_run_export = Core.method(:run_export)
+            job = EvolutionCooperativeJob
+            label = LABEL
+            Core.define_singleton_method(:run_export) do |settings|
+              selected = settings.is_a?(Hash) ? settings.dup : {}
+              batch_size = selected.fetch(:batch_size, 512).to_i
+              batch_size = 512 if batch_size < 1
+              job.start(title: label, batch_size: batch_size) do |progress|
+                original_run_export.call(selected.merge(progress: progress, batch_size: batch_size))
+              end
+            end
+            @batch_wrapper_installed = true
+          end
+
+          def self.launch(model = Sketchup.active_model, profile: nil)
+            load_engine
+            load_format_adapter
+            if defined?(UIDialog) && UIDialog.respond_to?(:show)
+              UIDialog.show do |settings|
+                export_settings = settings.is_a?(Hash) ? settings.dup : {}
+                export_settings[:profile] = profile if profile
+                export_current_model(model, export_settings)
+              end
+            else
+              export_settings = profile ? { profile: profile } : {}
+              export_current_model(model, export_settings)
+            end
+          end
+
+          def self.load_format_adapter
+            # format adapter hooks
+          end
+
+          def self.export_current_model(model, settings = {})
+            load_engine
+            if defined?(Core) && Core.respond_to?(:run_export)
+              Core.run_export(settings)
+            end
+          end
+        end
+      end
+    RUBY
+
+    File.write(entry_file, code, encoding: 'UTF-8')
+  end
+
+  def self.create_active_master_loader(master_staging_dir, evolution_lab_dir, targets)
+    master_menu_file = File.join(evolution_lab_dir, 'master_menu.rb')
+    menu_code = +<<~RUBY
+      # frozen_string_literal: true
+      # Sibambo BOM Engine Evolution Lab — Active Catalog Menu Controller
+
+      module SibamboHistory
+        module EvolutionLab
+          MENU_TITLE = 'Sibambo BOM Engine Evolution Lab'
+
+          ACTIVE_EXPORTERS = {
+    RUBY
+
+    targets.each do |rec|
+      id = rec['id']
+      key = id.gsub(/[^A-Za-z0-9_]/, '_').downcase
+      mod_name = "SibamboHistory::#{key.capitalize}"
+      menu_code << <<~RUBY
+            #{id.inspect} => {
+              entry: #{"engine_#{key}/entry_#{key}.rb".inspect},
+              module_name: #{mod_name.inspect},
+              entry_kind: #{rec['entryKind'].inspect},
+              profiles: #{rec['profiles'].inspect}
+            },
+      RUBY
+    end
+
+    menu_code << <<~'RUBY'
+          }.freeze
+
+          def self.export_active_model(release_id, profile: nil, model = Sketchup.active_model)
+            exporter = ACTIVE_EXPORTERS.fetch(release_id)
+            entry = File.join(__dir__, exporter.fetch(:entry))
+            raise "Active exporter entry missing: #{entry}" unless File.file?(entry)
+
+            require entry
+            target = exporter.fetch(:module_name).split('::').reject(&:empty?).inject(Object) do |scope, name|
+              scope.const_get(name)
+            end
+
+            if exporter[:entry_kind] == 'bomc-three-profile' && profile
+              target.launch(model, profile: profile)
+            else
+              target.launch(model)
+            end
+          rescue StandardError => error
+            UI.messagebox("Active export [#{release_id}] gagal:\n#{error.message}", MB_OK)
+          end
+
+          def self.init_menus
+            return if @menus_initialized
+            @menus_initialized = true
+
+            ext_menu = UI.menu('Extensions')
+            lab_menu = ext_menu.add_submenu(MENU_TITLE)
+            active_submenu = lab_menu.add_submenu('Active Releases')
+    RUBY
+
+    targets.each do |rec|
+      id = rec['id']
+      title = rec['title']
+      if rec['entryKind'] == 'bomc-three-profile'
+        menu_code << <<~RUBY
+            rel_sub_#{rec['order']} = active_submenu.add_submenu(#{title.inspect})
+            rel_sub_#{rec['order']}.add_item('Visual Profile (Default)') do
+              SibamboHistory::EvolutionLab.export_active_model(#{id.inspect}, profile: :visual, model: Sketchup.active_model)
+            end
+            rel_sub_#{rec['order']}.add_item('Research Profile') do
+              SibamboHistory::EvolutionLab.export_active_model(#{id.inspect}, profile: :research, model: Sketchup.active_model)
+            end
+            rel_sub_#{rec['order']}.add_item('Exact Profile') do
+              SibamboHistory::EvolutionLab.export_active_model(#{id.inspect}, profile: :exact, model: Sketchup.active_model)
+            end
+        RUBY
+      else
+        menu_code << <<~RUBY
+            active_submenu.add_item(#{title.inspect}) do
+              SibamboHistory::EvolutionLab.export_active_model(#{id.inspect}, model: Sketchup.active_model)
+            end
+        RUBY
+      end
+    end
+
+    menu_code << <<~'RUBY'
+          end
+        end
+      end
+    RUBY
+
+    File.write(master_menu_file, menu_code, encoding: 'UTF-8')
+
+    loader_file = File.join(master_staging_dir, 'sibambo_bom_engine_evolution_lab.rb')
+    loader_code = <<~RUBY
+      # frozen_string_literal: true
+      require 'sketchup.rb'
+      require 'extensions.rb'
+
+      module SibamboHistory
+        module EvolutionLab
+          PLUGIN_NAME = 'Sibambo BOM Engine Evolution Lab'
+          PLUGIN_VERSION = #{EVOLUTION_LAB_VERSION.inspect}
+
+          ex = SketchupExtension.new(PLUGIN_NAME, File.join(__dir__, 'evolution_lab', 'master_menu.rb'))
+          ex.description = 'Active release catalog for Sibambo BOM Engine evolution evaluation.'
+          ex.version = PLUGIN_VERSION
+          ex.creator = 'PT Sibambo Karya Edukasi'
+          ex.copyright = '2026 PT Sibambo Karya Edukasi'
+
+          Sketchup.register_extension(ex, true)
+          require_relative 'evolution_lab/master_menu'
+          EvolutionLab.init_menus
+        end
+      end
+    RUBY
+    File.write(loader_file, loader_code, encoding: 'UTF-8')
+  end
+
+  def self.generate_active_checksums_and_manifest_md(master_rbz, master_sha256, standalone_packages, targets, target_dist_dir)
+    checksums_file = File.join(target_dist_dir, 'CHECKSUMS.sha256')
+    manifest_md_file = File.join(target_dist_dir, 'MANIFEST.md')
+
+    lines = []
+    lines << "#{master_sha256}  #{File.basename(master_rbz)}"
+    standalone_packages.each do |pkg|
+      lines << "#{pkg[:sha256]}  standalone/#{File.basename(pkg[:rbz_path])}"
+    end
+    File.write(checksums_file, lines.join("\n") + "\n", encoding: 'UTF-8')
+
+    md = +<<~MD
+      # SIBAMBO BOM Engine — Active Evolution Catalog Manifest
+
+      - **Schema Version**: 1.0
+      - **Generated At**: #{Time.now.utc.iso8601}
+      - **Active Slots Total**: 4
+      - **Packaged Engines**: #{targets.length} (Ready releases)
+      - **Master Package**: `#{File.basename(master_rbz)}` (`#{master_sha256}`)
+
+      ## Packaged Active Releases
+
+      | Order | Release ID | Title | State | Producer SHA | Loader ID | Entry Kind | Profiles | Standalone RBZ | SHA256 |
+      | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+    MD
+
+    standalone_packages.each do |pkg|
+      rec = pkg[:version]
+      rbz_name = File.basename(pkg[:rbz_path])
+      md << "| #{rec['order']} | `#{rec['id']}` | #{rec['title']} | `#{rec['state']}` | `#{rec['producerSha'][0..7]}` | `#{rec['loaderId']}` | `#{rec['entryKind']}` | `#{rec['profiles'].join(', ')}` | `#{rbz_name}` | `#{pkg[:sha256][0..11]}` |\n"
+    end
+
+    File.write(manifest_md_file, md, encoding: 'UTF-8')
+  end
+
+  def self.build_archive(dist_dir: nil, generated_dir: nil)
+    puts "======================================================================"
+    puts "  SIBAMBO BOM ENGINE — EVOLUTION LAB BUILDER (ARCHIVE CATALOG)"
     puts "======================================================================"
 
     raise "Manifest not found: #{MANIFEST_FILE}" unless File.exist?(MANIFEST_FILE)
@@ -29,10 +468,14 @@ module EvolutionLabBuilder
     versions = manifest['versions']
     puts "Loaded #{versions.length} versions from manifest."
 
-    FileUtils.mkdir_p(GENERATED_DIR)
-    FileUtils.mkdir_p(STANDALONE_DIR)
+    target_dist_dir = dist_dir ? File.expand_path(dist_dir) : DIST_DIR
+    target_standalone_dir = File.join(target_dist_dir, 'standalone')
+    target_generated_dir = generated_dir ? File.expand_path(generated_dir) : GENERATED_DIR
 
-    master_staging_dir = File.join(DIST_DIR, 'staging')
+    FileUtils.mkdir_p(target_generated_dir)
+    FileUtils.mkdir_p(target_standalone_dir)
+
+    master_staging_dir = File.join(target_dist_dir, 'staging')
     FileUtils.rm_rf(master_staging_dir)
     FileUtils.mkdir_p(master_staging_dir)
 
@@ -53,7 +496,7 @@ module EvolutionLabBuilder
       puts "[#{seq}/#{versions.length}] Processing #{disp}: #{label}"
       puts "Commit: #{sha}"
 
-      ver_gen_dir = File.join(GENERATED_DIR, disp)
+      ver_gen_dir = File.join(target_generated_dir, disp)
       raw_dir = File.join(ver_gen_dir, 'raw')
       staged_dir = File.join(ver_gen_dir, 'staged')
 
@@ -91,7 +534,7 @@ module EvolutionLabBuilder
       FileUtils.rm_rf(File.join(target_dir_in_master, 'tests'))
 
       # 6. Package Standalone RBZ
-      standalone_rbz = File.join(STANDALONE_DIR, "sibambo_bom_engine_#{key.downcase}.rbz")
+      standalone_rbz = File.join(target_standalone_dir, "sibambo_bom_engine_#{key.downcase}.rbz")
       package_standalone_rbz(staged_dir, standalone_rbz, ver, key)
       standalone_packages << {
         version: ver,
@@ -105,7 +548,7 @@ module EvolutionLabBuilder
     create_master_loader(master_staging_dir, evolution_lab_dir, versions)
 
     # 8. Package Master RBZ
-    master_rbz = File.join(DIST_DIR, "sibambo_bom_engine_evolution_lab_v#{EVOLUTION_LAB_VERSION}.rbz")
+    master_rbz = File.join(target_dist_dir, "sibambo_bom_engine_evolution_lab_v#{EVOLUTION_LAB_VERSION}.rbz")
     package_master_rbz(master_staging_dir, master_rbz)
     master_sha256 = Digest::SHA256.file(master_rbz).hexdigest
     puts "\n======================================================================"
@@ -115,7 +558,7 @@ module EvolutionLabBuilder
     puts "======================================================================"
 
     # 9. Generate Checksums and Manifest Report
-    generate_checksums_and_manifest_md(master_rbz, master_sha256, standalone_packages, versions)
+    generate_checksums_and_manifest_md(master_rbz, master_sha256, standalone_packages, versions, target_dist_dir)
 
     puts "\n[SUCCESS] Evolution Lab build completed cleanly!"
   end
@@ -126,29 +569,45 @@ module EvolutionLabBuilder
       'git', 'archive', '--format=zip', sha, '-o', temp_zip,
       chdir: ROOT_DIR
     )
-    unless status.success?
-      raise "Failed to git archive #{sha}: #{stderr}"
-    end
-
-    if Gem.win_platform?
-      command = [
-        'powershell', '-NoProfile', '-Command',
-        "Expand-Archive -Path '#{temp_zip}' -DestinationPath '#{raw_dir}' -Force"
-      ]
-      _stdout, stderr, status = Open3.capture3(*command)
+    if status.success?
+      if Gem.win_platform?
+        command = [
+          'powershell', '-NoProfile', '-Command',
+          "Expand-Archive -Path '#{temp_zip}' -DestinationPath '#{raw_dir}' -Force"
+        ]
+        _stdout, stderr, status = Open3.capture3(*command)
+      else
+        _stdout, stderr, status = Open3.capture3('unzip', '-q', '-o', temp_zip, '-d', raw_dir)
+      end
+      unless status.success?
+        raise "Failed to unzip archive for #{sha}: #{stderr}"
+      end
+      FileUtils.rm_f(temp_zip)
     else
-      _stdout, stderr, status = Open3.capture3('unzip', '-q', '-o', temp_zip, '-d', raw_dir)
+      # Windows fallback: git archive fails on Windows if root tree contains 'nul'
+      extract_git_tree_objects(sha, raw_dir)
     end
-    unless status.success?
-      raise "Failed to unzip archive for #{sha}: #{stderr}"
-    end
-    FileUtils.rm_f(temp_zip)
 
     # If the commit had files under bom_engine_plugin/, move them to raw_dir root
     sub_plugin = File.join(raw_dir, 'bom_engine_plugin')
     if Dir.exist?(sub_plugin)
       FileUtils.cp_r(File.join(sub_plugin, '.'), raw_dir)
       FileUtils.rm_rf(sub_plugin)
+    end
+  end
+
+  def self.extract_git_tree_objects(sha, raw_dir)
+    stdout, stderr, status = Open3.capture3('git', 'ls-tree', '-r', '--name-only', sha, chdir: ROOT_DIR)
+    raise "Failed to ls-tree #{sha}: #{stderr}" unless status.success?
+
+    files = stdout.lines.map(&:strip).reject { |f| f == 'nul' || f.empty? }
+    files.each do |rel_path|
+      next unless rel_path =~ /\Abom_engine/ || rel_path =~ /\Aclean_analysis/ || rel_path =~ /\.rb\z/ || rel_path =~ /\Aui\z/ || rel_path =~ /\Aschema\z/
+      target_file = File.join(raw_dir, rel_path)
+      FileUtils.mkdir_p(File.dirname(target_file))
+      content, err, st = Open3.capture3('git', 'show', "#{sha}:#{rel_path}", chdir: ROOT_DIR)
+      raise "Failed to git show #{sha}:#{rel_path}: #{err}" unless st.success?
+      File.binwrite(target_file, content)
     end
   end
 
@@ -226,7 +685,7 @@ module EvolutionLabBuilder
     end
 
     # Create isolated engine launcher inside staged_dir
-    create_engine_entry_point(staged_dir, ver, key, mod_name)
+    create_engine_entry_point(staged_dir, ver, key, mod_name) unless ver['is_active']
   end
 
   def self.create_engine_entry_point(staged_dir, ver, key, mod_name)
@@ -623,14 +1082,21 @@ module EvolutionLabBuilder
   end
 
   def self.historical_plugin_version(staged_dir)
+    branding_path = File.join(staged_dir, 'bom_engine', 'branding.rb')
+    if File.file?(branding_path)
+      branding = File.read(branding_path, encoding: 'UTF-8')
+      bmatch = branding.match(/EXTENSION_VERSION\s*=\s*['"]([^'"]+)['"]/)
+      return bmatch[1] if bmatch
+    end
+
     loader_path = File.join(staged_dir, 'bom_engine_loader.rb')
-    raise "Historical BOM Engine loader missing: #{loader_path}" unless File.file?(loader_path)
+    if File.file?(loader_path)
+      loader = File.read(loader_path, encoding: 'UTF-8')
+      match = loader.match(/PLUGIN_VERSION\s*=\s*['"]([^'"]+)['"]/)
+      return match[1] if match
+    end
 
-    loader = File.read(loader_path, encoding: 'UTF-8')
-    match = loader.match(/PLUGIN_VERSION\s*=\s*['"]([^'"]+)['"]/)
-    raise "PLUGIN_VERSION missing from historical loader: #{loader_path}" unless match
-
-    match[1]
+    '1.0.0'
   end
 
   def self.apply_runtime_hardening(staged_dir, ver)
@@ -1450,7 +1916,7 @@ module EvolutionLabBuilder
 
     standalone_loader_name = "sibambo_bom_engine_#{key.downcase}_loader.rb"
     standalone_folder_name = "sibambo_bom_engine_#{key.downcase}"
-    isolated_submodule = ver['isolated_module'].split('::').last
+    isolated_submodule = (ver['isolated_module'] || "SibamboHistory::#{key.capitalize}").split('::').last
 
     standalone_staged = File.join(temp_zip_dir, standalone_folder_name)
     FileUtils.cp_r(staged_dir, standalone_staged)
@@ -1520,9 +1986,9 @@ module EvolutionLabBuilder
     FileUtils.mv(temp_zip, zip_file_path)
   end
 
-  def self.generate_checksums_and_manifest_md(master_rbz, master_sha256, standalone_packages, versions)
+  def self.generate_checksums_and_manifest_md(master_rbz, master_sha256, standalone_packages, versions, dist_dir = DIST_DIR)
     # Checksums file
-    checksums_file = File.join(DIST_DIR, 'CHECKSUMS.sha256')
+    checksums_file = File.join(dist_dir, 'CHECKSUMS.sha256')
     lines = ["#{master_sha256}  #{File.basename(master_rbz)}"]
     standalone_packages.each do |pkg|
       lines << "#{pkg[:sha256]}  standalone/#{File.basename(pkg[:rbz_path])}"
@@ -1530,7 +1996,7 @@ module EvolutionLabBuilder
     File.write(checksums_file, lines.join("\n") + "\n", encoding: 'UTF-8')
 
     # Manifest MD
-    manifest_md_file = File.join(DIST_DIR, 'MANIFEST.md')
+    manifest_md_file = File.join(dist_dir, 'MANIFEST.md')
     md = +<<~MARKDOWN
       # Sibambo BOM Engine Evolution Lab — Package Manifest
 
@@ -1556,5 +2022,36 @@ module EvolutionLabBuilder
 end
 
 if __FILE__ == $PROGRAM_NAME
-  EvolutionLabBuilder.build
+  dist_arg = nil
+  gen_arg = nil
+  catalog_arg = 'active'
+  candidate_arg = nil
+  ARGV.each_with_index do |arg, i|
+    if arg == '--output-dir' || arg == '--dist-dir'
+      dist_arg = ARGV[i + 1]
+    elsif arg.start_with?('--output-dir=')
+      dist_arg = arg.split('=', 2)[1]
+    elsif arg.start_with?('--dist-dir=')
+      dist_arg = arg.split('=', 2)[1]
+    elsif arg == '--generated-dir'
+      gen_arg = ARGV[i + 1]
+    elsif arg.start_with?('--generated-dir=')
+      gen_arg = arg.split('=', 2)[1]
+    elsif arg == '--catalog'
+      catalog_arg = ARGV[i + 1]
+    elsif arg.start_with?('--catalog=')
+      catalog_arg = arg.split('=', 2)[1]
+    elsif arg == '--candidate'
+      candidate_arg = ARGV[i + 1]
+    elsif arg.start_with?('--candidate=')
+      candidate_arg = arg.split('=', 2)[1]
+    end
+  end
+  EvolutionLabBuilder.build(
+    catalog: catalog_arg,
+    candidate: candidate_arg,
+    dist_dir: dist_arg,
+    generated_dir: gen_arg
+  )
 end
+

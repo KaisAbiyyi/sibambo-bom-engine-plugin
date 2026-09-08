@@ -3,6 +3,7 @@
 require 'digest'
 require 'json'
 require 'open3'
+require 'rbconfig'
 
 root = File.expand_path('../..', __dir__)
 dist_dir = File.join(root, 'dist', 'history')
@@ -14,6 +15,7 @@ puts '=== Testing Evolution Lab Artifact Integrity ==='
 
 raise 'CHECKSUMS.sha256 missing' unless File.exist?(checksums_path)
 raise 'MANIFEST.md missing' unless File.exist?(manifest_path)
+raise 'versions.json missing' unless File.exist?(versions_path)
 
 checksums = {}
 File.readlines(checksums_path, chomp: true).each do |line|
@@ -22,12 +24,28 @@ File.readlines(checksums_path, chomp: true).each do |line|
   checksums[rel_path] = sha
 end
 
-# 1. Verify Master RBZ
 manifest = JSON.parse(File.read(versions_path, encoding: 'UTF-8'))
 versions = manifest['versions']
+
+# Assert CHECKSUMS.sha256 matches catalog entries 1:1
 master_rbz_name = 'sibambo_bom_engine_evolution_lab_v1.1.22.rbz'
 master_rbz_path = File.join(dist_dir, master_rbz_name)
 
+expected_rbz_names = [master_rbz_name] + versions.map do |ver|
+  key = ver['display_version'].gsub(/[^A-Za-z0-9_]/, '_').downcase
+  "standalone/sibambo_bom_engine_#{key}.rbz"
+end
+
+extra_checksums = checksums.keys - expected_rbz_names
+missing_checksums = expected_rbz_names - checksums.keys
+raise "CHECKSUMS.sha256 contains unexpected uncataloged entries: #{extra_checksums.inspect}" unless extra_checksums.empty?
+raise "CHECKSUMS.sha256 is missing expected catalog entries: #{missing_checksums.inspect}" unless missing_checksums.empty?
+
+standalone_on_disk = Dir.glob(File.join(dist_dir, 'standalone', '*.rbz')).map { |f| "standalone/#{File.basename(f)}" }
+extra_on_disk = standalone_on_disk - expected_rbz_names
+raise "dist/history/standalone contains unexpected uncataloged packages: #{extra_on_disk.inspect}" unless extra_on_disk.empty?
+
+# 1. Verify Master RBZ
 raise "Master RBZ missing: #{master_rbz_path}" unless File.exist?(master_rbz_path)
 master_sha = Digest::SHA256.file(master_rbz_path).hexdigest
 expected_master_sha = checksums[master_rbz_name]
@@ -54,7 +72,7 @@ versions.each do |ver|
   staged_dir = File.join(root, 'history', 'generated', disp, 'staged')
 
   Dir.glob(File.join(staged_dir, '**', '*.rb')).each do |rb_file|
-    _out, err, status = Open3.capture3("ruby -c \"#{rb_file}\"")
+    _out, err, status = Open3.capture3(RbConfig.ruby, '-c', rb_file)
     unless status.success?
       raise "Ruby syntax error in #{rb_file}: #{err}"
     end
@@ -63,32 +81,25 @@ end
 puts "  PASS: All #{versions.length} staged milestone source snapshots are syntactically valid"
 
 # 4. Verify runtime distribution packages exclude development test suites and include all engines
-stdout, stderr, status = Open3.capture3("tar -tf \"#{master_rbz_path}\"")
-if status.success?
-  entries = stdout.lines.map(&:strip)
-  orphaned_tests = entries.select { |e| e =~ /test_.*\.rb\z/ || e =~ %r{/tests/} }
-  unless orphaned_tests.empty?
-    raise "Master RBZ package contains development test suites: #{orphaned_tests.inspect}"
-  end
-
-  versions.each do |ver|
-    key = ver['display_version'].gsub(/[^A-Za-z0-9_]/, '_').downcase
-    expected_entry = "evolution_lab/engine_#{key}/entry_#{key}.rb"
-    unless entries.any? { |e| e.include?(expected_entry) }
-      raise "Master RBZ package missing engine entry: #{expected_entry}"
-    end
-  end
-  puts "  PASS: Master RBZ archive verified directly (#{entries.length} entries; 0 test suites, all #{versions.length} engines present)"
-else
-  staging_dir = File.join(dist_dir, 'staging', 'evolution_lab')
-  if Dir.exist?(staging_dir)
-    orphaned_tests = Dir.glob(File.join(staging_dir, '**', 'test_*.rb'))
-    unless orphaned_tests.empty?
-      raise "Runtime staging contains development test suites: #{orphaned_tests.inspect}"
-    end
-  end
-  puts "  PASS: Runtime distribution packages exclude orphaned development test suites"
+stdout, stderr, status = Open3.capture3('tar', '-tf', master_rbz_path)
+unless status.success?
+  raise "Failed to inspect Master RBZ archive with tar: #{stderr}"
 end
+
+entries = stdout.lines.map(&:strip)
+orphaned_tests = entries.select { |e| e =~ /test_.*\.rb\z/ || e =~ %r{/tests/} }
+unless orphaned_tests.empty?
+  raise "Master RBZ package contains development test suites: #{orphaned_tests.inspect}"
+end
+
+versions.each do |ver|
+  key = ver['display_version'].gsub(/[^A-Za-z0-9_]/, '_').downcase
+  expected_entry = "evolution_lab/engine_#{key}/entry_#{key}.rb"
+  unless entries.any? { |e| e.include?(expected_entry) }
+    raise "Master RBZ package missing engine entry: #{expected_entry}"
+  end
+end
+puts "  PASS: Master RBZ archive verified directly (#{entries.length} entries; 0 test suites, all #{versions.length} engines present)"
 
 # 5. Verify specialized dialog provenance and menu routing for the latest milestone.
 latest_ver = versions.last
@@ -132,7 +143,7 @@ eval_script = <<~RUBY
   end
 RUBY
 
-eval_ok = system("ruby -e #{eval_script.inspect}")
+eval_ok = system(RbConfig.ruby, '-e', eval_script)
 raise "Suffix normalization table tests failed" unless eval_ok
 puts "  PASS: Suffix normalization table-driven tests passed for all input extensions"
 

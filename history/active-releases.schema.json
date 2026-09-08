@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Sibambo Evolution Active Release Catalog Schema",
+  "type": "object",
+  "required": ["schema_version", "catalog_kind", "releases"],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "catalog_kind": { "type": "string", "enum": ["active"] },
+    "releases": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "order",
+          "state",
+          "baseProducerSha",
+          "producerSha",
+          "consumerSha",
+          "loaderId",
+          "profileContractRevision",
+          "profiles",
+          "allowsLegacyProfile",
+          "entryKind",
+          "containerVersions",
+          "requiredSections",
+          "packageSha256",
+          "snapshotTreeSha256",
+          "certificationId"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "enum": [
+              "scene-resilient-a158b75",
+              "scene-fidelity-a138fe6",
+              "baseline-8082541",
+              "next-from-8082541"
+            ]
+          },
+          "title": { "type": "string", "minLength": 1 },
+          "order": { "type": "integer", "enum": [1, 2, 3, 4] },
+          "state": { "type": "string", "enum": ["uncertified", "ready", "development"] },
+          "baseProducerSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+          "producerSha": {
+            "oneOf": [
+              { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+              { "type": "null" }
+            ]
+          },
+          "consumerSha": {
+            "oneOf": [
+              { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+              { "type": "null" }
+            ]
+          },
+          "loaderId": {
+            "type": "string",
+            "enum": [
+              "scene-resilient-v1",
+              "scene-fidelity-v1",
+              "bomc-8082541-v1",
+              "bomc-next-v1"
+            ]
+          },
+          "profileContractRevision": {
+            "oneOf": [
+              { "type": "integer", "minimum": 1 },
+              { "type": "null" }
+            ]
+          },
+          "profiles": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "enum": ["visual", "research", "exact"] }
+          },
+          "allowsLegacyProfile": { "type": "boolean" },
+          "entryKind": { "type": "string", "enum": ["legacy-scene", "bomc-three-profile"] },
+          "containerVersions": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" }
+          },
+          "requiredSections": {
+            "type": "array",
+            "items": { "type": "integer" }
+          },
+          "packageSha256": {
+            "oneOf": [
+              { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              { "type": "null" }
+            ]
+          },
+          "snapshotTreeSha256": {
+            "oneOf": [
+              { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              { "type": "null" }
+            ]
+          },
+          "certificationId": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              { "type": "null" }
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

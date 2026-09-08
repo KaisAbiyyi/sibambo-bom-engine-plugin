@@ -41,3 +41,22 @@ end
 raise "wrong version exporter mapping: #{actual.inspect}" unless actual == EXPECTED
 
 puts 'version export kinds: PASS ([01]-[09] map to distinct format adapters)'
+
+# Active catalog verification
+active_manifest = JSON.parse(File.read(File.join(root, 'history', 'active-releases.json')))
+active_releases = active_manifest.fetch('releases')
+
+active_releases.each do |rec|
+  case rec['id']
+  when 'scene-resilient-a158b75', 'scene-fidelity-a138fe6'
+    raise "Unexpected entryKind for #{rec['id']}: #{rec['entryKind']}" unless rec['entryKind'] == 'legacy-scene'
+    raise "Unexpected profiles for #{rec['id']}: #{rec['profiles'].inspect}" unless rec['profiles'] == ['visual']
+  when 'baseline-8082541', 'next-from-8082541'
+    raise "Unexpected entryKind for #{rec['id']}: #{rec['entryKind']}" unless rec['entryKind'] == 'bomc-three-profile'
+    raise "Unexpected profiles for #{rec['id']}: #{rec['profiles'].inspect}" unless rec['profiles'] == %w[visual research exact]
+  else
+    raise "Unknown active release id: #{rec['id']}"
+  end
+end
+
+puts 'active catalog export kinds: PASS (active slots map to expected entry kinds and profiles)'

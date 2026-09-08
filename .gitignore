@@ -11,3 +11,4 @@ dist/history/staging/
 *.skp
 skps/*.skp
 history/generated/*/raw/
+*.json.gz
