@@ -7,6 +7,7 @@ require 'fileutils'
 require 'json'
 require 'optparse'
 require 'time'
+require 'zlib'
 require_relative '../bomc_format'
 require_relative '../bomc_writer'
 require_relative '../bomc_decoder'
@@ -514,19 +515,71 @@ module BOMEngine
       end
     end
 
+    def summarize_bundle_for_git(bundle)
+      compact = begin
+        Marshal.load(Marshal.dump(bundle))
+      rescue StandardError
+        JSON.parse(JSON.generate(bundle), symbolize_names: true)
+      end
+      fixtures = compact[:fixtures] || compact['fixtures']
+      fixtures&.each do |fixture|
+        profiles = fixture[:profiles] || fixture['profiles']
+        next unless profiles.is_a?(Hash)
+
+        profiles.each_value do |profile_data|
+          next unless profile_data.is_a?(Hash)
+          metrics = profile_data[:metrics] || profile_data['metrics']
+          next unless metrics.is_a?(Hash)
+
+          frontiers = metrics[:geometry_candidate_frontiers] || metrics['geometry_candidate_frontiers']
+          next unless frontiers.is_a?(Hash)
+
+          summary = {}
+          frontiers.each do |domain, entries|
+            next unless entries.is_a?(Array)
+            summary[domain] = {
+              mesh_count: entries.length,
+              total_candidates: entries.sum { |e| (e[:candidates] || e['candidates'] || []).length },
+              total_pareto_candidates: entries.sum { |e| (e[:pareto_candidate_ids] || e['pareto_candidate_ids'] || []).length }
+            }
+          end
+
+          if metrics.key?(:geometry_candidate_frontiers)
+            metrics[:geometry_candidate_frontiers] = summary
+          else
+            metrics['geometry_candidate_frontiers'] = summary
+          end
+        end
+      end
+      compact
+    end
+
     def run(argv)
       corpus_path = File.expand_path('../benchmarks/profile-corpus.json', __dir__)
       results = run_corpus(corpus_path)
       bundle = generate_report(results)
 
       json_out = File.expand_path('../benchmarks/results/bomc-profile-benchmark.json', __dir__)
+      gz_out = File.expand_path('../benchmarks/results/bomc-profile-benchmark.json.gz', __dir__)
       md_out = File.expand_path('../benchmarks/results/BOMC_PROFILE_BENCHMARK.md', __dir__)
 
       FileUtils.mkdir_p(File.dirname(json_out))
-      File.write(json_out, JSON.pretty_generate(sanitize_for_json(bundle)))
+
+      # 1. Full detailed results written to compressed .json.gz
+      raw_json = JSON.generate(sanitize_for_json(bundle))
+      Zlib::GzipWriter.open(gz_out) do |gz|
+        gz.mtime = 0
+        gz.write(raw_json)
+      end
+
+      # 2. Compact summary written to git-tracked .json (~15-40 KB)
+      compact_bundle = summarize_bundle_for_git(bundle)
+      File.write(json_out, JSON.pretty_generate(sanitize_for_json(compact_bundle)))
+
+      # 3. Markdown report
       File.write(md_out, render_markdown(bundle))
 
-      puts "[BENCHMARK-COMPLETE] Wrote #{json_out} and #{md_out}"
+      puts "[BENCHMARK-COMPLETE] Wrote #{json_out} (compact), #{gz_out} (full gz), and #{md_out}"
       bundle[:certification_status] == 'ready' ? 0 : 2
     end
   end

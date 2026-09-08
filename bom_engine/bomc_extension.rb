@@ -9,6 +9,7 @@ require_relative 'bomc_export_job'
 require_relative 'bomc_processing'
 require_relative 'bomc_size_gate'
 require_relative 'bomc_writer'
+require_relative 'bomc_validator'
 require_relative 'conversion_job'
 
 if defined?(Sketchup) && defined?(UI)
@@ -70,10 +71,59 @@ module BOMEngine
       }
     end
 
-    def publish_graph(path, graph, profile: DEFAULT_PROFILE, base_path: nil)
-      directory = File.dirname(path)
+    def publish_validated(candidate:, report:, output_path:)
+      unless report && (report[:passed] == true || report['passed'] == true)
+        raise BOMCValidator::ProfileValidationError.new('Cannot publish: validation report did not pass.', report: report)
+      end
+
+      bytes = candidate.is_a?(Hash) ? (candidate[:bytes] || candidate['bytes']) : candidate
+      raise ArgumentError, 'Candidate bytes must be a binary String' unless bytes.is_a?(String)
+
+      directory = File.dirname(output_path)
       FileUtils.mkdir_p(directory) unless Dir.exist?(directory)
-      BOMCWriter.write(path, graph, profile: profile, base_path: base_path)
+
+      part_path = "#{output_path}.#{Process.pid}.part"
+      begin
+        File.open(part_path, 'wb') do |file|
+          file.write(bytes)
+          file.flush
+          file.fsync rescue nil
+        end
+        FileUtils.mv(part_path, output_path, force: true)
+      ensure
+        File.delete(part_path) if File.file?(part_path)
+      end
+
+      {
+        path: output_path,
+        bytes: File.size(output_path),
+        published: true,
+        report: report
+      }
+    end
+
+    def publish_graph(path, graph, profile: DEFAULT_PROFILE, base_path: nil, source_info: nil)
+      prof = normalize_profile(profile)
+      src_info = source_info || (graph.is_a?(Hash) ? graph[:source_info] : nil)
+      if src_info.nil? && BOMCProfile.fetch(prof).requires_source_size?
+        estimated = (graph.is_a?(Hash) && graph[:source_skp_bytes]) || 10_000_000
+        src_info = { available: true, bytes: estimated }
+      end
+      candidate = BOMCSizeGate.compile_candidate(
+        graph,
+        source_info: src_info,
+        profile: prof,
+        base_path: base_path
+      )
+      decoded = BOMCDecoder.decode(candidate.fetch(:bytes))
+      texture_evidence = (graph.is_a?(Hash) && graph[:materials]) ? graph[:materials].map { |m| m.dig(:texture, :encoding_evidence) }.compact : nil
+      report = BOMCValidator.validate_profile!(
+        source: graph,
+        decoded: decoded,
+        profile: prof,
+        texture_evidence: texture_evidence
+      )
+      publish_validated(candidate: candidate, report: report, output_path: path)
     end
 
     def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil)
@@ -146,22 +196,49 @@ module BOMEngine
         cancelled: -> { false },
         source_info: ->(model) { BOMCSizeGate.source_info(model.path.to_s) },
         snapshot: lambda do |model, checkpoint|
-          graph = snapshot_model(model, texture_directory, checkpoint)
+          graph = snapshot_model(model, texture_directory, checkpoint, profile: profile)
           diagnostics[:graph] = graph if diagnostics
           graph
         end,
-        compile: lambda do |graph, source, path, checkpoint|
-          BOMCSizeGate.compile(
-            graph: graph,
+        compile: lambda do |graph, source, _path, checkpoint|
+          BOMCSizeGate.compile_candidate(
+            graph,
             source_info: source,
             base_path: texture_directory,
             profile: profile,
-            checkpoint: checkpoint,
-            output_path: path,
-            enforce_smaller: false
+            checkpoint: checkpoint
           )
         end,
-        validate: ->(result) { validate_compiled_result(result) },
+        validate: lambda do |result, graph = nil|
+          decoded = BOMCDecoder.decode(result.fetch(:bytes))
+          texture_evidence = graph && graph[:materials] ? graph[:materials].map { |m| m.dig(:texture, :encoding_evidence) }.compact : nil
+          report = if graph
+                     BOMCValidator.validate_profile!(
+                       source: graph,
+                       decoded: decoded,
+                       profile: profile,
+                       texture_evidence: texture_evidence
+                     )
+                   else
+                     { passed: true }
+                   end
+          triangles = decoded[:meshes].map do |mesh|
+            mesh[:faces].map { |face| face[:triangles].length / 3 }.inject(0, :+)
+          end.inject(0, :+)
+          {
+            nodes: decoded[:instances].length,
+            triangles: triangles,
+            unaccounted: decoded.dig(:coverage, :unaccounted),
+            report: report
+          }
+        end,
+        publish: lambda do |candidate, validation, path|
+          publish_validated(
+            candidate: candidate,
+            report: validation[:report],
+            output_path: path
+          )
+        end,
         cleanup: lambda do
           FileUtils.remove_entry(texture_directory) if Dir.exist?(texture_directory)
           partial = "#{output_path}.#{Process.pid}.part"
@@ -177,44 +254,173 @@ module BOMEngine
     end
     private_class_method :normalize_profile
 
-    def snapshot_model(model, texture_directory, checkpoint)
+    def compute_material_classes(model)
+      return {} if model.nil?
+      return model.material_classes if model.respond_to?(:material_classes) && model.material_classes
+      return compute_material_classes_from_graph(model) if model.is_a?(Hash)
+
+      material_usages = Hash.new { |h, k| h[k] = [] }
+      texture_materials = Hash.new { |h, k| h[k] = [] }
+
+      classify_entity = lambda do |entity, parent_role = nil|
+        current_role = nil
+        if entity.respond_to?(:name)
+          defn_name = entity.definition.name if entity.respond_to?(:definition) && entity.definition.respond_to?(:name)
+          tag_name = entity.layer.name if entity.respond_to?(:layer) && entity.layer.respond_to?(:name)
+          if defined?(SemanticLabeler)
+            built = SemanticLabeler.build(instance_name: entity.name, definition_name: defn_name, tag_name: tag_name)
+            current_role = built[:role] if built
+          end
+        end
+        role = current_role || (entity.respond_to?(:semantic_role) ? entity.semantic_role : nil) || parent_role
+        klass = BOMCGeometryPolicy.classify_role(role)
+
+        if entity.respond_to?(:material) && entity.material
+          mat = entity.material
+          material_usages[mat.name] << klass if mat.respond_to?(:name)
+          material_usages[mat.object_id.to_s] << klass if mat.respond_to?(:object_id)
+          if mat.respond_to?(:texture) && mat.texture
+            tex_key = mat.texture.respond_to?(:filename) ? mat.texture.filename : mat.texture.to_s
+            texture_materials[tex_key] << (mat.respond_to?(:name) ? mat.name : mat.to_s)
+          end
+        end
+
+        if entity.respond_to?(:back_material) && entity.back_material
+          mat = entity.back_material
+          material_usages[mat.name] << klass if mat.respond_to?(:name)
+          material_usages[mat.object_id.to_s] << klass if mat.respond_to?(:object_id)
+          if mat.respond_to?(:texture) && mat.texture
+            tex_key = mat.texture.respond_to?(:filename) ? mat.texture.filename : mat.texture.to_s
+            texture_materials[tex_key] << (mat.respond_to?(:name) ? mat.name : mat.to_s)
+          end
+        end
+
+        if entity.respond_to?(:definition) && entity.definition.respond_to?(:entities)
+          entity.definition.entities.each { |child| classify_entity.call(child, role) }
+        end
+      end
+
+      if model.respond_to?(:entities) && model.entities.respond_to?(:each)
+        model.entities.each { |entity| classify_entity.call(entity) }
+      end
+
+      result = {}
+      material_usages.each do |mat_key, classes|
+        result[mat_key] = BOMCTexturePolicy.strictest_semantic_class(classes)
+      end
+
+      texture_materials.each do |_tex_key, mat_names|
+        all_classes = mat_names.flat_map { |m| material_usages[m] }
+        strictest = BOMCTexturePolicy.strictest_semantic_class(all_classes)
+        mat_names.each { |m| result[m] = strictest }
+      end
+
+      result
+    end
+
+    def compute_material_classes_from_graph(graph)
+      material_usages = Hash.new { |h, k| h[k] = [] }
+      texture_materials = Hash.new { |h, k| h[k] = [] }
+
+      materials = Array(graph[:materials])
+      mat_by_id = {}
+      materials.each do |mat|
+        mat_by_id[mat[:id].to_s] = mat
+        mat_by_id[mat[:name].to_s] = mat
+        if mat[:texture]
+          tex_key = mat[:texture][:filename] || mat[:texture][:source_path] || mat[:texture][:name]
+          texture_materials[tex_key] << mat[:name].to_s if tex_key
+        end
+      end
+
+      Array(graph[:meshes]).each do |mesh|
+        Array(mesh[:faces]).each do |face|
+          role = face[:semantic_role] || face[:role]
+          klass = BOMCGeometryPolicy.classify_role(role)
+          [face[:front_material], face[:back_material], face[:material]].compact.each do |m_ref|
+            mat = m_ref.is_a?(Integer) ? materials[m_ref] : (mat_by_id[m_ref.to_s] || { name: m_ref.to_s })
+            if mat
+              name = mat[:name].to_s
+              material_usages[name] << klass
+              material_usages[mat[:id].to_s] << klass if mat[:id]
+            end
+          end
+        end
+      end
+
+      Array(graph[:nodes] || graph[:instances]).each do |node|
+        role = node.dig(:semantic, :role) || node[:semantic_role]
+        klass = BOMCGeometryPolicy.classify_role(role)
+        m_ref = node[:material_override_id] || node[:material]
+        if m_ref
+          mat = m_ref.is_a?(Integer) ? materials[m_ref] : (mat_by_id[m_ref.to_s] || { name: m_ref.to_s })
+          if mat
+            name = mat[:name].to_s
+            material_usages[name] << klass
+            material_usages[mat[:id].to_s] << klass if mat[:id]
+          end
+        end
+      end
+
+      result = {}
+      material_usages.each do |mat_key, classes|
+        result[mat_key] = BOMCTexturePolicy.strictest_semantic_class(classes)
+      end
+
+      texture_materials.each do |_tex_key, mat_names|
+        all_classes = mat_names.flat_map { |m| material_usages[m] }
+        strictest = BOMCTexturePolicy.strictest_semantic_class(all_classes)
+        mat_names.each { |m| result[m] = strictest }
+      end
+
+      result
+    end
+
+    def snapshot_model(model, texture_directory, checkpoint, profile: DEFAULT_PROFILE)
       texture_writer = begin
         Sketchup.create_texture_writer
       rescue StandardError
         nil
       end
+      material_classes = compute_material_classes(model)
       extracted_materials = MaterialExtractor.extract(
         model,
         texture_writer,
         texture_directory,
         checkpoint: checkpoint,
-        optimize_textures: true
+        optimize_textures: true,
+        profile: profile,
+        material_classes: material_classes
       )
       entity_total = model.entities.respond_to?(:length) ? model.entities.length : 0
-      graph = CanonicalGraphBuilder.build(
-        model: model,
-        entities: model.entities,
-        parent_transform: Geom::Transformation.new,
-        settings: {
-          selection_only: false,
-          include_edges: true,
-          export_textures: true,
-          output_format: 'bomc_v1_1',
-          scene_scope: 'all',
-          texture_directory: texture_directory
-        },
-        spatial: {},
-        texture_writer: texture_writer,
-        progress: lambda do |event|
-          checkpoint.call(
-            stage: :snapshot_entities,
-            processed: event[:processed].to_i,
-            total: entity_total
-          )
-        end,
-        batch_size: 1
-      )
-      attach_staged_textures(graph, extracted_materials, texture_directory)
+      graph = if defined?(CanonicalGraphBuilder)
+                CanonicalGraphBuilder.build(
+                  model: model,
+                  entities: model.entities,
+                  parent_transform: defined?(Geom::Transformation) ? Geom::Transformation.new : nil,
+                  settings: {
+                    selection_only: false,
+                    include_edges: true,
+                    export_textures: true,
+                    output_format: 'bomc_v1_1',
+                    scene_scope: 'all',
+                    texture_directory: texture_directory
+                  },
+                  spatial: {},
+                  texture_writer: texture_writer,
+                  progress: lambda do |event|
+                    checkpoint.call(
+                      stage: :snapshot_entities,
+                      processed: event[:processed].to_i,
+                      total: entity_total
+                    )
+                  end,
+                  batch_size: 1
+                )
+              else
+                { materials: extracted_materials, meshes: [], definitions: [], nodes: [], instances: [] }
+              end
+      attach_staged_textures(graph, extracted_materials, texture_directory, profile: profile)
     end
     private_class_method :snapshot_model
 
@@ -231,9 +437,10 @@ module BOMEngine
     end
     private_class_method :validate_compiled_result
 
-    def attach_staged_textures(graph, extracted_materials, texture_directory)
+    def attach_staged_textures(graph, extracted_materials, texture_directory, profile: DEFAULT_PROFILE)
       by_name = {}
       Array(extracted_materials).each { |material| by_name[material[:name].to_s] = material }
+      prof = normalize_profile(profile)
       Array(graph[:materials]).each do |material|
         extracted = by_name[material[:name].to_s]
         next unless extracted && extracted[:texture]
@@ -241,6 +448,13 @@ module BOMEngine
         source_path = extracted[:texture][:source_path].to_s
         source_supported = File.file?(source_path) && supported_texture_path?(source_path)
         path = source_supported ? source_path : staged_path
+
+        # In Exact profile, never select a lossy staged JPEG. Only native JPEG preserved byte-identical is allowed.
+        if prof == :exact && path.downcase.end_with?('.jpg', '.jpeg') && !source_supported
+          png_fallback = File.join(texture_directory, "#{File.basename(staged_path, '.*')}.png")
+          path = png_fallback if File.file?(png_fallback)
+        end
+
         next unless File.file?(path)
         material[:texture] ||= {}
         material[:texture][:source_path] = path

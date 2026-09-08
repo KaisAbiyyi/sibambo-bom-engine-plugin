@@ -1,6 +1,7 @@
 # Deterministic BOMC 1.0/1.1/1.2 container primitives.
 
 require 'zlib'
+require_relative 'decode_budget'
 
 module BOMEngine
   module BOMC
@@ -272,7 +273,14 @@ module BOMEngine
 
       def parse(bytes, verify_checksums: true)
         content = bytes.b
+        if content.bytesize > DecodeBudget::MAX_INPUT_BYTES
+          raise "BOMC invalid: container byte length #{content.bytesize} exceeds budget of #{DecodeBudget::MAX_INPUT_BYTES} bytes."
+        end
         directory = read_directory(content)
+        total_raw = directory[:sections].sum { |s| s[:raw_size] }
+        if total_raw > DecodeBudget::MAX_EXPANDED_BYTES
+          raise "BOMC invalid: total uncompressed bytes #{total_raw} exceeds budget of #{DecodeBudget::MAX_EXPANDED_BYTES} bytes."
+        end
         decoded = directory[:sections].map do |descriptor|
           stored = content.byteslice(descriptor[:offset], descriptor[:stored_size]).b
           if verify_checksums && Zlib.crc32(stored) != descriptor[:crc32]
@@ -300,6 +308,9 @@ module BOMEngine
         end
         raise 'BOMC invalid: unsupported byte order.' unless endian == ENDIAN_MARKER
         raise 'BOMC invalid: directory precedes fixed header.' if directory_offset < HEADER_BYTES
+        if section_count > DecodeBudget::MAX_SECTIONS
+          raise "BOMC invalid: section count #{section_count} exceeds limit of #{DecodeBudget::MAX_SECTIONS}."
+        end
 
         compact = (flags & FLAG_COMPACT_DIRECTORY) != 0
         if compact && minor < 1
@@ -318,6 +329,9 @@ module BOMEngine
           reserved = values[8]
           if !compact && !reserved.zero?
             raise "BOMC invalid: section #{index} reserved field."
+          end
+          if raw_size > DecodeBudget::MAX_EXPANDED_BYTES
+            raise "BOMC invalid: section #{index} raw size #{raw_size} exceeds budget of #{DecodeBudget::MAX_EXPANDED_BYTES} bytes."
           end
           if offset < Binary.align(directory_end) || offset + stored_size > content.bytesize
             raise "BOMC invalid: section #{index} outside file."

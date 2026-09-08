@@ -2,9 +2,20 @@
 
 require_relative 'bomc_format'
 require_relative 'bomc_model_adapter'
+require_relative 'bomc_geometry_policy'
+require_relative 'bomc_texture_policy'
+require_relative 'bomc_texture_optimizer'
 
 module BOMEngine
   module BOMCValidator
+    class ProfileValidationError < StandardError
+      attr_reader :report
+
+      def initialize(message, report: nil)
+        super(message)
+        @report = report
+      end
+    end
     DEFAULT_TOLERANCES = {
       position_m: 0.001,
       normal_deg: 0.1,
@@ -182,6 +193,444 @@ module BOMEngine
 
       result
     end
+
+    def self.validate_profile(source:, decoded:, profile: :visual, texture_evidence: nil)
+      normalized = if source.is_a?(Hash) && source[:meshes] && source[:instances] && !source.dig(:format, :name).to_s.include?('BOM Engine Canonical')
+                     source
+                   else
+                     BOMC::ModelAdapter.normalize(source)
+                   end
+
+      prof = profile.to_s.downcase.to_sym
+      prof = :visual unless [:exact, :research, :visual].include?(prof)
+
+      case prof
+      when :exact
+        pos_limit = 1.0e-12
+        norm_limit = 1.0e-12
+        uv_limit = 1.0e-12
+        transform_limit = 1.0e-12
+        area_limit_relative = 0.0
+        area_limit_abs = 1.0e-9
+      when :research
+        pos_limit = 0.0005
+        norm_limit = 0.10
+        uv_limit = 1.0e-4
+        transform_limit = 1.0e-5
+        area_limit_relative = 0.001
+        area_limit_abs = 1.0e-6
+      when :visual
+        pos_limit = 0.0020
+        norm_limit = 0.50
+        uv_limit = 5.0e-4
+        transform_limit = 1.0e-5
+        area_limit_relative = 0.005
+        area_limit_abs = 1.0e-4
+      end
+
+      failures = []
+
+      counts_match = (normalized[:tags].length == decoded[:tags].length) &&
+                     (normalized[:definitions].length == decoded[:definitions].length) &&
+                     (normalized[:instances].length == decoded[:instances].length) &&
+                     (normalized[:meshes].length == decoded[:meshes].length) &&
+                     (normalized[:transforms].length == decoded[:transforms].length)
+      failures << 'table counts' unless counts_match
+
+      materials_exact = compare_materials_profile(normalized[:materials], decoded[:materials])
+      failures << 'materials' unless materials_exact
+
+      tags_exact = (normalized[:tags].length == decoded[:tags].length) &&
+                   normalized[:tags].each_with_index.all? do |tag, index|
+                     row = decoded[:tags][index]
+                     row && tag[:name].to_s == row[:name].to_s && tag[:visible] == row[:visible]
+                   end
+      failures << 'tags' unless tags_exact
+
+      definitions_exact = (normalized[:definitions].length == decoded[:definitions].length) &&
+                          normalized[:definitions].each_with_index.all? do |definition, index|
+                            row = decoded[:definitions][index]
+                            row && definition[:name].to_s == row[:name].to_s &&
+                              definition[:kind].to_s == row[:kind].to_s &&
+                              definition[:mesh] == row[:mesh]
+                          end
+      failures << 'definitions' unless definitions_exact
+
+      instances_exact = (normalized[:instances].length == decoded[:instances].length) &&
+                        normalized[:instances].each_with_index.all? do |instance, index|
+                          row = decoded[:instances][index]
+                          row &&
+                            instance[:name].to_s == row[:name].to_s &&
+                            instance[:kind].to_s == row[:kind].to_s &&
+                            instance[:owner_definition] == row[:owner_definition] &&
+                            instance[:definition] == row[:definition] &&
+                            instance[:transform] == row[:transform] &&
+                            instance[:material] == row[:material] &&
+                            instance[:tag] == row[:tag] &&
+                            instance[:visible] == row[:visible]
+                        end
+      failures << 'instances' unless instances_exact
+
+      # Semantics verification (both instances and faces)
+      instance_semantics_exact = (normalized[:instances].length == decoded[:instances].length) &&
+                                 normalized[:instances].each_with_index.all? do |instance, index|
+                                   row = decoded[:instances][index]
+                                   row &&
+                                     normalize_role(instance[:semantic_role]) == row[:semantic_role].to_s &&
+                                     optional_string(instance[:semantic_label]) == optional_string(row[:semantic_label])
+                                 end
+
+      face_semantics_exact = true
+      normalized[:meshes].each_with_index do |mesh, m_idx|
+        dec_mesh = decoded[:meshes][m_idx]
+        unless dec_mesh
+          face_semantics_exact = false
+          next
+        end
+        mesh[:faces].each_with_index do |face, f_idx|
+          dec_face = dec_mesh[:faces][f_idx]
+          unless dec_face &&
+                 normalize_role(face[:semantic_role]) == dec_face[:semantic_role].to_s &&
+                 optional_string(face[:semantic_label]) == optional_string(dec_face[:semantic_label])
+            face_semantics_exact = false
+          end
+        end
+      end
+      semantics_exact = instance_semantics_exact && face_semantics_exact
+      failures << 'semantics' unless semantics_exact
+
+      # Geometry, topology and visual edges
+      topology_exact = normalized[:meshes].length == decoded[:meshes].length
+      visual_edges_exact = topology_exact
+      position_errors = []
+      normal_errors = []
+      uv_errors = []
+      area_errors = []
+      positions_passed = true
+      normals_passed = true
+      uv_passed = true
+
+      normalized[:meshes].each_with_index do |source_mesh, mesh_index|
+        decoded_mesh = decoded[:meshes][mesh_index]
+        unless decoded_mesh
+          topology_exact = false
+          visual_edges_exact = false
+          positions_passed = false
+          next
+        end
+
+        mesh_class = BOMCGeometryPolicy.mesh_semantic_class(source_mesh[:faces])
+        mesh_pos_tol = (prof == :visual) ? BOMCGeometryPolicy.position_tolerance(profile: :visual, semantic_class: mesh_class) : pos_limit
+
+        mesh_pos_errors = point_errors(source_mesh[:positions], decoded_mesh[:positions])
+        position_errors.concat(mesh_pos_errors)
+        positions_passed &&= mesh_pos_errors.all? { |err| err <= mesh_pos_tol + 1.0e-12 }
+
+        topology_exact &&= (source_mesh[:faces].length == decoded_mesh[:faces].length)
+        source_mesh[:faces].each_with_index do |source_face, face_index|
+          decoded_face = decoded_mesh[:faces][face_index]
+          unless decoded_face
+            topology_exact = false
+            normals_passed = false
+            uv_passed = false
+            next
+          end
+
+          topology_exact &&= source_face[:outer] == decoded_face[:outer]
+          topology_exact &&= source_face[:holes] == decoded_face[:holes]
+          topology_exact &&= source_face[:triangles] == decoded_face[:triangles]
+          topology_exact &&= source_face[:front_material] == decoded_face[:front_material]
+          topology_exact &&= source_face[:back_material] == decoded_face[:back_material]
+          topology_exact &&= source_face[:tag] == decoded_face[:tag]
+          topology_exact &&= normalize_surface(source_face[:surface_type]) == decoded_face[:surface_type].to_s
+          topology_exact &&= source_face[:hidden] == decoded_face[:hidden]
+
+          face_class = BOMCGeometryPolicy.classify_role(source_face[:semantic_role])
+          face_norm_tol = (prof == :visual) ? BOMCGeometryPolicy.normal_tolerance(profile: :visual, semantic_class: face_class) : norm_limit
+          face_uv_tol = (prof == :visual) ? BOMCGeometryPolicy.uv_tolerance(profile: :visual, semantic_class: face_class) : uv_limit
+
+          ang_err = angular_error(source_face[:normal], decoded_face[:normal])
+          normal_errors << ang_err
+          normals_passed &&= (ang_err <= face_norm_tol + 1.0e-12)
+
+          source_uv = flatten_uv(source_face[:uv])
+          decoded_uv = flatten_uv(decoded_face[:uv])
+          if source_uv.length == decoded_uv.length
+            face_uv_errors = pair_errors(source_uv, decoded_uv)
+            uv_errors.concat(face_uv_errors)
+            uv_passed &&= face_uv_errors.all? { |err| err <= face_uv_tol + 1.0e-12 }
+          else
+            uv_errors << Float::INFINITY
+            uv_passed = false
+          end
+
+          area_errors << (source_face[:area_m2].to_f - decoded_face[:area_m2].to_f).abs
+        end
+
+        source_edges = source_mesh[:edges].map { |edge| [edge[:vertices], edge[:tag], edge[:hidden], edge[:soft], edge[:smooth]] }
+        decoded_edges = decoded_mesh[:edges].map { |edge| [edge[:vertices], edge[:tag], edge[:hidden], edge[:soft], edge[:smooth]] }
+        visual_edges_exact &&= (source_edges == decoded_edges)
+      end
+
+      failures << 'topology' unless topology_exact
+      failures << 'visual edges' unless visual_edges_exact
+      failures << 'positions' unless positions_passed
+      failures << 'normals' unless normals_passed
+      failures << 'UV' unless uv_passed
+
+      # Transforms
+      transform_errors = []
+      normalized[:transforms].each_with_index do |matrix, index|
+        decoded_matrix = decoded[:transforms][index]
+        if decoded_matrix
+          err = matrix.each_with_index.map { |value, component| (value.to_f - decoded_matrix[component].to_f).abs }.max
+          transform_errors << err
+        else
+          transform_errors << Float::INFINITY
+        end
+      end
+      transforms_passed = transform_errors.all? { |err| err <= transform_limit + 1.0e-12 }
+      failures << 'transforms' unless transforms_passed
+
+      # Areas
+      maximum_area_tolerance = normalized[:meshes].map do |mesh|
+        mesh[:faces].map do |face|
+          [area_limit_abs, face[:area_m2].to_f.abs * area_limit_relative].max
+        end
+      end.flatten.max || area_limit_abs
+      area_summary = summarize(area_errors)
+      areas_passed = area_summary[:max] <= maximum_area_tolerance + 1.0e-12
+      failures << 'areas' unless areas_passed
+
+      # Scenes
+      source_scenes = normalized[:scenes] || []
+      decoded_scenes = decoded[:scenes] || []
+      scenes_exact = true
+      if source_scenes.any?
+        if source_scenes.length != decoded_scenes.length
+          scenes_exact = false
+        else
+          source_scenes.each_with_index do |src_s, s_i|
+            dec_s = decoded_scenes[s_i]
+            unless dec_s && src_s[:name].to_s == dec_s[:name].to_s
+              scenes_exact = false
+              next
+            end
+            src_tags = Array(src_s[:tag_visibility] || src_s[:visible_tags]).map(&:to_s).sort
+            dec_tags = Array(dec_s[:tag_visibility] || dec_s[:visible_tags]).map(&:to_s).sort
+            scenes_exact &&= (src_tags == dec_tags)
+
+            src_hidden = Array(src_s[:hidden_instances] || src_s[:hidden_nodes]).map(&:to_s).sort
+            dec_hidden = Array(dec_s[:hidden_instances] || dec_s[:hidden_nodes]).map(&:to_s).sort
+            scenes_exact &&= (src_hidden == dec_hidden)
+
+            if src_s[:visibility_mask] && dec_s[:visibility_mask]
+              scenes_exact &&= (src_s[:visibility_mask] == dec_s[:visibility_mask])
+            end
+            if src_s[:hidden_faces] && dec_s[:hidden_faces]
+              scenes_exact &&= (src_s[:hidden_faces] == dec_s[:hidden_faces])
+            end
+            if src_s[:hidden_edges] && dec_s[:hidden_edges]
+              scenes_exact &&= (src_s[:hidden_edges] == dec_s[:hidden_edges])
+            end
+          end
+        end
+      end
+      failures << 'scenes' unless scenes_exact
+
+      # Clip planes
+      source_planes = normalized[:clip_planes] || []
+      decoded_planes = decoded[:clip_planes] || []
+      clip_planes_exact = true
+      if source_planes.any?
+        if source_planes.length != decoded_planes.length
+          clip_planes_exact = false
+        else
+          source_planes.each_with_index do |src_p, p_i|
+            dec_p = decoded_planes[p_i]
+            unless dec_p
+              clip_planes_exact = false
+              next
+            end
+            src_origin = Array(src_p[:origin_m] || src_p[:origin]).map(&:to_f)
+            dec_origin = Array(dec_p[:origin_m] || dec_p[:origin]).map(&:to_f)
+            src_normal = Array(src_p[:normal]).map(&:to_f)
+            dec_normal = Array(dec_p[:normal]).map(&:to_f)
+            tol = (prof == :exact) ? 1.0e-12 : 1.0e-5
+            origin_err = 3.times.map { |i| (src_origin[i].to_f - dec_origin[i].to_f).abs }.max || 0.0
+            norm_err = 3.times.map { |i| (src_normal[i].to_f - dec_normal[i].to_f).abs }.max || 0.0
+            clip_planes_exact &&= (origin_err <= tol && norm_err <= tol && src_p[:keep_side].to_i == dec_p[:keep_side].to_i)
+          end
+        end
+      end
+      failures << 'clip planes' unless clip_planes_exact
+
+      # Coverage
+      unaccounted = decoded.dig(:coverage, :unaccounted).to_i
+      coverage_passed = unaccounted.zero?
+      failures << 'coverage' unless coverage_passed
+
+      # Textures
+      textures_passed = true
+      texture_failures = []
+      evidence_list = []
+      if texture_evidence.is_a?(Array)
+        evidence_list = texture_evidence
+      elsif texture_evidence.is_a?(Hash)
+        evidence_list = texture_evidence.values
+      elsif normalized[:materials]
+        normalized[:materials].each do |m|
+          ev = m.dig(:texture, :encoding_evidence) || m.dig(:texture, :staging_evidence)
+          evidence_list << ev if ev
+        end
+      end
+
+      evidence_list.compact.each_with_index do |ev, ev_i|
+        if ev[:reference] && ev[:candidate]
+          comp = BOMCTextureOptimizer.compare(ev[:reference], ev[:candidate])
+          if !comp[:compatible]
+            textures_passed = false
+            texture_failures << "texture #{ev_i} incompatible: #{comp[:reason]}"
+          elsif prof == :exact
+            if comp[:max_channel_error].to_i > 0 || comp[:mean_squared_error].to_f > 0.0
+              textures_passed = false
+              texture_failures << "texture #{ev_i} pixel error in exact profile"
+            end
+          else
+            psnr = comp[:psnr_db].to_f
+            klass = ev[:semantic_class] || :class_b
+            is_native = !!ev[:native_jpeg]
+            min_q = BOMCTexturePolicy.min_psnr(profile: prof, semantic_class: klass, native_jpeg: is_native)
+            if psnr < min_q
+              textures_passed = false
+              texture_failures << "texture #{ev_i} PSNR #{psnr.round(1)} dB < threshold #{min_q} dB"
+            end
+          end
+        elsif ev[:quality] && ev[:quality][:psnr_db]
+          psnr = ev[:quality][:psnr_db].to_f
+          klass = ev[:semantic_class] || :class_b
+          is_native = !!ev[:native_jpeg]
+          min_q = BOMCTexturePolicy.min_psnr(profile: prof, semantic_class: klass, native_jpeg: is_native)
+          if prof == :exact
+            if psnr < Float::INFINITY && !is_native
+              textures_passed = false
+              texture_failures << "texture #{ev_i} not lossless in exact profile"
+            end
+          elsif psnr < min_q
+            textures_passed = false
+            texture_failures << "texture #{ev_i} PSNR #{psnr.round(1)} dB < threshold #{min_q} dB"
+          end
+        end
+
+        if ev[:has_alpha] || ev[:opaque] == false || ev[:alpha_preserved] == false
+          if ev[:selected] == :jpeg_candidate || ev[:media_type] == :jpeg || (ev[:path] && ev[:path].downcase.end_with?('.jpg', '.jpeg'))
+            textures_passed = false
+            texture_failures << "texture #{ev_i} with alpha transcoded to JPEG"
+          end
+        end
+
+        if prof == :exact && ev[:selected] == :jpeg_candidate && !ev[:native_jpeg]
+          textures_passed = false
+          texture_failures << "texture #{ev_i} transcoded to JPEG in exact profile"
+        end
+      end
+
+      if prof == :exact
+        Array(decoded[:textures]).each_with_index do |tex, t_i|
+          is_jpeg = tex[:media_type] == 'image/jpeg' || (tex[:filename] && tex[:filename].downcase.end_with?('.jpg', '.jpeg'))
+          if is_jpeg
+            ev = evidence_list.find { |e| e[:filename] == tex[:filename] || e[:name] == tex[:name] }
+            unless ev && ev[:native_jpeg]
+              textures_passed = false
+              texture_failures << "decoded texture #{t_i} is JPEG without native JPEG provenance"
+            end
+          end
+        end
+      end
+
+      unless textures_passed
+        failures << "textures (#{texture_failures.join('; ')})"
+      end
+
+      passed = failures.empty?
+      {
+        passed: passed,
+        profile: prof,
+        failures: failures,
+        domains: {
+          counts: { exact: counts_match },
+          materials: { exact: materials_exact },
+          tags: { exact: tags_exact },
+          definitions: { exact: definitions_exact },
+          instances: { exact: instances_exact },
+          semantics: { exact: semantics_exact },
+          topology: { exact: topology_exact },
+          visual_edges: { exact: visual_edges_exact },
+          positions: {
+            max_error_m: summarize(position_errors)[:max],
+            passed: positions_passed,
+            tolerance: pos_limit
+          },
+          normals: {
+            max_angular_error_deg: summarize(normal_errors)[:max],
+            passed: normals_passed,
+            tolerance: norm_limit
+          },
+          uv: {
+            max_error: summarize(uv_errors)[:max],
+            passed: uv_passed,
+            tolerance: uv_limit
+          },
+          transforms: {
+            max_error: summarize(transform_errors)[:max],
+            passed: transforms_passed,
+            tolerance: transform_limit
+          },
+          areas: {
+            max_error_m2: area_summary[:max],
+            passed: areas_passed,
+            tolerance: maximum_area_tolerance
+          },
+          scenes: { exact: scenes_exact },
+          clip_planes: { exact: clip_planes_exact },
+          coverage: { unaccounted: unaccounted, passed: coverage_passed },
+          textures: { passed: textures_passed, failures: texture_failures }
+        }
+      }
+    end
+
+    def self.validate_profile!(source:, decoded:, profile: :visual, texture_evidence: nil)
+      report = validate_profile(
+        source: source,
+        decoded: decoded,
+        profile: profile,
+        texture_evidence: texture_evidence
+      )
+      unless report[:passed]
+        raise ProfileValidationError.new(
+          "BOMC #{profile} profile validation failed: #{report[:failures].join(', ')}.",
+          report: report
+        )
+      end
+      report
+    end
+
+    def self.compare_materials_profile(source, decoded)
+      return false unless source.length == decoded.length
+      source.each_with_index.all? do |material, index|
+        row = decoded[index]
+        color = material[:color]
+        has_src_tex = !material[:texture].nil?
+        has_dec_tex = !row[:texture].nil?
+        row &&
+          material[:name].to_s == row[:name].to_s &&
+          material[:display_name].to_s == row[:display_name].to_s &&
+          [:r, :g, :b, :a].all? { |c| color[c].to_i == row.dig(:color, c).to_i } &&
+          (material[:opacity].to_f - row[:opacity].to_f).abs <= (1.0 / 65_535.0 + 1.0e-12) &&
+          has_src_tex == has_dec_tex
+      end
+    end
+    private_class_method :compare_materials_profile
 
     def self.compare_materials(source, decoded, textures)
       return false unless source.length == decoded.length

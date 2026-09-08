@@ -9,6 +9,20 @@ module BOMEngine
     SCHEMA_VERSION = 1
     ENCODER_REVISION = 1
 
+    # Exact profile fidelity scope (Revision 1):
+    # - Geometry: positions (Float64), normals (Float64), UVs (Float64), transforms (Float64_3x4), topology, visual edges: Exact (0 error)
+    # - Metadata: definitions, instances, tags, scenes, clip planes: Exact
+    # - Textures: Pixel lossless (lossless PNG or native JPEG preserved byte-identical)
+    # - Materials: Color RGB (integer exact), alpha (Float32 / 16-bit mapped), material dimensions Float32 (v1.2 spec)
+    # - Fallback: Text/Image instances Float32 (v1.2 spec)
+    EXACT_SCOPE = {
+      geometry: :exact_float64,
+      textures: :pixel_lossless,
+      metadata: :exact,
+      materials: :spec_v1_2,
+      fallback: :spec_v1_2
+    }.freeze
+
     SECTION_BYTE_SIZE = 76
     PACK_FORMAT = 'vCCQ<EEQ<EEEECCCCV'.freeze
 

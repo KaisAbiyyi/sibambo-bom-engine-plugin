@@ -133,3 +133,35 @@ Extensions
 - **Ruby Namespace Isolation**: Every version operates in `module SibamboHistory::V<version_key>`.
 - **Zero Collision**: Preferences use `Sibambo_History_<key>_Settings`; output files append `__<version_id>` tags.
 - **Production Plugin Unaffected**: Current production BOM Engine runs independently side-by-side.
+
+---
+
+## 6. Active Evolution Catalog Architecture (4-Slot Bounded Set)
+
+Beginning in Track T1, Evolution Lab provides a formal dual-catalog architecture to separate historical milestone exploration from active candidate evaluation:
+
+1. **Archive Catalog (`history/versions.json`)**:
+   Contains all 19 historical milestones (`[01]` through `[18]` + `[EXP-01]`). Built via `--catalog archive` for long-term historical exploration, regression forensics, and format genealogy.
+2. **Active Catalog (`history/active-releases.json`)**:
+   Enforces a strict 4-slot bounded active release set (`--catalog active`, default) validated against `active-releases.schema.json`:
+
+```
+Active Release Catalog (4 Slots)
+  ├─ Slot 1 [E1]: scene-resilient-a158b75  (uncertified, legacy-scene)
+  ├─ Slot 2 [E2]: scene-fidelity-a138fe6   (uncertified, legacy-scene)
+  ├─ Slot 3 [E3]: baseline-8082541         (ready, bomc-three-profile)
+  └─ Slot 4 [E4]: next-from-8082541        (development, base: 8082541, unbuilt)
+```
+
+### Invariants & Operational Rules
+
+- **Strict 4-Slot Envelope**: Validated by `active-releases.schema.json` (`minItems: 4, maxItems: 4`) and `EvolutionActiveCatalog.load`.
+- **E4 Lineage Guarantee**: Slot 4 must have `baseProducerSha` set to Slot 3's `producerSha`, ensuring continuous ancestry.
+- **Fail-Closed Packaging**: Only releases with state `ready` and valid `producerSha` are packaged into the Master Evolution Lab RBZ (`sibambo_bom_engine_evolution_lab_v1.1.22.rbz`) and standalone releases. Slot 4 (`next-from-8082541`) with `producerSha: null` is strictly excluded from packaging.
+- **Candidate Evaluation Mode**: Uncertified or evaluation releases can be built in isolation via:
+  ```bash
+  ruby tools/history/build_evolution_lab.rb --catalog active --candidate scene-resilient-a158b75
+  ```
+  This creates an isolated package under `dist/history/candidate/<ID>` without modifying the master package or menu.
+- **Three-Profile Menu Dispatch**: Active releases with `entryKind: "bomc-three-profile"` provide dedicated menu actions for `:visual`, `:research`, and `:exact` profiles directly under the SketchUp Extensions menu.
+- **Tree Digest Snapshot Caching**: Staged snapshots record `SNAPSHOT_METADATA.json` with `tree_sha256`, `transformer_revision`, and `producer_sha`. Build runs verify cache validity before reuse, bypassing re-extraction when source git trees and transformers are unchanged.

@@ -55,6 +55,36 @@ module BOMEngine
       Integer(candidate_bytes) <= hard_target ? :pass : :fail
     end
 
+    def compile_candidate(snapshot_or_graph = nil, profile: :visual, graph: nil, source_info: nil, base_path: nil, checkpoint: nil)
+      graph_obj = snapshot_or_graph || graph
+      src_info = source_info
+      b_path = base_path
+      chk = checkpoint
+
+      if graph_obj.is_a?(Hash)
+        if graph_obj.key?(:graph)
+          src_info ||= graph_obj[:source_info]
+          b_path ||= graph_obj[:base_path] || graph_obj[:texture_directory]
+          chk ||= graph_obj[:checkpoint]
+          graph_obj = graph_obj[:graph]
+        else
+          src_info ||= graph_obj[:source_info]
+          b_path ||= graph_obj[:base_path] || graph_obj[:texture_directory]
+          chk ||= graph_obj[:checkpoint]
+        end
+      end
+
+      compile(
+        graph: graph_obj,
+        source_info: src_info,
+        base_path: b_path,
+        profile: profile,
+        checkpoint: chk,
+        output_path: nil,
+        enforce_smaller: false
+      )
+    end
+
     def compile(graph:, source_info:, base_path:, profile: :visual, profile_contract: nil, checkpoint: nil, output_path: nil, enforce_smaller: true)
       contract = if profile_contract
                    profile_contract.is_a?(BOMCProfile::Profile) ? profile_contract : BOMCProfile.fetch(profile_contract)

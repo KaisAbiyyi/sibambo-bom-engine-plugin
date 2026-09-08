@@ -209,6 +209,30 @@ class TestBOMCProfileBenchmark < Test::Unit::TestCase
     assert md.include?('tiny_test')
   end
 
+  def test_summarize_bundle_for_git_compacts_frontiers
+    results = [
+      BOMEngine::BOMCProfileBenchmark.benchmark_fixture(@tiny_fixture, name: 'tiny_test', category: 'tiny', skp_bytes: 100_000)
+    ]
+    report = BOMEngine::BOMCProfileBenchmark.generate_report(results)
+    raw_frontiers = report[:fixtures].first.dig(:profiles, :visual, :metrics, :geometry_candidate_frontiers)
+    assert_kind_of Hash, raw_frontiers
+    assert_operator raw_frontiers[:positions].first[:candidates].length, :>, 1
+
+    compact = BOMEngine::BOMCProfileBenchmark.summarize_bundle_for_git(report)
+
+    # Original report remains untouched
+    assert_operator report[:fixtures].first.dig(:profiles, :visual, :metrics, :geometry_candidate_frontiers, :positions).first[:candidates].length, :>, 1
+
+    # Compact report has summarized metrics
+    compact_frontiers = compact[:fixtures].first.dig(:profiles, :visual, :metrics, :geometry_candidate_frontiers)
+    assert_kind_of Hash, compact_frontiers
+    assert_kind_of Hash, compact_frontiers[:positions]
+    assert_equal 1, compact_frontiers[:positions][:mesh_count]
+    assert_operator compact_frontiers[:positions][:total_candidates], :>, 1
+    assert_operator compact_frontiers[:positions][:total_pareto_candidates], :>, 1
+    assert_nil compact_frontiers[:positions][:candidates]
+  end
+
   def test_8082541_baseline_manifest_pins_pair_and_artifact_digests
     manifest_path = File.join(@root, 'bom_engine', 'benchmarks', 'baselines', '8082541', 'manifest.json')
     manifest = JSON.parse(File.read(manifest_path))

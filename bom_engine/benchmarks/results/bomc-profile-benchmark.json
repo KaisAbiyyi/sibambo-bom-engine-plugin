@@ -1,18 +1,25 @@
 {
   "schema_version": "1.2.0",
-  "producer_sha": "00d60f72ca4b8dca2989a93a47efc128a30fefe7",
-  "timestamp": "2026-08-29T08:42:42Z",
+  "producer_sha": "e51f50433a7e533b4b5058327cf314053da9dffe",
+  "timestamp": "2026-09-07T14:00:37Z",
+  "certification_status": "incomplete",
+  "missing_evidence": [
+    "source_textures: expected >= 1, got 0",
+    "source_scenes: expected >= 2, got 0",
+    "source_clip_planes: expected >= 1, got 0"
+  ],
   "aggregates": {
     "total_fixtures": 7,
     "total_runs": 21,
-    "passed_runs": 21,
+    "passed_runs": 9,
+    "incomplete_fixtures": 4,
     "visual_profile": {
       "min_ratio": 0.0054,
       "median_ratio": 0.039,
       "mean_ratio": 0.0514,
       "p95_ratio": 0.0997,
       "worst_ratio": 0.0997,
-      "median_encode_time_ms": 685.51,
+      "median_encode_time_ms": 728.29,
       "max_position_error_m": 0.000435,
       "max_normal_error_deg": 0.003628,
       "max_uv_error": 0.0,
@@ -41,6 +48,11 @@
     {
       "id": "tiny-box",
       "category": "tiny",
+      "status": "pass",
+      "validation_status": "pass",
+      "missing_evidence": [
+
+      ],
       "fixture_path": "D:/projects/sibambo/bom_engine_plugin/examples/model-eval-json-v1-small.json",
       "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/test.skp",
       "source_skp_bytes": 163941,
@@ -48,17 +60,38 @@
         "exact": {
           "profile": "exact",
           "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
           "bomc_bytes": 862,
           "ratio": 0.0053,
-          "encode_time_ms": 1.74,
-          "decode_time_ms": 0.43,
+          "encode_time_ms": 3.33,
+          "decode_time_ms": 0.83,
           "metrics": {
             "position_max_error_m": 0.0,
             "position_p95_error_m": 0.0,
             "position_rms_error_m": 0.0,
             "normal_max_error_deg": 0.0,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -82,17 +115,38 @@
         "research": {
           "profile": "research",
           "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
           "bomc_bytes": 896,
           "ratio": 0.0055,
-          "encode_time_ms": 1.41,
-          "decode_time_ms": 0.32,
+          "encode_time_ms": 1.11,
+          "decode_time_ms": 0.22,
           "metrics": {
             "position_max_error_m": 0.0,
             "position_p95_error_m": 0.0,
             "position_rms_error_m": 0.0,
             "normal_max_error_deg": 0.0,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 5,
+                "total_pareto_candidates": 5
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -116,17 +170,38 @@
         "visual": {
           "profile": "visual",
           "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
           "bomc_bytes": 880,
           "ratio": 0.0054,
-          "encode_time_ms": 1.01,
-          "decode_time_ms": 0.4,
+          "encode_time_ms": 0.97,
+          "decode_time_ms": 0.22,
           "metrics": {
             "position_max_error_m": 0.0,
             "position_p95_error_m": 0.0,
             "position_rms_error_m": 0.0,
             "normal_max_error_deg": 0.0,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 5,
+                "total_pareto_candidates": 5
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -152,24 +227,50 @@
     {
       "id": "small-textured-house2",
       "category": "small-textured",
+      "status": "incomplete",
+      "validation_status": "pass",
+      "missing_evidence": [
+        "source_textures: expected >= 1, got 0"
+      ],
       "fixture_path": "D:/projects/sibambo/bom_engine_plugin/skps/model-eval-exports/house2_model-eval.json",
       "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/house2.skp",
       "source_skp_bytes": 440016,
       "profiles": {
         "exact": {
           "profile": "exact",
-          "status": "pass",
+          "status": "incomplete",
+          "validation_status": "pass",
+          "missing_evidence": [
+            "source_textures: expected >= 1, got 0"
+          ],
           "bomc_bytes": 68126,
           "ratio": 0.1548,
-          "encode_time_ms": 108.15,
-          "decode_time_ms": 82.56,
+          "encode_time_ms": 54.51,
+          "decode_time_ms": 26.45,
           "metrics": {
             "position_max_error_m": 0.0,
             "position_p95_error_m": 0.0,
             "position_rms_error_m": 0.0,
-            "normal_max_error_deg": 0.0,
+            "normal_max_error_deg": 1.0e-06,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 37,
+                "total_candidates": 37,
+                "total_pareto_candidates": 37
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -192,18 +293,39 @@
         },
         "research": {
           "profile": "research",
-          "status": "pass",
+          "status": "incomplete",
+          "validation_status": "pass",
+          "missing_evidence": [
+            "source_textures: expected >= 1, got 0"
+          ],
           "bomc_bytes": 43904,
           "ratio": 0.0998,
-          "encode_time_ms": 227.99,
-          "decode_time_ms": 86.91,
+          "encode_time_ms": 142.35,
+          "decode_time_ms": 32.07,
           "metrics": {
-            "position_max_error_m": 0.0,
-            "position_p95_error_m": 0.0,
-            "position_rms_error_m": 0.0,
-            "normal_max_error_deg": 0.0,
+            "position_max_error_m": 0.000129,
+            "position_p95_error_m": 8.5e-05,
+            "position_rms_error_m": 3.2e-05,
+            "normal_max_error_deg": 0.003017,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 37,
+                "total_candidates": 185,
+                "total_pareto_candidates": 184
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -226,18 +348,39 @@
         },
         "visual": {
           "profile": "visual",
-          "status": "pass",
+          "status": "incomplete",
+          "validation_status": "pass",
+          "missing_evidence": [
+            "source_textures: expected >= 1, got 0"
+          ],
           "bomc_bytes": 43889,
           "ratio": 0.0997,
-          "encode_time_ms": 223.96,
-          "decode_time_ms": 82.68,
+          "encode_time_ms": 149.21,
+          "decode_time_ms": 34.49,
           "metrics": {
-            "position_max_error_m": 0.0,
-            "position_p95_error_m": 0.0,
-            "position_rms_error_m": 0.0,
-            "normal_max_error_deg": 0.0,
+            "position_max_error_m": 0.000129,
+            "position_p95_error_m": 8.5e-05,
+            "position_rms_error_m": 3.2e-05,
+            "normal_max_error_deg": 0.003017,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 37,
+                "total_candidates": 185,
+                "total_pareto_candidates": 184
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -263,6 +406,11 @@
     {
       "id": "medium-architectural-presentation20",
       "category": "medium-architectural",
+      "status": "pass",
+      "validation_status": "pass",
+      "missing_evidence": [
+
+      ],
       "fixture_path": "D:/projects/sibambo/bom_engine_plugin/skps/model-eval-exports/presentation20_model-eval.json",
       "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/presentation20.skp",
       "source_skp_bytes": 2155445,
@@ -270,17 +418,38 @@
         "exact": {
           "profile": "exact",
           "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
           "bomc_bytes": 214422,
           "ratio": 0.0995,
-          "encode_time_ms": 563.17,
-          "decode_time_ms": 442.38,
+          "encode_time_ms": 277.26,
+          "decode_time_ms": 156.41,
           "metrics": {
             "position_max_error_m": 0.0,
             "position_p95_error_m": 0.0,
             "position_rms_error_m": 0.0,
             "normal_max_error_deg": 1.0e-06,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 115,
+                "total_candidates": 115,
+                "total_pareto_candidates": 115
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -304,17 +473,38 @@
         "research": {
           "profile": "research",
           "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
           "bomc_bytes": 117472,
           "ratio": 0.0545,
-          "encode_time_ms": 1140.74,
-          "decode_time_ms": 456.53,
+          "encode_time_ms": 776.75,
+          "decode_time_ms": 167.72,
           "metrics": {
             "position_max_error_m": 0.000118,
             "position_p95_error_m": 2.7e-05,
             "position_rms_error_m": 1.2e-05,
             "normal_max_error_deg": 0.00328,
             "uv_max_error": 0.0,
-            "transform_max_error": 1.0e-05
+            "transform_max_error": 1.0e-05,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 115,
+                "total_candidates": 575,
+                "total_pareto_candidates": 551
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -338,17 +528,38 @@
         "visual": {
           "profile": "visual",
           "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
           "bomc_bytes": 117457,
           "ratio": 0.0545,
-          "encode_time_ms": 1154.81,
-          "decode_time_ms": 452.48,
+          "encode_time_ms": 1215.27,
+          "decode_time_ms": 283.53,
           "metrics": {
             "position_max_error_m": 0.000118,
             "position_p95_error_m": 2.7e-05,
             "position_rms_error_m": 1.2e-05,
             "normal_max_error_deg": 0.00328,
             "uv_max_error": 0.0,
-            "transform_max_error": 1.0e-05
+            "transform_max_error": 1.0e-05,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 115,
+                "total_candidates": 575,
+                "total_pareto_candidates": 551
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -374,6 +585,11 @@
     {
       "id": "complex-architectural-sboost1",
       "category": "complex-architectural",
+      "status": "pass",
+      "validation_status": "pass",
+      "missing_evidence": [
+
+      ],
       "fixture_path": "D:/projects/sibambo/bom_engine_plugin/skps/model-eval-exports/PROJECT SBOOST 1_model-eval.json",
       "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/PROJECT SBOOST 1.skp",
       "source_skp_bytes": 3548875,
@@ -381,17 +597,38 @@
         "exact": {
           "profile": "exact",
           "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
           "bomc_bytes": 251598,
           "ratio": 0.0709,
-          "encode_time_ms": 336.2,
-          "decode_time_ms": 262.38,
+          "encode_time_ms": 309.33,
+          "decode_time_ms": 149.3,
           "metrics": {
             "position_max_error_m": 0.0,
             "position_p95_error_m": 0.0,
             "position_rms_error_m": 0.0,
             "normal_max_error_deg": 1.0e-06,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 70,
+                "total_candidates": 70,
+                "total_pareto_candidates": 70
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -415,17 +652,38 @@
         "research": {
           "profile": "research",
           "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
           "bomc_bytes": 128240,
           "ratio": 0.0361,
-          "encode_time_ms": 658.75,
-          "decode_time_ms": 253.91,
+          "encode_time_ms": 746.6,
+          "decode_time_ms": 154.0,
           "metrics": {
             "position_max_error_m": 0.000126,
             "position_p95_error_m": 2.6e-05,
             "position_rms_error_m": 1.8e-05,
             "normal_max_error_deg": 0.003418,
             "uv_max_error": 0.0,
-            "transform_max_error": 1.0e-06
+            "transform_max_error": 1.0e-06,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 70,
+                "total_candidates": 350,
+                "total_pareto_candidates": 344
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -449,17 +707,38 @@
         "visual": {
           "profile": "visual",
           "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
           "bomc_bytes": 128224,
           "ratio": 0.0361,
-          "encode_time_ms": 654.56,
-          "decode_time_ms": 252.92,
+          "encode_time_ms": 727.21,
+          "decode_time_ms": 141.68,
           "metrics": {
             "position_max_error_m": 0.000126,
             "position_p95_error_m": 2.6e-05,
             "position_rms_error_m": 1.8e-05,
             "normal_max_error_deg": 0.003418,
             "uv_max_error": 0.0,
-            "transform_max_error": 1.0e-06
+            "transform_max_error": 1.0e-06,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 70,
+                "total_candidates": 350,
+                "total_pareto_candidates": 344
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -485,24 +764,50 @@
     {
       "id": "texture-heavy-rumah-y",
       "category": "texture-heavy",
+      "status": "incomplete",
+      "validation_status": "pass",
+      "missing_evidence": [
+        "source_textures: expected >= 1, got 0"
+      ],
       "fixture_path": "D:/projects/sibambo/bom_engine_plugin/skps/model-eval-exports/RUMAH Y_model-eval.json",
       "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/RUMAH Y.skp",
       "source_skp_bytes": 41785434,
       "profiles": {
         "exact": {
           "profile": "exact",
-          "status": "pass",
+          "status": "incomplete",
+          "validation_status": "pass",
+          "missing_evidence": [
+            "source_textures: expected >= 1, got 0"
+          ],
           "bomc_bytes": 3752295,
           "ratio": 0.0898,
-          "encode_time_ms": 6057.46,
-          "decode_time_ms": 4583.87,
+          "encode_time_ms": 5169.45,
+          "decode_time_ms": 2771.35,
           "metrics": {
             "position_max_error_m": 0.0,
             "position_p95_error_m": 0.0,
             "position_rms_error_m": 0.0,
             "normal_max_error_deg": 2.0e-06,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 936,
+                "total_candidates": 936,
+                "total_pareto_candidates": 936
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -525,18 +830,39 @@
         },
         "research": {
           "profile": "research",
-          "status": "pass",
+          "status": "incomplete",
+          "validation_status": "pass",
+          "missing_evidence": [
+            "source_textures: expected >= 1, got 0"
+          ],
           "bomc_bytes": 1630305,
           "ratio": 0.039,
-          "encode_time_ms": 11414.33,
-          "decode_time_ms": 4824.64,
+          "encode_time_ms": 12477.84,
+          "decode_time_ms": 2819.46,
           "metrics": {
             "position_max_error_m": 0.000362,
             "position_p95_error_m": 1.0e-05,
             "position_rms_error_m": 1.1e-05,
             "normal_max_error_deg": 0.003628,
             "uv_max_error": 0.0,
-            "transform_max_error": 1.0e-05
+            "transform_max_error": 1.0e-05,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 936,
+                "total_candidates": 4680,
+                "total_pareto_candidates": 4636
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -559,18 +885,39 @@
         },
         "visual": {
           "profile": "visual",
-          "status": "pass",
+          "status": "incomplete",
+          "validation_status": "pass",
+          "missing_evidence": [
+            "source_textures: expected >= 1, got 0"
+          ],
           "bomc_bytes": 1630289,
           "ratio": 0.039,
-          "encode_time_ms": 11795.12,
-          "decode_time_ms": 4647.42,
+          "encode_time_ms": 12867.62,
+          "decode_time_ms": 2893.66,
           "metrics": {
             "position_max_error_m": 0.000362,
             "position_p95_error_m": 1.0e-05,
             "position_rms_error_m": 1.1e-05,
             "normal_max_error_deg": 0.003628,
             "uv_max_error": 0.0,
-            "transform_max_error": 1.0e-05
+            "transform_max_error": 1.0e-05,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 936,
+                "total_candidates": 4680,
+                "total_pareto_candidates": 4636
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -596,24 +943,50 @@
     {
       "id": "scene-heavy-sboost2",
       "category": "scene-heavy",
+      "status": "incomplete",
+      "validation_status": "pass",
+      "missing_evidence": [
+        "source_scenes: expected >= 2, got 0"
+      ],
       "fixture_path": "D:/projects/sibambo/bom_engine_plugin/skps/model-eval-exports/PROJECT SBOOST 2_model-eval.json",
       "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/PROJECT SBOOST 2.skp",
       "source_skp_bytes": 3363219,
       "profiles": {
         "exact": {
           "profile": "exact",
-          "status": "pass",
+          "status": "incomplete",
+          "validation_status": "pass",
+          "missing_evidence": [
+            "source_scenes: expected >= 2, got 0"
+          ],
           "bomc_bytes": 251686,
           "ratio": 0.0748,
-          "encode_time_ms": 373.66,
-          "decode_time_ms": 254.68,
+          "encode_time_ms": 298.78,
+          "decode_time_ms": 145.42,
           "metrics": {
             "position_max_error_m": 0.0,
             "position_p95_error_m": 0.0,
             "position_rms_error_m": 0.0,
             "normal_max_error_deg": 1.0e-06,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 66,
+                "total_candidates": 66,
+                "total_pareto_candidates": 66
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -636,18 +1009,39 @@
         },
         "research": {
           "profile": "research",
-          "status": "pass",
+          "status": "incomplete",
+          "validation_status": "pass",
+          "missing_evidence": [
+            "source_scenes: expected >= 2, got 0"
+          ],
           "bomc_bytes": 128256,
           "ratio": 0.0381,
-          "encode_time_ms": 698.76,
-          "decode_time_ms": 270.82,
+          "encode_time_ms": 827.59,
+          "decode_time_ms": 142.74,
           "metrics": {
             "position_max_error_m": 0.000102,
             "position_p95_error_m": 3.2e-05,
             "position_rms_error_m": 1.7e-05,
             "normal_max_error_deg": 0.003418,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 66,
+                "total_candidates": 330,
+                "total_pareto_candidates": 321
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -670,18 +1064,39 @@
         },
         "visual": {
           "profile": "visual",
-          "status": "pass",
+          "status": "incomplete",
+          "validation_status": "pass",
+          "missing_evidence": [
+            "source_scenes: expected >= 2, got 0"
+          ],
           "bomc_bytes": 128240,
           "ratio": 0.0381,
-          "encode_time_ms": 685.51,
-          "decode_time_ms": 250.07,
+          "encode_time_ms": 728.29,
+          "decode_time_ms": 152.19,
           "metrics": {
             "position_max_error_m": 0.000102,
             "position_p95_error_m": 3.2e-05,
             "position_rms_error_m": 1.7e-05,
             "normal_max_error_deg": 0.003418,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 66,
+                "total_candidates": 330,
+                "total_pareto_candidates": 321
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -707,24 +1122,50 @@
     {
       "id": "section-cut-heavy-rumah-l",
       "category": "section-cut-heavy",
+      "status": "incomplete",
+      "validation_status": "pass",
+      "missing_evidence": [
+        "source_clip_planes: expected >= 1, got 0"
+      ],
       "fixture_path": "D:/projects/sibambo/model-eval/skps/model-eval-exports/RUMAH L_model-eval.json",
       "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/RUMAH L.skp",
       "source_skp_bytes": 33035617,
       "profiles": {
         "exact": {
           "profile": "exact",
-          "status": "pass",
+          "status": "incomplete",
+          "validation_status": "pass",
+          "missing_evidence": [
+            "source_clip_planes: expected >= 1, got 0"
+          ],
           "bomc_bytes": 7391359,
           "ratio": 0.2237,
-          "encode_time_ms": 12976.06,
-          "decode_time_ms": 9359.8,
+          "encode_time_ms": 11454.88,
+          "decode_time_ms": 6765.28,
           "metrics": {
             "position_max_error_m": 0.0,
             "position_p95_error_m": 0.0,
             "position_rms_error_m": 0.0,
             "normal_max_error_deg": 1.0e-06,
             "uv_max_error": 0.0,
-            "transform_max_error": 0.0
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1103,
+                "total_candidates": 1103,
+                "total_pareto_candidates": 1103
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -747,18 +1188,39 @@
         },
         "research": {
           "profile": "research",
-          "status": "pass",
+          "status": "incomplete",
+          "validation_status": "pass",
+          "missing_evidence": [
+            "source_clip_planes: expected >= 1, got 0"
+          ],
           "bomc_bytes": 2879737,
           "ratio": 0.0872,
-          "encode_time_ms": 24351.19,
-          "decode_time_ms": 9267.58,
+          "encode_time_ms": 27141.91,
+          "decode_time_ms": 6544.63,
           "metrics": {
             "position_max_error_m": 0.000435,
             "position_p95_error_m": 1.9e-05,
             "position_rms_error_m": 1.5e-05,
             "normal_max_error_deg": 0.003613,
             "uv_max_error": 0.0,
-            "transform_max_error": 1.0e-05
+            "transform_max_error": 1.0e-05,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1103,
+                "total_candidates": 5515,
+                "total_pareto_candidates": 5394
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,
@@ -781,18 +1243,39 @@
         },
         "visual": {
           "profile": "visual",
-          "status": "pass",
+          "status": "incomplete",
+          "validation_status": "pass",
+          "missing_evidence": [
+            "source_clip_planes: expected >= 1, got 0"
+          ],
           "bomc_bytes": 2879721,
           "ratio": 0.0872,
-          "encode_time_ms": 23772.81,
-          "decode_time_ms": 9538.35,
+          "encode_time_ms": 27340.0,
+          "decode_time_ms": 6715.43,
           "metrics": {
             "position_max_error_m": 0.000435,
             "position_p95_error_m": 1.9e-05,
             "position_rms_error_m": 1.5e-05,
             "normal_max_error_deg": 0.003613,
             "uv_max_error": 0.0,
-            "transform_max_error": 1.0e-05
+            "transform_max_error": 1.0e-05,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1103,
+                "total_candidates": 5515,
+                "total_pareto_candidates": 5394
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
           },
           "invariants": {
             "semantics_pass": true,

@@ -40,7 +40,8 @@ module BOMEngine
     end
 
     def strictest_semantic_class(classes)
-      list = Array(classes).map { |c| c.to_s.downcase.to_sym }
+      list = Array(classes).compact.map { |c| c.to_s.downcase.to_sym }
+      return :class_b if list.empty?
       if list.include?(:class_a)
         :class_a
       elsif list.include?(:class_b)

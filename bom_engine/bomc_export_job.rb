@@ -62,8 +62,21 @@ module BOMEngine
       result = context.fetch(:compile).call(graph, source, output_path, checkpoint)
       advance.call(:SIZE_GATE, result[:candidate_bytes])
       advance.call(:VALIDATE, result[:candidate_bytes])
-      validation = context.fetch(:validate).call(result)
+      validation = begin
+                     context.fetch(:validate).call(result, graph)
+                   rescue ArgumentError => e
+                     if e.message.include?('wrong number of arguments')
+                       context.fetch(:validate).call(result)
+                     else
+                       raise
+                     end
+                   end
       advance.call(:DONE, result[:candidate_bytes], result[:savings_bytes])
+
+      if context[:publish]
+        published = context[:publish].call(result, validation, output_path)
+        result = result.merge(published: published)
+      end
 
       container_bytes = result[:bytes] if result[:bytes].is_a?(String)
       result = result.merge(
