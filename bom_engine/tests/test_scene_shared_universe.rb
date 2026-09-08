@@ -420,7 +420,7 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
       meshes: [{
         id: 'mesh:0', definition_id: 'def:1',
         positions_m: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0],
-        faces: [{ id: 'f:0', outer: [0, 1, 2], holes: [], triangles: [0, 1, 2], normal: [0.0, 0.0, 1.0] }],
+        faces: [{ id: 'f:0', outer: [0, 1, 2], holes: [], triangles: [0, 1, 2], normal: [0.0, 0.0, 1.0], area_m2: 0.5 }],
         edges: []
       }],
       definitions: [

@@ -189,6 +189,58 @@ module BOMEngine
         end
       end
 
+      def test_canonical_face_area_m2_validation_and_geometric_derivation
+        # 1. Explicit valid area_m2 is preserved
+        g1 = canonical_graph
+        g1[:meshes][0][:faces][0][:area_m2] = 12.34
+        n1 = BOMC::ModelAdapter.normalize(g1)
+        assert((n1[:meshes][0][:faces][0][:area_m2] - 12.34).abs < 1e-6, 'explicit valid area_m2 is preserved')
+
+        # 2. Missing area_m2 is derived from geometry triangles
+        g2 = canonical_graph
+        g2[:meshes][0][:faces][0].delete(:area_m2)
+        # Positions: (0,0,0), (1,0,0), (0,1,0) => right triangle with area 0.5
+        n2 = BOMC::ModelAdapter.normalize(g2)
+        assert((n2[:meshes][0][:faces][0][:area_m2] - 0.5).abs < 1e-6, 'missing area_m2 is derived from valid triangles')
+
+        # 3. Missing area_m2 is derived from outer polygon when triangles absent
+        g3 = canonical_graph
+        g3[:meshes][0][:faces][0].delete(:area_m2)
+        g3[:meshes][0][:faces][0][:triangles] = []
+        n3 = BOMC::ModelAdapter.normalize(g3)
+        assert((n3[:meshes][0][:faces][0][:area_m2] - 0.5).abs < 1e-6, 'missing area_m2 is derived from valid outer loop')
+
+        # 4. Missing area_m2 with insufficient geometry strictly raises ShapeError
+        g4 = canonical_graph
+        g4[:meshes][0][:faces][0].delete(:area_m2)
+        g4[:meshes][0][:faces][0][:outer] = [0, 1]
+        g4[:meshes][0][:faces][0][:triangles] = []
+        assert_raises('missing area_m2 with degenerate geometry raises ShapeError', 'area_m2') do
+          BOMC::ModelAdapter.normalize(g4)
+        end
+
+        # 5. Malformed non-numeric area_m2 strictly raises ShapeError
+        g5 = canonical_graph
+        g5[:meshes][0][:faces][0][:area_m2] = 'not-a-number'
+        assert_raises('string area_m2 raises ShapeError', 'area_m2') do
+          BOMC::ModelAdapter.normalize(g5)
+        end
+
+        # 6. NaN area_m2 strictly raises ShapeError
+        g6 = canonical_graph
+        g6[:meshes][0][:faces][0][:area_m2] = Float::NAN
+        assert_raises('NaN area_m2 raises ShapeError', 'area_m2') do
+          BOMC::ModelAdapter.normalize(g6)
+        end
+
+        # 7. Infinity area_m2 strictly raises ShapeError
+        g7 = canonical_graph
+        g7[:meshes][0][:faces][0][:area_m2] = Float::INFINITY
+        assert_raises('Infinity area_m2 raises ShapeError', 'area_m2') do
+          BOMC::ModelAdapter.normalize(g7)
+        end
+      end
+
       def run
         test_structured_xyz_hashes_are_normalized_without_array_pair_to_f
         test_clip_plane_accepts_structured_xyz_hashes
@@ -196,6 +248,7 @@ module BOMEngine
         test_scalar_strictness_and_non_finite_rejection
         test_sketchup_length_support
         test_optional_vectors
+        test_canonical_face_area_m2_validation_and_geometric_derivation
         puts 'Numeric Shape Hardening Tests: ALL PASSED'
         true
       rescue StandardError => error

@@ -462,23 +462,28 @@ module BOMEngine
 
       def canonical_face(face, positions, material_index, tag_index, materials, path: 'face')
         semantic = face[:semantic] || {}
-        outer = Array(face[:outer]).map(&:to_i)
-        front_material = optional_reference(material_index, face[:front_material_id])
+        outer = Array(face[:outer] || face[:vertices]).map(&:to_i)
+        holes = Array(face[:holes]).map { |hole| Array(hole).map(&:to_i) }
+        triangles = Array(face[:triangles]).map(&:to_i)
+        front_mat_id = face[:front_material_id] || face[:material_id]
+        front_material = optional_reference(material_index, front_mat_id)
         back_material = optional_reference(material_index, face[:back_material_id])
+        normal = Array(face[:normal]).empty? ? face_normal(positions, outer) : NumericShape.vec3(face[:normal], path: "#{path}.normal")
+        area_m2 = compute_canonical_face_area(face, positions, outer, holes, triangles, path: path)
         {
-          stable_id: face[:id].to_s,
+          stable_id: (face[:id] || face[:stable_id] || "face:#{path}").to_s,
           persistent_id: source_identity_value(face[:source_identity]),
           outer: outer,
-          holes: Array(face[:holes]).map { |hole| Array(hole).map(&:to_i) },
-          triangles: Array(face[:triangles]).map(&:to_i),
+          holes: holes,
+          triangles: triangles,
           front_material: front_material,
           back_material: back_material,
           front_appearance_required: true,
           back_appearance_required: !back_material.nil?,
           tag: optional_reference(tag_index, face[:tag_id]),
-          normal: Array(face[:normal]).empty? ? face_normal(positions, outer) : NumericShape.vec3(face[:normal], path: "#{path}.normal"),
-          area_m2: NumericShape.scalar(face[:area_m2], path: "#{path}.area_m2"),
-          surface_type: semantic[:role] || face[:surface_hint],
+          normal: normal,
+          area_m2: area_m2,
+          surface_type: semantic[:role] || face[:surface_type] || face[:surface_hint],
           hidden: face[:hidden] == true,
           semantic_label: semantic[:label],
           semantic_role: semantic[:role],
@@ -488,6 +493,58 @@ module BOMEngine
         }
       end
       private_class_method :canonical_face
+
+      def compute_canonical_face_area(face, positions, outer, holes, triangles, path: 'face')
+        if face.key?(:area_m2) && !face[:area_m2].nil?
+          NumericShape.scalar(face[:area_m2], path: "#{path}.area_m2")
+        elsif triangles && triangles.length >= 3
+          triangles_area(positions, triangles)
+        elsif outer && outer.length >= 3
+          outer_area = polygon_area(positions, outer)
+          holes_area = holes.map { |h| polygon_area(positions, h) }.inject(0.0, :+)
+          [outer_area - holes_area, 0.0].max
+        else
+          raise NumericShape::ShapeError.new("BOMC numeric shape invalid at #{path}.area_m2: expected numeric scalar; got NilClass: nil")
+        end
+      end
+      private_class_method :compute_canonical_face_area
+
+      def triangles_area(positions, triangles)
+        total = 0.0
+        triangles.each_slice(3) do |t|
+          next if t.length < 3
+          p0 = positions[t[0] * 3, 3]
+          p1 = positions[t[1] * 3, 3]
+          p2 = positions[t[2] * 3, 3]
+          next unless p0 && p1 && p2
+          v1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]]
+          v2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]]
+          cross = [
+            v1[1] * v2[2] - v1[2] * v2[1],
+            v1[2] * v2[0] - v1[0] * v2[2],
+            v1[0] * v2[1] - v1[1] * v2[0]
+          ]
+          total += 0.5 * Math.sqrt(cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2])
+        end
+        total
+      end
+      private_class_method :triangles_area
+
+      def polygon_area(positions, indices)
+        return 0.0 if Array(indices).length < 3
+        vector = [0.0, 0.0, 0.0]
+        indices.each_with_index do |index, cursor|
+          following = indices[(cursor + 1) % indices.length]
+          current = positions[index * 3, 3]
+          after = positions[following * 3, 3]
+          next unless current && after
+          vector[0] += (current[1] - after[1]) * (current[2] + after[2])
+          vector[1] += (current[2] - after[2]) * (current[0] + after[0])
+          vector[2] += (current[0] - after[0]) * (current[1] + after[1])
+        end
+        Math.sqrt(vector.map { |value| value * value }.inject(0.0, :+)) * 0.5
+      end
+      private_class_method :polygon_area
 
       def normalize_uv_for_materials(uv, front_material, back_material, materials, path: 'uv')
         normalized = normalize_uv(uv, path: path)

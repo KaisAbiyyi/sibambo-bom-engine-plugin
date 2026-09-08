@@ -299,6 +299,8 @@ module BOMEngine
                 front_material_id: 'mat:1',
                 back_material_id: nil,
                 tag_id: 'tag:101',
+                normal: [0.0, 0.0, 1.0],
+                area_m2: 1.0,
                 surface_type: 'wall'
               }
             ],
@@ -628,7 +630,7 @@ module BOMEngine
             id: 'mesh:1',
             definition_id: 'def:table',
             positions_m: [0, 0, 0, 1, 0, 0, 0, 1, 0],
-            faces: [{ id: 'f1', vertices: [0, 1, 2], material_id: 'mat:1', tag_id: 'tag:1' }],
+            faces: [{ id: 'f1', outer: [0, 1, 2], holes: [], triangles: [0, 1, 2], normal: [0.0, 0.0, 1.0], area_m2: 0.5, front_material_id: 'mat:1', tag_id: 'tag:1' }],
             edges: []
           }
         ],
