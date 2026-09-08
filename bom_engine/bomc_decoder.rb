@@ -2,6 +2,7 @@
 
 require 'digest'
 require_relative 'bomc_format'
+require_relative 'decode_budget'
 require_relative 'bomc_codecs'
 require_relative 'bomc_encoding_contract'
 require_relative 'scene_visibility_resolver'
@@ -400,6 +401,13 @@ module BOMEngine
         version, codec, reserved_a, reserved_b, count, payload_length = bytes.byteslice(0, 12).unpack('CCCCVV')
         raise 'BOMC invalid: codec section header.' unless version == 1 && reserved_a.zero? && reserved_b.zero?
         raise 'BOMC invalid: codec section byte count.' unless bytes.bytesize == 12 + payload_length
+        if codec_module == BOMC::NormalCodec
+          min_bytes_per_normal = codec == 1 ? 12 : (codec == 2 ? 4 : 24)
+          DecodeBudget.checked_table_bytes(count, 3, 8, payload_length, min_wire: min_bytes_per_normal / 3.0)
+        elsif codec_module == BOMC::TransformCodec
+          min_bytes_per_matrix = codec == 0 ? 0 : (codec == 5 ? 1 : (codec == 4 ? 24 : (codec == 3 ? 40 : (codec == 2 ? 48 : 96))))
+          DecodeBudget.checked_table_bytes(count, 16, 8, payload_length, min_wire: min_bytes_per_matrix / 16.0)
+        end
         codec_module.decode(codec: codec, count: count, bytes: bytes.byteslice(12, payload_length))
       end
 
@@ -427,7 +435,7 @@ module BOMEngine
             face[:holes] = loops
             face[:triangles] = triangle_values
             face[:normal] = normals[(mesh[:face_start] + local_index) * 3, 3]
-            face[:area_m2] = face_area(positions, face[:outer], face[:holes])
+            face[:area_m2] = face_area(positions, face[:outer], face[:holes], face[:triangles])
             face[:orientation], face[:azimuth_deg] = orientation(face[:normal])
           end
           unless loop_cursor == topology[:loops].length && triangle_cursor == topology[:triangles].length
@@ -453,6 +461,8 @@ module BOMEngine
         version, codec, reserved_a, reserved_b, count, payload_length = bytes.byteslice(0, 12).unpack('CCCCVV')
         raise 'BOMC invalid: position block header.' unless version == 1 && reserved_a.zero? && reserved_b.zero?
         raise 'BOMC invalid: position block byte count.' unless bytes.bytesize == 60 + payload_length
+        min_bytes_per_vertex = codec == 1 ? 24 : (codec == 2 || codec == 3 ? 12 : (codec == 4 ? 6 : 3))
+        DecodeBudget.checked_table_bytes(count, 3, 8, payload_length, min_wire: min_bytes_per_vertex / 3.0)
         origin = bytes.byteslice(12, 24).unpack('E*')
         scale = bytes.byteslice(36, 24).unpack('E*')
         BOMC::PositionCodec.decode(codec: codec, count: count, origin: origin, scale: scale, bytes: bytes.byteslice(60, payload_length))
@@ -463,6 +473,8 @@ module BOMEngine
         version, codec, reserved_a, reserved_b, count, payload_length = bytes.byteslice(0, 12).unpack('CCCCVV')
         raise 'BOMC invalid: UV block header.' unless version == 1 && reserved_a.zero? && reserved_b.zero?
         raise 'BOMC invalid: UV block byte count.' unless bytes.bytesize == 44 + payload_length
+        min_bytes_per_uv = codec == 1 ? 8 : (codec == 2 || codec == 3 ? 4 : (codec == 4 ? 2 : 16))
+        DecodeBudget.checked_table_bytes(count, 2, 8, payload_length, min_wire: min_bytes_per_uv / 2.0)
         origin = bytes.byteslice(12, 16).unpack('E*')
         scale = bytes.byteslice(28, 16).unpack('E*')
         BOMC::UVCodec.decode(codec: codec, count: count, origin: origin, scale: scale, bytes: bytes.byteslice(44, payload_length))
@@ -473,6 +485,8 @@ module BOMEngine
         version, reserved_a, reserved_b, reserved_c, loop_count, triangle_count, loop_length, triangle_length = bytes.byteslice(0, 20).unpack('CCCCVVVV')
         raise 'BOMC invalid: topology block header.' unless version == 1 && [reserved_a, reserved_b, reserved_c].all?(&:zero?)
         raise 'BOMC invalid: topology block byte count.' unless bytes.bytesize == 20 + loop_length + triangle_length
+        DecodeBudget.checked_table_bytes(loop_count, 1, 4, loop_length, min_wire: 1)
+        DecodeBudget.checked_table_bytes(triangle_count, 1, 4, triangle_length, min_wire: 1)
         loop_bytes = bytes.byteslice(20, loop_length)
         triangle_bytes = bytes.byteslice(20 + loop_length, triangle_length)
         {
@@ -482,6 +496,7 @@ module BOMEngine
       end
 
       def decode_delta_indices(bytes, count)
+        DecodeBudget.checked_table_bytes(count, 1, 4, bytes.bytesize, min_wire: 1)
         cursor = 0
         previous = 0
         values = count.times.map do
@@ -681,10 +696,36 @@ module BOMEngine
         raise "BOMC invalid: #{label} reference." unless index.is_a?(Integer) && index >= 0 && index < count
       end
 
-      def face_area(positions, outer, holes)
-        outer_area = polygon_area(positions, outer)
-        holes_area = holes.map { |indices| polygon_area(positions, indices) }.inject(0.0, :+)
-        [outer_area - holes_area, 0.0].max
+      def triangles_area(positions, triangles)
+        return 0.0 if triangles.nil? || triangles.length < 3
+
+        total = 0.0
+        triangles.each_slice(3) do |t|
+          next unless t.length == 3
+          p0 = positions[t[0] * 3, 3]
+          p1 = positions[t[1] * 3, 3]
+          p2 = positions[t[2] * 3, 3]
+          next unless p0 && p1 && p2
+          v1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]]
+          v2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]]
+          cross = [
+            v1[1] * v2[2] - v1[2] * v2[1],
+            v1[2] * v2[0] - v1[0] * v2[2],
+            v1[0] * v2[1] - v1[1] * v2[0]
+          ]
+          total += 0.5 * Math.sqrt(cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2])
+        end
+        total
+      end
+
+      def face_area(positions, outer, holes, triangles = nil)
+        if triangles && triangles.length >= 3
+          triangles_area(positions, triangles)
+        else
+          outer_area = polygon_area(positions, outer)
+          holes_area = holes.map { |indices| polygon_area(positions, indices) }.inject(0.0, :+)
+          [outer_area - holes_area, 0.0].max
+        end
       end
 
       def polygon_area(positions, indices)
@@ -1031,8 +1072,15 @@ module BOMEngine
         @offset = 0
       end
 
+      def remaining
+        @bytes.bytesize - @offset
+      end
+
       def read(length)
         count = Integer(length)
+        if count > DecodeBudget::MAX_ALLOCATION_BYTES
+          raise "BOMC invalid: read size #{count} exceeds allocation budget."
+        end
         value = @bytes.byteslice(@offset, count)
         raise 'BOMC invalid: truncated table section.' unless value && value.bytesize == count
         @offset += count
@@ -1048,6 +1096,7 @@ module BOMEngine
       end
 
       def read_indices(width, count)
+        DecodeBudget.checked_table_bytes(count, 1, 4, remaining, min_wire: width)
         BOMC::Binary.unpack_indices(read(width * count), width, count)
       end
 
