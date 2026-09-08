@@ -56,6 +56,16 @@ module BOMEngine
                    BOMCProfile.fetch(:visual)
                  end
 
+      groups = if candidate_groups.respond_to?(:candidate_groups)
+                 candidate_groups.candidate_groups
+               elsif candidate_groups.is_a?(Array)
+                 candidate_groups.each_with_object({}) do |grp, h|
+                   h[grp[:owner_id] || grp['owner_id']] = grp[:candidates] || grp['candidates'] || []
+                 end
+               else
+                 candidate_groups || {}
+               end
+
       source_bytes = source_skp_bytes ? Integer(source_skp_bytes) : nil
 
       if contract.requires_source_size?
@@ -71,7 +81,7 @@ module BOMEngine
       if contract.profile == :exact
         # Exact profile: select highest-fidelity candidate for each group unconditionally
         selected = {}
-        candidate_groups.each do |owner_id, candidates|
+        groups.each do |owner_id, candidates|
           valid = candidates.select(&:pass_hard_constraints?)
           raise FidelityConstraintViolationError.new("No valid candidate for #{owner_id}") if valid.empty?
           selected[owner_id] = valid.min_by { |c| [c.distortion_score, c.deterministic_rank] }
@@ -81,9 +91,31 @@ module BOMEngine
           profile: contract.name,
           hard_budget_bytes: nil,
           preferred_target_bytes: nil,
+          preferred_target_achieved: true,
+          diagnostic_reason: nil,
           selected_candidates: selected,
           total_estimated_bytes: Integer(fixed_bytes_estimate) + selected.values.sum(&:stored_bytes_estimate),
           audit_trail: [{ step: :exact_highest_fidelity, selected: selected.transform_values(&:id) }]
+        }
+      end
+
+      if !contract.requires_source_size? && (source_bytes.nil? || source_bytes <= 0)
+        selected = {}
+        groups.each do |owner_id, candidates|
+          valid = candidates.select(&:pass_hard_constraints?)
+          raise FidelityConstraintViolationError.new("No valid candidate for #{owner_id}") if valid.empty?
+          selected[owner_id] = valid.min_by { |c| [c.stored_bytes_estimate, c.deterministic_rank] }
+        end
+        return {
+          status: :budget_passed,
+          profile: contract.name,
+          hard_budget_bytes: nil,
+          preferred_target_bytes: nil,
+          preferred_target_achieved: true,
+          diagnostic_reason: nil,
+          selected_candidates: selected,
+          total_estimated_bytes: Integer(fixed_bytes_estimate) + selected.values.sum(&:stored_bytes_estimate),
+          audit_trail: [{ step: :unconstrained_best_compression, selected: selected.transform_values(&:id) }]
         }
       end
 
@@ -92,7 +124,7 @@ module BOMEngine
 
       # 1. Filter candidates by hard constraints & profile error bounds
       frontiers = {}
-      candidate_groups.each do |owner_id, candidates|
+      groups.each do |owner_id, candidates|
         passing = candidates.select do |c|
           next false unless c.pass_hard_constraints?
           satisfies_profile_fidelity?(c, contract)
@@ -125,7 +157,7 @@ module BOMEngine
         selections: current_selected.transform_values(&:id)
       }]
 
-      # 3. Iteratively transition to lower-byte candidates if over budget
+      # 3. Iteratively transition to lower-byte candidates if over hard budget
       step = 1
       while current_total_bytes > hard_budget_bytes
         # Find best downward transition
@@ -180,6 +212,7 @@ module BOMEngine
 
         audit_trail << {
           step: step,
+          action: :hard_budget_reduction,
           transition: best_transition,
           total_estimated_bytes: current_total_bytes,
           selections: current_selected.transform_values(&:id)
@@ -187,7 +220,7 @@ module BOMEngine
         step += 1
       end
 
-      # 4. Check feasibility
+      # 4. Check feasibility against hard budget
       if current_total_bytes > hard_budget_bytes
         raise BudgetNotFeasibleError.new(
           "Achievable size #{current_total_bytes} bytes exceeds hard budget #{hard_budget_bytes} bytes (#{contract.hard_ratio * 100}% of source #{source_bytes} bytes).",
@@ -199,12 +232,81 @@ module BOMEngine
         )
       end
 
+      # 5. Soft target optimization for preferred ratio (e.g. Visual 60%)
+      if preferred_target_bytes && current_total_bytes > preferred_target_bytes
+        while current_total_bytes > preferred_target_bytes
+          best_transition = nil
+
+          frontiers.each do |owner_id, frontier|
+            current_idx = current_indices[owner_id]
+            next if current_idx >= frontier.length - 1
+
+            current_c = frontier[current_idx]
+            next_c = frontier[current_idx + 1]
+
+            byte_savings = current_c.stored_bytes_estimate - next_c.stored_bytes_estimate
+            next if byte_savings <= 0
+
+            delta_distortion = [next_c.distortion_score - current_c.distortion_score, 0.0].max
+            efficiency = delta_distortion > 0.0 ? (byte_savings.to_f / delta_distortion) : (byte_savings * 1_000_000.0)
+
+            tie_key = [
+              next_c.domain.to_s,
+              next_c.owner_id.to_s,
+              next_c.deterministic_rank
+            ]
+
+            candidate_transition = {
+              owner_id: owner_id,
+              from_idx: current_idx,
+              to_idx: current_idx + 1,
+              from_id: current_c.id,
+              to_id: next_c.id,
+              byte_savings: byte_savings,
+              delta_distortion: delta_distortion,
+              efficiency: efficiency,
+              tie_key: tie_key
+            }
+
+            if best_transition.nil? ||
+               candidate_transition[:efficiency] > best_transition[:efficiency] ||
+               (candidate_transition[:efficiency] == best_transition[:efficiency] && candidate_transition[:byte_savings] > best_transition[:byte_savings]) ||
+               (candidate_transition[:efficiency] == best_transition[:efficiency] && candidate_transition[:byte_savings] == best_transition[:byte_savings] && (candidate_transition[:tie_key] <=> best_transition[:tie_key]) < 0)
+              best_transition = candidate_transition
+            end
+          end
+
+          break if best_transition.nil?
+
+          owner_id = best_transition[:owner_id]
+          current_indices[owner_id] = best_transition[:to_idx]
+          current_selected[owner_id] = frontiers[owner_id][best_transition[:to_idx]]
+          current_total_bytes -= best_transition[:byte_savings]
+
+          audit_trail << {
+            step: step,
+            action: :soft_target_optimization,
+            transition: best_transition,
+            total_estimated_bytes: current_total_bytes,
+            selections: current_selected.transform_values(&:id)
+          }
+          step += 1
+        end
+      end
+
+      preferred_target_achieved = preferred_target_bytes ? current_total_bytes <= preferred_target_bytes : true
+      diagnostic_reason = if !preferred_target_achieved
+                            "Preferred target of #{(contract.preferred_ratio.to_f * 100).round}% (#{preferred_target_bytes} bytes) could not be reached within fidelity bounds; achievable size is #{current_total_bytes} bytes (hard limit #{hard_budget_bytes} bytes). Reason: candidate frontier exhausted within tolerance."
+                          end
+
       {
         status: :budget_passed,
         profile: contract.name,
         source_skp_bytes: source_bytes,
         hard_budget_bytes: hard_budget_bytes,
         preferred_target_bytes: preferred_target_bytes,
+        preferred_target_achieved: preferred_target_achieved,
+        diagnostic_reason: diagnostic_reason,
         selected_candidates: current_selected,
         total_estimated_bytes: current_total_bytes,
         audit_trail: audit_trail

@@ -196,7 +196,7 @@ module BOMEngine
     module Container
       module_function
 
-      def pack(sections, flags: PROFILE_PRODUCTION, compact_directory: true, version_minor: nil, compression_level: Zlib::BEST_COMPRESSION, checkpoint: nil)
+      def pack_with_metrics(sections, flags: PROFILE_PRODUCTION, compact_directory: true, version_minor: nil, compression_level: Zlib::BEST_COMPRESSION, checkpoint: nil)
         compact = !!compact_directory
         minor = version_minor.nil? ? (compact ? VERSION_MINOR : 0) : Integer(version_minor)
         if compact && minor < 1
@@ -243,11 +243,13 @@ module BOMEngine
         raise 'BOMC internal: header byte count mismatch.' unless header.bytesize == HEADER_BYTES
 
         directory = +''.b
-        prepared.each do |section|
+        section_metrics = []
+        prepared.each_with_index do |section, index|
+          crc = Zlib.crc32(section[:stored_bytes])
           values = [
             section[:type], section[:codec], section[:flags], section[:offset],
             section[:stored_bytes].bytesize, section[:raw_bytes].bytesize,
-            section[:count], Zlib.crc32(section[:stored_bytes])
+            section[:count], crc
           ]
           if compact
             if values[3, 4].any? { |value| value > 0xffff_ffff }
@@ -257,6 +259,20 @@ module BOMEngine
           else
             directory << (values + [0]).pack(DIRECTORY_PACK)
           end
+
+          section_metrics << {
+            index: index,
+            type: section[:type],
+            codec: section[:codec],
+            flags: section[:flags],
+            offset: section[:offset],
+            stored_size: section[:stored_bytes].bytesize,
+            raw_size: section[:raw_bytes].bytesize,
+            stored_bytes: section[:stored_bytes].bytesize,
+            raw_bytes: section[:raw_bytes].bytesize,
+            count: section[:count],
+            crc32: crc
+          }
         end
         unless directory.bytesize == prepared.length * directory_entry_bytes
           raise 'BOMC internal: directory byte count mismatch.'
@@ -268,7 +284,35 @@ module BOMEngine
           output << ("\0" * (section[:offset] - output.bytesize)).b
           output << section[:stored_bytes]
         end
-        output.b
+
+        header_metrics = {
+          major: VERSION_MAJOR,
+          minor: minor,
+          flags: header_flags,
+          section_count: prepared.length,
+          directory_offset: directory_offset,
+          directory_entry_bytes: directory_entry_bytes,
+          header_bytes: HEADER_BYTES,
+          header_directory_bytes: directory_offset + prepared.length * directory_entry_bytes,
+          total_bytes: output.bytesize
+        }
+
+        {
+          bytes: output.b,
+          section_metrics: section_metrics,
+          header_metrics: header_metrics
+        }
+      end
+
+      def pack(sections, flags: PROFILE_PRODUCTION, compact_directory: true, version_minor: nil, compression_level: Zlib::BEST_COMPRESSION, checkpoint: nil)
+        pack_with_metrics(
+          sections,
+          flags: flags,
+          compact_directory: compact_directory,
+          version_minor: version_minor,
+          compression_level: compression_level,
+          checkpoint: checkpoint
+        )[:bytes]
       end
 
       def parse(bytes, verify_checksums: true)
@@ -374,8 +418,11 @@ module BOMEngine
       def prepare_section(section, compression_level)
         raw = section.fetch(:bytes).b
         stored = raw
-        codec = CODEC_STORE
-        if section[:compress]
+        codec = section[:codec] || CODEC_STORE
+        if section[:stored_bytes]
+          stored = section[:stored_bytes].b
+          codec = section[:codec] || (stored.bytesize < raw.bytesize ? CODEC_DEFLATE : CODEC_STORE)
+        elsif section[:compress]
           candidate = Zlib::Deflate.deflate(raw, Integer(compression_level))
           if candidate.bytesize < raw.bytesize
             stored = candidate

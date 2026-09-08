@@ -51,9 +51,8 @@ module BOMEngine
                    BOMCProfile.fetch(profile_contract)
                  end
 
-      profile_id = PROFILE_ENUM.fetch(contract.name) do
-        raise ArgumentError, "Cannot encode unknown profile '#{contract.name}'."
-      end
+      profile_id = PROFILE_ENUM[contract.name] || (contract.name == :production || contract.name == :debug ? PROFILE_ENUM[:visual] : nil)
+      raise ArgumentError, "Cannot encode unknown profile '#{contract.name}'." unless profile_id
 
       texture_id = TEXTURE_POLICY_ENUM.fetch(contract.texture_policy) do
         raise ArgumentError, "Cannot encode unknown texture policy '#{contract.texture_policy}'."

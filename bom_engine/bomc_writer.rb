@@ -4,6 +4,8 @@ require 'digest'
 require 'fileutils'
 require_relative 'bomc_format'
 require_relative 'bomc_codecs'
+require_relative 'bomc_candidate'
+require_relative 'bomc_export_cache'
 require_relative 'bomc_model_adapter'
 require_relative 'bomc_profile'
 require_relative 'bomc_encoding_contract'
@@ -41,7 +43,7 @@ module BOMEngine
       BOMC::SECTION_DEBUG => :debug
     }.freeze
 
-    def self.pack(graph, profile: :visual, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil)
+    def self.pack(graph, profile: :visual, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil, candidate_groups: nil, export_cache: nil)
       Builder.new(
         graph,
         profile: profile,
@@ -53,11 +55,13 @@ module BOMEngine
         compact_directory: compact_directory,
         compression_level: compression_level,
         minimal_metadata: minimal_metadata,
-        checkpoint: checkpoint
+        checkpoint: checkpoint,
+        candidate_groups: candidate_groups,
+        export_cache: export_cache
       ).build
     end
 
-    def self.write(path, graph, profile: :visual, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil)
+    def self.write(path, graph, profile: :visual, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil, candidate_groups: nil, export_cache: nil)
       result = pack(
         graph,
         profile: profile,
@@ -69,7 +73,9 @@ module BOMEngine
         compact_directory: compact_directory,
         compression_level: compression_level,
         minimal_metadata: minimal_metadata,
-        checkpoint: checkpoint
+        checkpoint: checkpoint,
+        candidate_groups: candidate_groups,
+        export_cache: export_cache
       )
       temporary_path = "#{path}.#{Process.pid}.part"
       begin
@@ -111,7 +117,7 @@ module BOMEngine
     end
 
     class Builder
-      def initialize(graph, profile:, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path:, sparse:, compact_directory:, compression_level:, minimal_metadata:, checkpoint:)
+      def initialize(graph, profile:, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path:, sparse:, compact_directory:, compression_level:, minimal_metadata:, checkpoint:, candidate_groups: nil, export_cache: nil)
         @profile = profile.to_sym
         allowed_profiles = [:production, :debug, :exact, :research, :visual]
         raise ArgumentError, "Unknown BOMC profile #{@profile}." unless allowed_profiles.include?(@profile)
@@ -131,7 +137,35 @@ module BOMEngine
         @compression_level = Integer(compression_level)
         @minimal_metadata = !!minimal_metadata
         @checkpoint = checkpoint
-        @model = BOMC::ModelAdapter.normalize(graph, base_path: base_path, checkpoint: @checkpoint)
+        @candidate_groups_input = candidate_groups
+        @export_cache = export_cache
+
+        @source_digest = if graph.is_a?(Hash)
+                           src = graph[:source] || graph['source']
+                           src_sha = src.is_a?(Hash) ? (src[:sha256] || src['sha256'] || src[:source_digest] || src['source_digest']) : nil
+                           graph[:source_digest] || graph['source_digest'] || src_sha || Digest::SHA256.hexdigest(begin graph.inspect rescue graph.to_s end)
+                         else
+                           Digest::SHA256.hexdigest(graph.to_s)
+                         end
+
+        @model = if @export_cache
+                   norm_key = BOMCExportCache::Cache.compute_key(
+                     source_digest: @source_digest,
+                     profile: @profile,
+                     policy_revision: BOMCExportCache::POLICY_REVISION
+                   )
+                   cached = @export_cache.fetch_normalization(norm_key)
+                   if cached
+                     cached
+                   else
+                     normalized = BOMC::ModelAdapter.normalize(graph, base_path: base_path, checkpoint: @checkpoint)
+                     @export_cache.store_normalization(norm_key, normalized)
+                     normalized
+                   end
+                 else
+                   BOMC::ModelAdapter.normalize(graph, base_path: base_path, checkpoint: @checkpoint)
+                 end
+
         @adaptive_actual = 0
         @adaptive_u32 = 0
         @position_metrics = []
@@ -146,19 +180,7 @@ module BOMEngine
       def build
         notify(:compile_metadata, 0, 1)
         geometry = build_geometry
-        is_exact = @profile_contract.profile == :exact
-        forced_normal_codec = is_exact ? BOMC::NormalCodec::FLOAT64 : nil
-        forced_transform_codec = is_exact ? BOMC::TransformCodec::FLOAT64_3X4 : nil
 
-        all_faces = @model[:meshes].flat_map { |m| m[:faces] }
-        model_normal_class = BOMCGeometryPolicy.mesh_semantic_class(all_faces)
-        normal_tol = BOMCGeometryPolicy.normal_tolerance(profile: @profile_contract.name, semantic_class: model_normal_class)
-
-        normal_block = BOMC::NormalCodec.encode(geometry[:normals], max_error_deg: normal_tol, semantic_class: model_normal_class, forced_codec: forced_normal_codec)
-        record_geometry_frontier(normal_block, domain: :normals, owner_id: :model_normals, semantic_class: model_normal_class)
-        notify(:encode_normals, geometry[:normals].length / 3, geometry[:normals].length / 3)
-        transform_block = BOMC::TransformCodec.encode(@model[:transforms], forced_codec: forced_transform_codec, checkpoint: @checkpoint)
-        notify(:encode_transforms, @model[:transforms].length, @model[:transforms].length)
         all_sections = [
           section(BOMC::SECTION_MODEL, 1, build_model_section(geometry), true),
           section(BOMC::SECTION_STRINGS, @strings.length, build_strings_section, true),
@@ -168,11 +190,11 @@ module BOMEngine
           section(BOMC::SECTION_FACES, geometry[:faces].length, build_faces_section(geometry[:faces]), true),
           section(BOMC::SECTION_POSITIONS, @model[:meshes].length, geometry[:position_bytes], true),
           section(BOMC::SECTION_TOPOLOGY, @model[:meshes].length, geometry[:topology_bytes], true),
-          section(BOMC::SECTION_NORMALS, geometry[:normals].length / 3, pack_codec_section(normal_block), true),
+          section(BOMC::SECTION_NORMALS, geometry[:normals].length / 3, pack_codec_section(geometry[:normal_block]), true),
           section(BOMC::SECTION_UVS, geometry[:uv_block_count], geometry[:uv_bytes], true),
           section(BOMC::SECTION_DEFINITIONS, @model[:definitions].length, build_definitions_section, true),
           section(BOMC::SECTION_INSTANCES, @model[:instances].length, build_instances_section, true),
-          section(BOMC::SECTION_TRANSFORMS, @model[:transforms].length, pack_codec_section(transform_block), true),
+          section(BOMC::SECTION_TRANSFORMS, @model[:transforms].length, pack_codec_section(geometry[:transform_block]), true),
           section(BOMC::SECTION_VISUAL_EDGES, geometry[:edges].length, build_edges_section(geometry[:edges]), true),
           section(BOMC::SECTION_TEXTURE_TABLE, @textures.length, build_texture_table_section, true),
           section(BOMC::SECTION_TEXTURE_BLOBS, @textures.length, @texture_blob_bytes, false),
@@ -207,7 +229,8 @@ module BOMEngine
         elsif scope == 'all' || scope == 'all_scenes' || !scenes.empty?
           flags |= BOMC::FLAG_SCOPE_ALL
         end
-        bytes = BOMC::Container.pack(
+
+        pack_res = BOMC::Container.pack_with_metrics(
           sections,
           flags: flags,
           compact_directory: @compact_directory,
@@ -215,9 +238,10 @@ module BOMEngine
           compression_level: @compression_level,
           checkpoint: @checkpoint
         )
-        parsed = BOMC::Container.parse(bytes)
+        bytes = pack_res[:bytes]
+        header_metrics = pack_res[:header_metrics]
         section_sizes = {}
-        parsed[:sections].each do |descriptor|
+        pack_res[:section_metrics].each do |descriptor|
           name = SECTION_NAMES.fetch(descriptor[:type], :unknown)
           section_sizes[name] = {
             raw_bytes: descriptor[:raw_size],
@@ -231,16 +255,18 @@ module BOMEngine
           sha256: Digest::SHA256.hexdigest(bytes),
           format: FORMAT_VERSION,
           profile: @profile,
+          prepared_candidates: geometry[:prepared_candidates],
+          solver_result: geometry[:solver_result],
           metrics: {
-            header_directory_bytes: BOMC::HEADER_BYTES + parsed[:sections].length * parsed[:header][:directory_entry_bytes],
-            directory_entry_bytes: parsed[:header][:directory_entry_bytes],
+            header_directory_bytes: header_metrics[:header_directory_bytes],
+            directory_entry_bytes: header_metrics[:directory_entry_bytes],
             omitted_empty_sections: all_sections.length - sections.length,
             sections: section_sizes,
             positions: @position_metrics,
-            normals: normal_block.reject { |key, _value| key == :bytes },
+            normals: candidate_metric_hash(geometry[:normal_block]),
             uv: @uv_metrics,
             geometry_candidate_frontiers: @geometry_candidate_frontiers,
-            transforms: transform_block.reject { |key, _value| key == :bytes },
+            transforms: candidate_metric_hash(geometry[:transform_block]),
             topology: {
               absolute_bytes: @topology_absolute_bytes,
               encoded_bytes: @topology_encoded_bytes,
@@ -260,7 +286,8 @@ module BOMEngine
               evidence: @textures.map { |texture| texture[:encoding_evidence] }.compact
             },
             appearance: appearance_metrics,
-            coverage: @model[:coverage]
+            coverage: @model[:coverage],
+            solver: geometry[:solver_result]
           }
         }
       end
@@ -491,18 +518,17 @@ module BOMEngine
       end
 
       def build_geometry
-        position_stream = +''.b
-        topology_stream = +''.b
-        uv_stream = +''.b
-        meshes = []
-        faces = []
-        normals = []
-        edges = []
-        uv_block_count = 0
-
         is_exact = @profile_contract.profile == :exact
         forced_pos_codec = is_exact ? BOMC::PositionCodec::FLOAT64_ABSOLUTE : nil
         forced_uv_codec = is_exact ? BOMC::UVCodec::FLOAT64 : nil
+        forced_normal_codec = is_exact ? BOMC::NormalCodec::FLOAT64 : nil
+        forced_transform_codec = is_exact ? BOMC::TransformCodec::FLOAT64_3X4 : nil
+
+        faces = []
+        normals = []
+        edges = []
+        topology_stream = +''.b
+        mesh_stages = []
 
         @model[:meshes].each_with_index do |mesh, mesh_index|
           mesh_class = BOMCGeometryPolicy.mesh_semantic_class(mesh[:faces])
@@ -512,11 +538,17 @@ module BOMEngine
           mesh_face_start = faces.length
           mesh_edge_start = edges.length
           loops_for_gate = mesh[:faces].map { |face| [face[:outer]] + face[:holes] }.flatten(1)
-          position = BOMC::PositionCodec.encode(mesh[:positions], loops: loops_for_gate, max_error_m: pos_tol, semantic_class: mesh_class, forced_codec: forced_pos_codec)
-          record_geometry_frontier(position, domain: :positions, owner_id: "mesh_#{mesh_index}", semantic_class: mesh_class)
-          position_offset, position_length = append_aligned(position_stream, pack_position_block(position))
-          @position_metrics << position.reject { |key, _value| key == :bytes }
-          notify(:encode_positions, mesh_index + 1, @model[:meshes].length)
+
+          pos_owner = "mesh_#{mesh_index}_positions"
+          pos_cands = find_provided_candidates(pos_owner, :positions, mesh_index)
+          unless pos_cands
+            cache_key = "pos_#{mesh_index}:::" + BOMCExportCache::Cache.compute_key(source_digest: @source_digest, profile: @profile, semantic_class: mesh_class)
+            pos_cands = @export_cache.fetch_candidates(cache_key) if @export_cache
+            unless pos_cands
+              pos_cands = BOMC::PositionCodec.candidate_objects(mesh[:positions], loops: loops_for_gate, max_error_m: pos_tol, semantic_class: mesh_class, forced_codec: forced_pos_codec, owner_id: pos_owner)
+              @export_cache.store_candidates(cache_key, pos_cands) if @export_cache
+            end
+          end
 
           loop_indices = []
           triangle_indices = []
@@ -556,41 +588,190 @@ module BOMEngine
             }
             normals.concat(face[:normal])
           end
+
           topology_block = pack_topology_block(loop_indices, triangle_indices)
           topology_offset, topology_length = append_aligned(topology_stream, topology_block)
           @topology_absolute_bytes += (loop_indices.length + triangle_indices.length) * 4
           @topology_encoded_bytes += topology_block.bytesize
           notify(:encode_topology, mesh_index + 1, @model[:meshes].length)
 
-          uv_offset = 0
-          uv_length = 0
+          uv_cands = nil
+          uv_owner = nil
           unless mesh_uv_values.empty?
-            uv = BOMC::UVCodec.encode(mesh_uv_values, max_error: uv_tol, semantic_class: mesh_class, forced_codec: forced_uv_codec)
-            record_geometry_frontier(uv, domain: :uv, owner_id: "mesh_#{mesh_index}", semantic_class: mesh_class)
-            uv_offset, uv_length = append_aligned(uv_stream, pack_uv_block(uv))
-            @uv_metrics << uv.reject { |key, _value| key == :bytes }
-            uv_block_count += 1
+            uv_owner = "mesh_#{mesh_index}_uv"
+            uv_cands = find_provided_candidates(uv_owner, :uv, mesh_index)
+            unless uv_cands
+              cache_key = "uv_#{mesh_index}:::" + BOMCExportCache::Cache.compute_key(source_digest: @source_digest, profile: @profile, semantic_class: mesh_class)
+              uv_cands = @export_cache.fetch_candidates(cache_key) if @export_cache
+              unless uv_cands
+                uv_cands = BOMC::UVCodec.candidate_objects(mesh_uv_values, max_error: uv_tol, semantic_class: mesh_class, forced_codec: forced_uv_codec, owner_id: uv_owner)
+                @export_cache.store_candidates(cache_key, uv_cands) if @export_cache
+              end
+            end
           end
-          notify(:encode_uv, mesh_index + 1, @model[:meshes].length)
 
           mesh[:edges].each do |edge|
             edges << edge.merge(mesh: mesh_index)
           end
-          meshes << {
+
+          mesh_stages << {
+            mesh_index: mesh_index,
             definition: mesh[:definition],
-            vertex_count: mesh[:positions].length / 3,
-            face_start: mesh_face_start,
-            face_count: faces.length - mesh_face_start,
-            edge_start: mesh_edge_start,
-            edge_count: edges.length - mesh_edge_start,
-            position_offset: position_offset,
-            position_length: position_length,
+            positions: mesh[:positions],
+            mesh_face_start: mesh_face_start,
+            mesh_face_count: faces.length - mesh_face_start,
+            mesh_edge_start: mesh_edge_start,
+            mesh_edge_count: edges.length - mesh_edge_start,
             topology_offset: topology_offset,
             topology_length: topology_length,
+            pos_owner: pos_owner,
+            pos_cands: pos_cands,
+            mesh_class: mesh_class,
+            uv_owner: uv_owner,
+            uv_cands: uv_cands
+          }
+        end
+
+        model_normal_class = BOMCGeometryPolicy.mesh_semantic_class(faces)
+        normal_tol = BOMCGeometryPolicy.normal_tolerance(profile: @profile_contract.name, semantic_class: model_normal_class)
+
+        norm_owner = :model_normals
+        norm_cands = find_provided_candidates(norm_owner, :normals)
+        unless norm_cands
+          cache_key = "normals:::" + BOMCExportCache::Cache.compute_key(source_digest: @source_digest, profile: @profile, semantic_class: model_normal_class)
+          norm_cands = @export_cache.fetch_candidates(cache_key) if @export_cache
+          unless norm_cands
+            norm_cands = BOMC::NormalCodec.candidate_objects(normals, max_error_deg: normal_tol, semantic_class: model_normal_class, forced_codec: forced_normal_codec, owner_id: norm_owner)
+            @export_cache.store_candidates(cache_key, norm_cands) if @export_cache
+          end
+        end
+
+        trans_owner = :model_transforms
+        trans_cands = find_provided_candidates(trans_owner, :transforms)
+        unless trans_cands
+          cache_key = "transforms:::" + BOMCExportCache::Cache.compute_key(source_digest: @source_digest, profile: @profile)
+          trans_cands = @export_cache.fetch_candidates(cache_key) if @export_cache
+          unless trans_cands
+            trans_cands = BOMC::TransformCodec.candidate_objects(@model[:transforms], forced_codec: forced_transform_codec, checkpoint: @checkpoint, owner_id: trans_owner)
+            @export_cache.store_candidates(cache_key, trans_cands) if @export_cache
+          end
+        end
+
+        all_candidate_groups = {}
+        mesh_stages.each do |st|
+          all_candidate_groups[st[:pos_owner]] = st[:pos_cands]
+          all_candidate_groups[st[:uv_owner]] = st[:uv_cands] if st[:uv_cands]
+        end
+        all_candidate_groups[norm_owner] = norm_cands
+        all_candidate_groups[trans_owner] = trans_cands
+
+        fixed_estimate = @topology_encoded_bytes + @texture_blob_bytes.bytesize
+
+        prepared = BOMCCandidate::PreparedCandidates.new(
+          source_digest: @source_digest,
+          profile: @profile,
+          policy_revision: BOMCExportCache::POLICY_REVISION,
+          candidate_groups: all_candidate_groups,
+          fixed_sections: SECTION_NAMES.values
+        )
+
+        solver_result = if @profile_contract.profile == :exact || @source_skp_bytes > 0
+                          begin
+                            BOMCBudgetSolver.solve(
+                              profile: @profile,
+                              profile_contract: @profile_contract,
+                              source_skp_bytes: @source_skp_bytes,
+                              candidate_groups: prepared,
+                              fixed_bytes_estimate: fixed_estimate
+                            )
+                          rescue BOMCBudgetSolver::BudgetNotFeasibleError => error
+                            unconstrained_selected = {}
+                            all_candidate_groups.each do |owner_id, cands|
+                              passing = cands.select(&:pass_hard_constraints?)
+                              passing = cands if passing.empty?
+                              unconstrained_selected[owner_id] = passing.min_by { |c| [c.stored_bytes_estimate, c.deterministic_rank] }
+                            end
+                            {
+                              status: :budget_not_feasible,
+                              profile: @profile_contract.name,
+                              hard_budget_bytes: error.details[:hard_budget_bytes],
+                              preferred_target_bytes: nil,
+                              preferred_target_achieved: false,
+                              diagnostic_reason: error.message,
+                              selected_candidates: unconstrained_selected,
+                              total_estimated_bytes: error.details[:achievable_bytes] || (fixed_estimate + unconstrained_selected.values.sum(&:stored_bytes_estimate)),
+                              audit_trail: error.details[:audit_trail] || []
+                            }
+                          end
+                        else
+                          unconstrained_selected = {}
+                          all_candidate_groups.each do |owner_id, cands|
+                            passing = cands.select(&:pass_hard_constraints?)
+                            passing = cands if passing.empty?
+                            unconstrained_selected[owner_id] = passing.min_by { |c| [c.stored_bytes_estimate, c.deterministic_rank] }
+                          end
+                          {
+                            status: :unconstrained,
+                            profile: @profile_contract.name,
+                            hard_budget_bytes: nil,
+                            preferred_target_bytes: nil,
+                            preferred_target_achieved: true,
+                            diagnostic_reason: 'Unconstrained: no positive source SKP byte size provided.',
+                            selected_candidates: unconstrained_selected,
+                            total_estimated_bytes: fixed_estimate + unconstrained_selected.values.sum(&:stored_bytes_estimate),
+                            audit_trail: [{ step: :unconstrained_best_compression, selected: unconstrained_selected.transform_values(&:id) }]
+                          }
+                        end
+        selected = solver_result[:selected_candidates]
+
+        position_stream = +''.b
+        uv_stream = +''.b
+        uv_block_count = 0
+        meshes = []
+
+        mesh_stages.each do |st|
+          selected_pos = selected[st[:pos_owner]] || selected[st[:pos_owner].to_sym] || selected[st[:pos_owner].to_s] || st[:pos_cands].first
+          record_geometry_frontier(selected_pos, domain: :positions, owner_id: "mesh_#{st[:mesh_index]}", semantic_class: st[:mesh_class], candidates: st[:pos_cands])
+          pos_block = pack_position_block(selected_pos)
+          pos_offset, pos_length = append_aligned(position_stream, pos_block)
+          @position_metrics << candidate_metric_hash(selected_pos)
+          notify(:encode_positions, st[:mesh_index] + 1, @model[:meshes].length)
+
+          uv_offset = 0
+          uv_length = 0
+          if st[:uv_cands]
+            selected_uv = selected[st[:uv_owner]] || selected[st[:uv_owner].to_sym] || selected[st[:uv_owner].to_s] || st[:uv_cands].first
+            record_geometry_frontier(selected_uv, domain: :uv, owner_id: "mesh_#{st[:mesh_index]}", semantic_class: st[:mesh_class], candidates: st[:uv_cands])
+            uv_block = pack_uv_block(selected_uv)
+            uv_offset, uv_length = append_aligned(uv_stream, uv_block)
+            @uv_metrics << candidate_metric_hash(selected_uv)
+            uv_block_count += 1
+          end
+          notify(:encode_uv, st[:mesh_index] + 1, @model[:meshes].length)
+
+          meshes << {
+            definition: st[:definition],
+            vertex_count: st[:positions].length / 3,
+            face_start: st[:mesh_face_start],
+            face_count: st[:mesh_face_count],
+            edge_start: st[:mesh_edge_start],
+            edge_count: st[:mesh_edge_count],
+            position_offset: pos_offset,
+            position_length: pos_length,
+            topology_offset: st[:topology_offset],
+            topology_length: st[:topology_length],
             uv_offset: uv_offset,
             uv_length: uv_length
           }
         end
+
+        selected_norm = selected[norm_owner] || selected[norm_owner.to_sym] || norm_cands.first
+        record_geometry_frontier(selected_norm, domain: :normals, owner_id: :model_normals, semantic_class: model_normal_class, candidates: norm_cands)
+        notify(:encode_normals, normals.length / 3, normals.length / 3)
+
+        selected_trans = selected[trans_owner] || selected[trans_owner.to_sym] || trans_cands.first
+        notify(:encode_transforms, @model[:transforms].length, @model[:transforms].length)
+
         {
           meshes: meshes,
           faces: faces,
@@ -599,7 +780,11 @@ module BOMEngine
           position_bytes: position_stream,
           topology_bytes: topology_stream,
           uv_bytes: uv_stream,
-          uv_block_count: uv_block_count
+          uv_block_count: uv_block_count,
+          normal_block: selected_norm,
+          transform_block: selected_trans,
+          prepared_candidates: prepared,
+          solver_result: solver_result
         }
       end
 
@@ -616,29 +801,94 @@ module BOMEngine
         bytes
       end
 
-      def record_geometry_frontier(block, domain:, owner_id:, semantic_class:)
-        candidates = BOMCGeometryPolicy.budget_candidates(
-          reports: block[:candidates],
-          domain: domain,
-          owner_id: owner_id,
-          profile: @profile_contract.name,
-          semantic_class: semantic_class
-        )
+      def record_geometry_frontier(chosen, domain:, owner_id:, semantic_class:, candidates: nil)
+        cand_list = if candidates
+                      candidates
+                    elsif chosen.is_a?(Hash) && chosen[:candidates]
+                      BOMCGeometryPolicy.budget_candidates(
+                        reports: chosen[:candidates],
+                        domain: domain,
+                        owner_id: owner_id,
+                        profile: @profile_contract.name,
+                        semantic_class: semantic_class
+                      )
+                    else
+                      []
+                    end
+
         frontier = BOMCBudgetSolver.pareto_frontier(
           profile: @profile_contract.name,
           profile_contract: @profile_contract,
-          candidates: candidates
+          candidates: cand_list
         )
-        selected = candidates.find do |candidate|
-          candidate.params[:codec] == block[:codec] && candidate.pass_hard_constraints?
-        end
+
+        selected = if chosen.respond_to?(:id) && chosen.id
+                     chosen
+                   elsif chosen.is_a?(Hash)
+                     cand_list.find { |candidate| (candidate.params[:codec] == chosen[:codec] || candidate.codec == chosen[:codec]) && candidate.pass_hard_constraints? }
+                   else
+                     cand_list.first
+                   end
+        selected_id = selected && selected.respond_to?(:id) ? selected.id : nil
+        pareto_ids = frontier.map(&:id)
+        pareto_ids << selected_id if selected_id && !pareto_ids.include?(selected_id)
+
         @geometry_candidate_frontiers.fetch(domain) << {
           owner_id: owner_id,
           semantic_class: semantic_class,
-          candidates: candidates.map(&:to_h),
-          pareto_candidate_ids: frontier.map(&:id),
-          selected_candidate_id: selected && selected.id
+          candidates: cand_list.map { |c| c.respond_to?(:to_h) ? c.to_h : c },
+          pareto_candidate_ids: pareto_ids,
+          selected_candidate_id: selected_id
         }
+      end
+
+      def find_provided_candidates(owner_id, domain = nil, mesh_index = nil)
+        return nil unless @candidate_groups_input
+
+        groups = if @candidate_groups_input.respond_to?(:candidate_groups)
+                   @candidate_groups_input.candidate_groups
+                 elsif @candidate_groups_input.is_a?(Array)
+                   @candidate_groups_input.each_with_object({}) do |entry, h|
+                     if entry.is_a?(Hash)
+                       h[entry[:owner_id] || entry['owner_id']] = entry[:candidates] || entry['candidates']
+                     end
+                   end
+                 elsif @candidate_groups_input.is_a?(Hash)
+                   @candidate_groups_input
+                 else
+                   nil
+                 end
+
+        return nil unless groups
+
+        candidates = groups[owner_id] || groups[owner_id.to_s] || groups[owner_id.to_sym]
+        return candidates if candidates && !candidates.empty?
+
+        if mesh_index
+          candidates = groups["mesh_#{mesh_index}"] || groups[:"mesh_#{mesh_index}"] || groups[mesh_index]
+          return candidates if candidates && !candidates.empty?
+        end
+
+        if domain
+          candidates = groups[domain.to_s] || groups[domain.to_sym]
+          return candidates if candidates && !candidates.empty?
+        end
+
+        nil
+      end
+
+      def candidate_metric_hash(cand)
+        if cand.is_a?(Hash)
+          cand.reject { |k, _| k == :bytes }
+        else
+          {
+            id: cand.id,
+            codec: cand.codec,
+            errors: cand.error_report || {},
+            stored_bytes_estimate: cand.stored_bytes_estimate,
+            params: cand.params
+          }
+        end
       end
 
       def build_faces_section(faces)
@@ -1028,17 +1278,43 @@ module BOMEngine
       end
 
       def pack_position_block(block)
-        header = [1, block[:codec], 0, 0, block[:count], block[:bytes].bytesize].pack('CCCCVV')
-        header + Array(block[:origin]).pack('E*') + Array(block[:scale]).pack('E*') + block[:bytes]
+        codec = block.is_a?(Hash) ? block[:codec] : block.codec
+        count = block.is_a?(Hash) ? block[:count] : (block.params[:count] || block.params['count'])
+        bytes = block.is_a?(Hash) ? block[:bytes] : block.bytes
+        origin = block.is_a?(Hash) ? block[:origin] : (block.params[:origin] || block.params['origin'])
+        scale = block.is_a?(Hash) ? block[:scale] : (block.params[:scale] || block.params['scale'])
+
+        origin_arr = Array(origin).map(&:to_f)
+        origin_arr += [0.0] * (3 - origin_arr.length) if origin_arr.length < 3
+        scale_arr = Array(scale).map(&:to_f)
+        scale_arr += [1.0] * (3 - scale_arr.length) if scale_arr.length < 3
+
+        header = [1, Integer(codec), 0, 0, Integer(count || 0), bytes.bytesize].pack('CCCCVV')
+        header + origin_arr.pack('E3') + scale_arr.pack('E3') + bytes
       end
 
       def pack_uv_block(block)
-        header = [1, block[:codec], 0, 0, block[:count], block[:bytes].bytesize].pack('CCCCVV')
-        header + Array(block[:origin]).pack('E*') + Array(block[:scale]).pack('E*') + block[:bytes]
+        codec = block.is_a?(Hash) ? block[:codec] : block.codec
+        count = block.is_a?(Hash) ? block[:count] : (block.params[:count] || block.params['count'])
+        bytes = block.is_a?(Hash) ? block[:bytes] : block.bytes
+        origin = block.is_a?(Hash) ? block[:origin] : (block.params[:origin] || block.params['origin'])
+        scale = block.is_a?(Hash) ? block[:scale] : (block.params[:scale] || block.params['scale'])
+
+        origin_arr = Array(origin).map(&:to_f)
+        origin_arr += [0.0] * (2 - origin_arr.length) if origin_arr.length < 2
+        scale_arr = Array(scale).map(&:to_f)
+        scale_arr += [1.0] * (2 - scale_arr.length) if scale_arr.length < 2
+
+        header = [1, Integer(codec), 0, 0, Integer(count || 0), bytes.bytesize].pack('CCCCVV')
+        header + origin_arr.pack('E2') + scale_arr.pack('E2') + bytes
       end
 
       def pack_codec_section(block)
-        [1, block[:codec], 0, 0, block[:count], block[:bytes].bytesize].pack('CCCCVV') + block[:bytes]
+        codec = block.is_a?(Hash) ? block[:codec] : block.codec
+        count = block.is_a?(Hash) ? block[:count] : (block.params[:count] || block.params['count'])
+        bytes = block.is_a?(Hash) ? block[:bytes] : block.bytes
+
+        [1, Integer(codec), 0, 0, Integer(count || 0), bytes.bytesize].pack('CCCCVV') + bytes
       end
 
       def pack_topology_block(loop_indices, triangle_indices)

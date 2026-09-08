@@ -27,6 +27,15 @@ module BOMEngine
       @configured_binary_path
     end
 
+    def trusted_external_sha256=(sha)
+      @trusted_external_sha256 = sha
+      @cached_capabilities = nil
+    end
+
+    def trusted_external_sha256
+      @trusted_external_sha256
+    end
+
     def bundled_binary_path
       base = File.expand_path('bin', __dir__)
       if Gem.win_platform?
@@ -78,7 +87,15 @@ module BOMEngine
       version_str = probe_version(path)
       sha256_hex = Digest::SHA256.file(path).hexdigest rescue nil
       source = binary_source(path)
-      verified = source == :bundled && sha256_hex == BUNDLED_CWEBP_SHA256
+      trusted_sha = ENV['SIBAMBO_CWEBP_TRUSTED_SHA256'] || @trusted_external_sha256
+      verified = if source == :bundled
+                   sha256_hex == BUNDLED_CWEBP_SHA256
+                 elsif trusted_sha
+                   sha256_hex == trusted_sha
+                 else
+                   false
+                 end
+
       if source == :bundled && !verified
         @cached_capabilities = {
           available: false,
@@ -92,6 +109,23 @@ module BOMEngine
           verified: false,
           source: source,
           status: :checksum_mismatch
+        }.freeze
+        return @cached_capabilities
+      end
+
+      if source != :bundled && trusted_sha && !verified
+        @cached_capabilities = {
+          available: false,
+          webp: false,
+          webp_alpha: false,
+          webp_lossless: false,
+          encoder_name: 'libwebp/cwebp',
+          version: version_str || 'unknown',
+          binary_path: path,
+          sha256: sha256_hex,
+          verified: false,
+          source: source,
+          status: :external_trust_verification_failed
         }.freeze
         return @cached_capabilities
       end

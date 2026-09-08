@@ -2,6 +2,7 @@
 
 require 'zlib'
 require_relative 'bomc_format'
+require_relative 'bomc_candidate'
 
 module BOMEngine
   module BOMC
@@ -63,24 +64,31 @@ module BOMEngine
 
       module_function
 
-      def encode(values, loops: [], max_error_m: MAX_ERROR_M, semantic_class: nil, forced_codec: nil)
+      def evaluated_candidates(values, loops: [], max_error_m: MAX_ERROR_M, semantic_class: nil, forced_codec: nil)
         source = Array(values).map(&:to_f)
         raise ArgumentError, 'Position buffer must contain XYZ triples.' unless (source.length % 3).zero?
         CodecMath.finite_values!(source, 'Position buffer')
 
+        count = source.length / 3
         if forced_codec == FLOAT64_ABSOLUTE || max_error_m.to_f == 0.0
           float64_bytes = source.pack('E*')
-          return {
-            codec: FLOAT64_ABSOLUTE,
-            bytes: float64_bytes,
-            origin: [0.0, 0.0, 0.0],
-            scale: [0.0, 0.0, 0.0],
-            errors: { max: 0.0, p95: 0.0, rms: 0.0 },
-            count: source.length / 3,
-            candidates: [
-              { name: 'float64_absolute', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true, semantic_class: semantic_class }
-            ]
-          }
+          return [
+            {
+              name: 'float64_absolute',
+              codec: FLOAT64_ABSOLUTE,
+              bytes: float64_bytes,
+              origin: [0.0, 0.0, 0.0],
+              scale: [0.0, 0.0, 0.0],
+              errors: { max: 0.0, p95: 0.0, rms: 0.0 },
+              area_max_error_m2: 0.0,
+              passed: true,
+              raw_bytes: float64_bytes.bytesize,
+              deflate_bytes: CodecMath.compressed_size(float64_bytes),
+              complexity: 0,
+              semantic_class: semantic_class,
+              count: count
+            }
+          ]
         end
 
         minimum, maximum = bounds(source, 3)
@@ -90,7 +98,7 @@ module BOMEngine
         candidates << candidate(
           'float64_absolute', FLOAT64_ABSOLUTE, source.pack('E*'), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
           source, source, loops, max_error_m, 0, semantic_class
-        )
+        ).merge(count: count)
 
         local_values = source.each_with_index.map { |value, index| value - minimum[index % 3] }
         float32_bytes = local_values.pack('e*')
@@ -98,19 +106,19 @@ module BOMEngine
         candidates << candidate(
           'float32_local', FLOAT32_LOCAL, float32_bytes, minimum, [0.0, 0.0, 0.0],
           source, float32_decoded, loops, max_error_m, 1, semantic_class
-        )
+        ).merge(count: count)
 
         int32 = quantized_candidate(source, center, 2_147_483_647, 'l<*')
         candidates << candidate(
           'int32_quantized', INT32_QUANTIZED, int32[:bytes], center, int32[:scale],
           source, int32[:decoded], loops, max_error_m, 3, semantic_class
-        ).merge(integers: int32[:integers], integer_bits: 32)
+        ).merge(integers: int32[:integers], integer_bits: 32, count: count)
 
         int16 = quantized_candidate(source, center, 32_767, 's<*')
         candidates << candidate(
           'int16_quantized', INT16_QUANTIZED, int16[:bytes], center, int16[:scale],
           source, int16[:decoded], loops, max_error_m, 2, semantic_class
-        ).merge(integers: int16[:integers], integer_bits: 16)
+        ).merge(integers: int16[:integers], integer_bits: 16, count: count)
 
         delta_source = candidates[-1][:passed] ? int16 : int32
         previous = 0
@@ -122,12 +130,51 @@ module BOMEngine
         delta = candidate(
           'delta_varint', DELTA_VARINT, delta_bytes, center, delta_source[:scale],
           source, delta_source[:decoded], loops, max_error_m, 4, semantic_class
-        )
+        ).merge(count: count)
         delta[:integer_bits] = delta_source.equal?(int16) ? 16 : 32
         candidates << delta
+        candidates
+      end
 
+      def candidate_objects(values, loops: [], max_error_m: MAX_ERROR_M, semantic_class: nil, forced_codec: nil, owner_id: nil)
+        evaluated = evaluated_candidates(values, loops: loops, max_error_m: max_error_m, semantic_class: semantic_class, forced_codec: forced_codec)
+        owner = owner_id || :mesh_positions
+        evaluated.map do |c|
+          BOMCCandidate::Candidate.new(
+            id: :"positions_#{owner}_#{c[:name]}",
+            domain: :positions,
+            owner_id: owner,
+            stored_bytes_estimate: c[:deflate_bytes],
+            stored_size_estimate: c[:deflate_bytes],
+            distortion_score: c[:errors][:max].to_f,
+            hard_constraints_passed: c[:passed],
+            bytes: c[:bytes],
+            codec: c[:codec],
+            error_report: c[:errors],
+            quality_evidence: {
+              semantic_class: semantic_class,
+              max_area_error_m2: c[:area_max_error_m2].to_f,
+              max_position_error_m: c[:errors][:max].to_f,
+              semantic_distortion: 0.0,
+              protected_topology_distortion: 0.0
+            },
+            deterministic_rank: c[:complexity],
+            params: {
+              codec: c[:codec],
+              origin: c[:origin],
+              scale: c[:scale],
+              count: c[:count],
+              candidate_name: c[:name],
+              raw_bytes: c[:raw_bytes]
+            }
+          )
+        end
+      end
+
+      def encode(values, loops: [], max_error_m: MAX_ERROR_M, semantic_class: nil, forced_codec: nil)
+        candidates = evaluated_candidates(values, loops: loops, max_error_m: max_error_m, semantic_class: semantic_class, forced_codec: forced_codec)
         selected = select_candidate(candidates)
-        selected.merge(candidates: candidate_reports(candidates), count: source.length / 3)
+        selected.merge(candidates: candidate_reports(candidates), count: candidates[0][:count])
       end
 
       def decode(block)
@@ -285,34 +332,39 @@ module BOMEngine
 
       module_function
 
-      def encode(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, semantic_class: nil, forced_codec: nil)
+      def evaluated_candidates(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, semantic_class: nil, forced_codec: nil)
         source = Array(values).map(&:to_f)
         raise ArgumentError, 'Normal buffer must contain XYZ triples.' unless (source.length % 3).zero?
         CodecMath.finite_values!(source, 'Normal buffer')
 
+        count = source.length / 3
         if forced_codec == FLOAT64 || max_error_deg.to_f == 0.0
           float64_bytes = source.pack('E*')
-          return {
-            codec: FLOAT64,
-            bytes: float64_bytes,
-            count: source.length / 3,
-            errors: { max: 0.0, p95: 0.0, rms: 0.0 },
-            candidates: [
-              { name: 'float64x3', codec: FLOAT64, raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true, semantic_class: semantic_class }
-            ]
-          }
+          return [
+            {
+              name: 'float64x3',
+              codec: FLOAT64,
+              bytes: float64_bytes,
+              raw_bytes: float64_bytes.bytesize,
+              deflate_bytes: CodecMath.compressed_size(float64_bytes),
+              errors: { max: 0.0, p95: 0.0, rms: 0.0 },
+              passed: true,
+              semantic_class: semantic_class,
+              complexity: 0,
+              count: count
+            }
+          ]
         end
 
         float_bytes = source.pack('e*')
         float_decoded = float_bytes.unpack('e*')
         float_errors = angular_errors(source, float_decoded)
+        float_summary = CodecMath.error_summary(float_errors)
 
         oct_values = []
         source.each_slice(3) do |normal|
           unit = CodecMath.normalize(normal)
           if unit.nil?
-            # -32768 is outside the valid octahedral quantization range
-            # (-32767..32767), so this pair losslessly represents a zero normal.
             oct_values.concat([-32_768, -32_768])
           else
             x, y = oct_project(unit)
@@ -321,25 +373,83 @@ module BOMEngine
           end
         end
         oct_bytes = oct_values.pack('s<*')
-        oct_block = { codec: OCT16, bytes: oct_bytes, count: source.length / 3 }
+        oct_block = { codec: OCT16, bytes: oct_bytes, count: count }
         oct_decoded = decode(oct_block)
         oct_errors = angular_errors(source, oct_decoded)
         oct_summary = CodecMath.error_summary(oct_errors)
-        float_summary = CodecMath.error_summary(float_errors)
         use_oct = oct_summary[:max] <= max_error_deg.to_f + 1.0e-12
-        selected_codec = use_oct ? OCT16 : FLOAT32
-        selected_bytes = use_oct ? oct_bytes : float_bytes
-        selected_errors = use_oct ? oct_summary : float_summary
 
+        [
+          {
+            name: 'float32x3',
+            codec: FLOAT32,
+            bytes: float_bytes,
+            raw_bytes: float_bytes.bytesize,
+            deflate_bytes: CodecMath.compressed_size(float_bytes),
+            errors: float_summary,
+            passed: float_summary[:max] <= max_error_deg.to_f + 1.0e-12,
+            semantic_class: semantic_class,
+            complexity: 1,
+            count: count
+          },
+          {
+            name: 'oct16x2',
+            codec: OCT16,
+            bytes: oct_bytes,
+            raw_bytes: oct_bytes.bytesize,
+            deflate_bytes: CodecMath.compressed_size(oct_bytes),
+            errors: oct_summary,
+            passed: use_oct,
+            semantic_class: semantic_class,
+            complexity: 2,
+            count: count
+          }
+        ]
+      end
+
+      def candidate_objects(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, semantic_class: nil, forced_codec: nil, owner_id: nil)
+        evaluated = evaluated_candidates(values, max_error_deg: max_error_deg, semantic_class: semantic_class, forced_codec: forced_codec)
+        owner = owner_id || :model_normals
+        evaluated.map do |c|
+          BOMCCandidate::Candidate.new(
+            id: :"normals_#{owner}_#{c[:name]}",
+            domain: :normals,
+            owner_id: owner,
+            stored_bytes_estimate: c[:deflate_bytes],
+            stored_size_estimate: c[:deflate_bytes],
+            distortion_score: c[:errors][:max].to_f,
+            hard_constraints_passed: c[:passed],
+            bytes: c[:bytes],
+            codec: c[:codec],
+            error_report: c[:errors],
+            quality_evidence: {
+              semantic_class: semantic_class,
+              max_normal_error_deg: c[:errors][:max].to_f,
+              semantic_distortion: 0.0,
+              protected_topology_distortion: 0.0
+            },
+            deterministic_rank: c[:complexity],
+            params: {
+              codec: c[:codec],
+              count: c[:count],
+              candidate_name: c[:name],
+              raw_bytes: c[:raw_bytes]
+            }
+          )
+        end
+      end
+
+      def encode(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, semantic_class: nil, forced_codec: nil)
+        cands = evaluated_candidates(values, max_error_deg: max_error_deg, semantic_class: semantic_class, forced_codec: forced_codec)
+        selected = cands.find { |c| c[:name] == 'oct16x2' && c[:passed] } || cands.find { |c| c[:passed] } || cands.first
         {
-          codec: selected_codec,
-          bytes: selected_bytes,
-          count: source.length / 3,
-          errors: selected_errors,
-          candidates: [
-            { name: 'float32x3', codec: FLOAT32, raw_bytes: float_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float_bytes), errors: float_summary, passed: float_summary[:max] <= max_error_deg.to_f, semantic_class: semantic_class },
-            { name: 'oct16x2', codec: OCT16, raw_bytes: oct_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(oct_bytes), errors: oct_summary, passed: use_oct, semantic_class: semantic_class }
-          ]
+          codec: selected[:codec],
+          bytes: selected[:bytes],
+          count: selected[:count],
+          errors: selected[:errors],
+          candidates: cands.map do |c|
+            { name: c[:name], codec: c[:codec], raw_bytes: c[:raw_bytes], deflate_bytes: c[:deflate_bytes], errors: c[:errors], passed: c[:passed], semantic_class: c[:semantic_class] }
+          end
         }
       end
 
@@ -422,34 +532,40 @@ module BOMEngine
 
       module_function
 
-      def encode(values, max_error: MAX_ERROR, semantic_class: nil, forced_codec: nil)
+      def evaluated_candidates(values, max_error: MAX_ERROR, semantic_class: nil, forced_codec: nil)
         source = Array(values).map(&:to_f)
         raise ArgumentError, 'UV buffer must contain pairs.' unless (source.length % 2).zero?
         CodecMath.finite_values!(source, 'UV buffer')
 
+        count = source.length / 2
         if forced_codec == FLOAT64 || max_error.to_f == 0.0
           float64_bytes = source.pack('E*')
-          return {
-            codec: FLOAT64,
-            bytes: float64_bytes,
-            origin: [0.0, 0.0],
-            scale: [0.0, 0.0],
-            errors: { max: 0.0, p95: 0.0, rms: 0.0 },
-            count: source.length / 2,
-            candidates: [
-              { name: 'float64', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true, semantic_class: semantic_class }
-            ]
-          }
+          return [
+            {
+              name: 'float64',
+              codec: FLOAT64,
+              bytes: float64_bytes,
+              origin: [0.0, 0.0],
+              scale: [0.0, 0.0],
+              errors: { max: 0.0, p95: 0.0, rms: 0.0 },
+              passed: true,
+              raw_bytes: float64_bytes.bytesize,
+              deflate_bytes: CodecMath.compressed_size(float64_bytes),
+              complexity: 4,
+              semantic_class: semantic_class,
+              count: count
+            }
+          ]
         end
 
         candidates = []
         float32_bytes = source.pack('e*')
-        candidates << uv_candidate('float32', FLOAT32, float32_bytes, [0.0, 0.0], [0.0, 0.0], source, float32_bytes.unpack('e*'), max_error, 0, semantic_class)
+        candidates << uv_candidate('float32', FLOAT32, float32_bytes, [0.0, 0.0], [0.0, 0.0], source, float32_bytes.unpack('e*'), max_error, 0, semantic_class).merge(count: count)
 
         half_values = source.map { |value| float_to_half(value) }
         half_bytes = half_values.pack('S<*')
         half_decoded = half_values.map { |value| half_to_float(value) }
-        candidates << uv_candidate('float16', FLOAT16, half_bytes, [0.0, 0.0], [0.0, 0.0], source, half_decoded, max_error, 2, semantic_class)
+        candidates << uv_candidate('float16', FLOAT16, half_bytes, [0.0, 0.0], [0.0, 0.0], source, half_decoded, max_error, 2, semantic_class).merge(count: count)
 
         minimum, maximum = uv_bounds(source)
         center = 2.times.map { |axis| (minimum[axis] + maximum[axis]) * 0.5 }
@@ -463,7 +579,7 @@ module BOMEngine
         end
         quantized_bytes = integers.pack('s<*')
         quantized_decoded = uv_dequantize(integers, center, scale)
-        candidates << uv_candidate('int16_quantized', INT16_QUANTIZED, quantized_bytes, center, scale, source, quantized_decoded, max_error, 1, semantic_class)
+        candidates << uv_candidate('int16_quantized', INT16_QUANTIZED, quantized_bytes, center, scale, source, quantized_decoded, max_error, 1, semantic_class).merge(count: count)
 
         previous = 0
         delta_bytes = integers.map do |integer|
@@ -471,16 +587,54 @@ module BOMEngine
           previous = integer
           Binary.write_zigzag(delta)
         end.join.b
-        candidates << uv_candidate('delta_varint', DELTA_VARINT, delta_bytes, center, scale, source, quantized_decoded, max_error, 3, semantic_class)
+        candidates << uv_candidate('delta_varint', DELTA_VARINT, delta_bytes, center, scale, source, quantized_decoded, max_error, 3, semantic_class).merge(count: count)
 
         float64_bytes = source.pack('E*')
-        candidates << uv_candidate('float64', FLOAT64, float64_bytes, [0.0, 0.0], [0.0, 0.0], source, source, max_error, 4, semantic_class)
+        candidates << uv_candidate('float64', FLOAT64, float64_bytes, [0.0, 0.0], [0.0, 0.0], source, source, max_error, 4, semantic_class).merge(count: count)
+        candidates
+      end
 
+      def candidate_objects(values, max_error: MAX_ERROR, semantic_class: nil, forced_codec: nil, owner_id: nil)
+        evaluated = evaluated_candidates(values, max_error: max_error, semantic_class: semantic_class, forced_codec: forced_codec)
+        owner = owner_id || :mesh_uv
+        evaluated.map do |c|
+          BOMCCandidate::Candidate.new(
+            id: :"uv_#{owner}_#{c[:name]}",
+            domain: :uv,
+            owner_id: owner,
+            stored_bytes_estimate: c[:deflate_bytes],
+            stored_size_estimate: c[:deflate_bytes],
+            distortion_score: c[:errors][:max].to_f,
+            hard_constraints_passed: c[:passed],
+            bytes: c[:bytes],
+            codec: c[:codec],
+            error_report: c[:errors],
+            quality_evidence: {
+              semantic_class: semantic_class,
+              max_uv_error: c[:errors][:max].to_f,
+              semantic_distortion: 0.0,
+              protected_topology_distortion: 0.0
+            },
+            deterministic_rank: c[:complexity],
+            params: {
+              codec: c[:codec],
+              origin: c[:origin],
+              scale: c[:scale],
+              count: c[:count],
+              candidate_name: c[:name],
+              raw_bytes: c[:raw_bytes]
+            }
+          )
+        end
+      end
+
+      def encode(values, max_error: MAX_ERROR, semantic_class: nil, forced_codec: nil)
+        candidates = evaluated_candidates(values, max_error: max_error, semantic_class: semantic_class, forced_codec: forced_codec)
         passing = candidates.select { |item| item[:passed] }
         raise 'No UV codec passed the error gate.' if passing.empty?
         selected = passing.min_by { |item| [item[:deflate_bytes], item[:complexity]] }
         result = selected.reject { |key, _value| [:name, :passed, :raw_bytes, :deflate_bytes, :complexity].include?(key) }
-        result[:count] = source.length / 2
+        result[:count] = candidates[0][:count]
         result[:candidates] = candidates.map do |item|
           item.reject { |key, _value| [:bytes, :origin, :scale, :complexity].include?(key) }
         end
@@ -604,43 +758,48 @@ module BOMEngine
 
       module_function
 
-      def encode(values, max_error: MAX_ERROR, forced_codec: nil, checkpoint: nil)
+      def evaluated_candidates(values, max_error: MAX_ERROR, forced_codec: nil, checkpoint: nil)
         transforms = normalize_transforms(values, checkpoint)
         CodecMath.finite_values!(transforms.flatten, 'Transform buffer')
 
+        count = transforms.length
         if forced_codec == FLOAT64_3X4 || max_error.to_f == 0.0
           float64_bytes = checkpoint_map(transforms, checkpoint) { |matrix| affine(matrix).pack('E*') }.join.b
-          return {
-            codec: FLOAT64_3X4,
-            bytes: float64_bytes,
-            count: transforms.length,
-            errors: { max: 0.0, p95: 0.0, rms: 0.0 },
-            candidates: [
-              { name: 'float64_3x4', raw_bytes: float64_bytes.bytesize, deflate_bytes: CodecMath.compressed_size(float64_bytes), errors: { max: 0.0, p95: 0.0, rms: 0.0 }, passed: true }
-            ]
-          }
+          return [
+            {
+              name: 'float64_3x4',
+              codec: FLOAT64_3X4,
+              bytes: float64_bytes,
+              raw_bytes: float64_bytes.bytesize,
+              deflate_bytes: CodecMath.compressed_size(float64_bytes),
+              errors: { max: 0.0, p95: 0.0, rms: 0.0 },
+              passed: true,
+              complexity: 0,
+              count: count
+            }
+          ]
         end
 
         candidates = []
 
         float64_bytes = checkpoint_map(transforms, checkpoint) { |matrix| affine(matrix).pack('E*') }.join.b
-        candidates << transform_candidate('float64_3x4', FLOAT64_3X4, float64_bytes, transforms, decode_mode(FLOAT64_3X4, float64_bytes, transforms.length, checkpoint), max_error, 0, checkpoint)
+        candidates << transform_candidate('float64_3x4', FLOAT64_3X4, float64_bytes, transforms, decode_mode(FLOAT64_3X4, float64_bytes, transforms.length, checkpoint), max_error, 0, checkpoint).merge(count: count)
 
         float32_bytes = checkpoint_map(transforms, checkpoint) { |matrix| affine(matrix).pack('e*') }.join.b
-        candidates << transform_candidate('float32_3x4', FLOAT32_3X4, float32_bytes, transforms, decode_mode(FLOAT32_3X4, float32_bytes, transforms.length, checkpoint), max_error, 1, checkpoint)
+        candidates << transform_candidate('float32_3x4', FLOAT32_3X4, float32_bytes, transforms, decode_mode(FLOAT32_3X4, float32_bytes, transforms.length, checkpoint), max_error, 1, checkpoint).merge(count: count)
 
         decomposed = checkpoint_map(transforms, checkpoint) { |matrix| decompose(matrix) }
         if decomposed.all?
           decomposed_float_bytes = checkpoint_map(decomposed, checkpoint) { |parts| (parts[:translation] + parts[:quaternion] + parts[:scale]).pack('e*') }.join.b
           decomposed_float_decoded = decode_mode(DECOMPOSED_FLOAT32, decomposed_float_bytes, transforms.length, checkpoint)
-          candidates << transform_candidate('decomposed_float32', DECOMPOSED_FLOAT32, decomposed_float_bytes, transforms, decomposed_float_decoded, max_error, 3, checkpoint)
+          candidates << transform_candidate('decomposed_float32', DECOMPOSED_FLOAT32, decomposed_float_bytes, transforms, decomposed_float_decoded, max_error, 3, checkpoint).merge(count: count)
 
           quantized_bytes = checkpoint_map(decomposed, checkpoint) { |parts| pack_quantized_parts(parts) }.join.b
           quantized_decoded = decode_mode(DECOMPOSED_QUANTIZED, quantized_bytes, transforms.length, checkpoint)
-          candidates << transform_candidate('decomposed_quantized', DECOMPOSED_QUANTIZED, quantized_bytes, transforms, quantized_decoded, max_error, 2, checkpoint)
+          candidates << transform_candidate('decomposed_quantized', DECOMPOSED_QUANTIZED, quantized_bytes, transforms, quantized_decoded, max_error, 2, checkpoint).merge(count: count)
         else
-          candidates << failed_transform_candidate('decomposed_float32', DECOMPOSED_FLOAT32)
-          candidates << failed_transform_candidate('decomposed_quantized', DECOMPOSED_QUANTIZED)
+          candidates << failed_transform_candidate('decomposed_float32', DECOMPOSED_FLOAT32).merge(count: count)
+          candidates << failed_transform_candidate('decomposed_quantized', DECOMPOSED_QUANTIZED).merge(count: count)
         end
 
         hybrid_bytes = +''.b
@@ -671,13 +830,48 @@ module BOMEngine
           end
         end
         hybrid_decoded = decode_mode(HYBRID, hybrid_bytes, transforms.length, checkpoint)
-        candidates << transform_candidate('hybrid', HYBRID, hybrid_bytes, transforms, hybrid_decoded, max_error, 4, checkpoint)
+        candidates << transform_candidate('hybrid', HYBRID, hybrid_bytes, transforms, hybrid_decoded, max_error, 4, checkpoint).merge(count: count)
+        candidates
+      end
 
+      def candidate_objects(values, max_error: MAX_ERROR, forced_codec: nil, owner_id: nil, checkpoint: nil)
+        evaluated = evaluated_candidates(values, max_error: max_error, forced_codec: forced_codec, checkpoint: checkpoint)
+        owner = owner_id || :model_transforms
+        evaluated.map do |c|
+          BOMCCandidate::Candidate.new(
+            id: :"transforms_#{owner}_#{c[:name]}",
+            domain: :transforms,
+            owner_id: owner,
+            stored_bytes_estimate: c[:deflate_bytes] || c[:raw_bytes] || 0,
+            stored_size_estimate: c[:deflate_bytes] || c[:raw_bytes] || 0,
+            distortion_score: c[:errors] ? c[:errors][:max].to_f : 1.0,
+            hard_constraints_passed: !!c[:passed],
+            bytes: c[:bytes],
+            codec: c[:codec],
+            error_report: c[:errors] || {},
+            quality_evidence: {
+              max_transform_error: c[:errors] ? c[:errors][:max].to_f : 1.0,
+              semantic_distortion: 0.0,
+              protected_topology_distortion: 0.0
+            },
+            deterministic_rank: c[:complexity] || 0,
+            params: {
+              codec: c[:codec],
+              count: c[:count],
+              candidate_name: c[:name],
+              raw_bytes: c[:raw_bytes]
+            }
+          )
+        end
+      end
+
+      def encode(values, max_error: MAX_ERROR, forced_codec: nil, checkpoint: nil)
+        candidates = evaluated_candidates(values, max_error: max_error, forced_codec: forced_codec, checkpoint: checkpoint)
         passing = candidates.select { |item| item[:passed] }
         raise 'No transform codec passed the error gate.' if passing.empty?
         selected = passing.min_by { |item| [item[:deflate_bytes], item[:complexity]] }
         result = selected.reject { |key, _value| [:name, :passed, :raw_bytes, :deflate_bytes, :complexity].include?(key) }
-        result[:count] = transforms.length
+        result[:count] = candidates[0][:count]
         result[:candidates] = candidates.map do |item|
           item.reject { |key, _value| [:bytes, :complexity].include?(key) }
         end

@@ -153,4 +153,96 @@ class TestBOMCBudgetSolver < Test::Unit::TestCase
     assert_equal res1[:selected_candidates].transform_values(&:id), res2[:selected_candidates].transform_values(&:id)
     assert_equal res1[:total_estimated_bytes], res2[:total_estimated_bytes]
   end
+
+  def test_prepared_candidates_record_integration
+    c1 = BOMEngine::BOMCCandidate::Candidate.new(
+      id: :c1,
+      domain: :positions,
+      owner_id: :mesh_0,
+      stored_bytes_estimate: 80,
+      distortion_score: 0.01,
+      bytes: "candidate_1_bytes",
+      codec: 1
+    )
+    c2 = BOMEngine::BOMCCandidate::Candidate.new(
+      id: :c2,
+      domain: :positions,
+      owner_id: :mesh_0,
+      stored_bytes_estimate: 50,
+      distortion_score: 0.05,
+      bytes: "candidate_2_bytes",
+      codec: 2
+    )
+
+    prepared = BOMEngine::BOMCCandidate::PreparedCandidates.new(
+      source_digest: 'abc123digest',
+      profile: :visual,
+      policy_revision: '2026.09.08.1',
+      candidate_groups: { mesh_0: [c1, c2] },
+      fixed_sections: [1, 2, 3]
+    )
+
+    assert_equal 'abc123digest', prepared.source_digest
+    assert_equal :visual, prepared.profile
+    assert_equal '2026.09.08.1', prepared.policy_revision
+    assert_equal 1, prepared.candidate_groups.length
+
+    result = BOMEngine::BOMCBudgetSolver.solve(
+      profile: :visual,
+      source_skp_bytes: 100,
+      candidate_groups: prepared
+    )
+
+    assert_equal :budget_passed, result[:status]
+    assert_equal :c2, result[:selected_candidates][:mesh_0].id
+    assert_equal "candidate_2_bytes", result[:selected_candidates][:mesh_0].bytes
+    assert_equal 2, result[:selected_candidates][:mesh_0].codec
+    assert_equal true, result[:preferred_target_achieved]
+    assert_nil result[:diagnostic_reason]
+  end
+
+  def test_visual_soft_target_fallback_with_diagnostic
+    # 100 source => preferred 60%, hard 90%.
+    # Only candidate 75 is available: passes hard budget (<=90), but fails soft target (60%).
+    c75 = BOMEngine::BOMCCandidate::Candidate.new(
+      id: :c75,
+      domain: :positions,
+      owner_id: :mesh_0,
+      stored_bytes_estimate: 75,
+      distortion_score: 0.02
+    )
+    result = BOMEngine::BOMCBudgetSolver.solve(
+      profile: :visual,
+      source_skp_bytes: 100,
+      candidate_groups: { mesh_0: [c75] }
+    )
+
+    assert_equal :budget_passed, result[:status]
+    assert_equal :c75, result[:selected_candidates][:mesh_0].id
+    assert_equal 75, result[:total_estimated_bytes]
+    assert_equal false, result[:preferred_target_achieved]
+    assert_not_nil result[:diagnostic_reason]
+    assert_match(/Preferred target of 60%/, result[:diagnostic_reason])
+    assert_match(/Reason: candidate frontier exhausted/, result[:diagnostic_reason])
+  end
+
+  def test_research_does_not_violate_tolerance_to_meet_budget
+    # Research profile requires max position error 0.0005m.
+    # Candidate 80 has error 0.0008m (violates tolerance)
+    c_violator = BOMEngine::BOMCCandidate::Candidate.new(
+      id: :c_violator,
+      domain: :positions,
+      owner_id: :mesh_0,
+      stored_bytes_estimate: 80,
+      distortion_score: 0.0008,
+      quality_evidence: { max_position_error_m: 0.0008 }
+    )
+    assert_raise(BOMEngine::BOMCBudgetSolver::FidelityConstraintViolationError) do
+      BOMEngine::BOMCBudgetSolver.solve(
+        profile: :research,
+        source_skp_bytes: 100,
+        candidate_groups: { mesh_0: [c_violator] }
+      )
+    end
+  end
 end

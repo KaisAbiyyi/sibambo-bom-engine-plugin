@@ -174,6 +174,47 @@ class TestBOMCTextureEncoder < Test::Unit::TestCase
     end
   end
 
+  def test_external_binary_trust_verification
+    Dir.mktmpdir('mock-external') do |dir|
+      mock_script = File.join(dir, 'mock_cwebp.rb')
+      File.open(mock_script, 'w') do |f|
+        f.puts <<~RUBY
+          if ARGV.include?('-version')
+            puts '1.4.0'
+            exit 0
+          end
+        RUBY
+      end
+      mock_exe = create_mock_executable(dir, 'cwebp', mock_script)
+      actual_sha = Digest::SHA256.file(mock_exe).hexdigest
+
+      BOMEngine::BOMCTextureEncoder.configured_binary_path = mock_exe
+
+      # 1. Without trusted SHA set, external binary is unverified
+      caps = BOMEngine::BOMCTextureEncoder.capabilities(force_refresh: true)
+      assert_equal true, caps[:available]
+      assert_equal false, caps[:verified]
+      assert_equal :configured, caps[:source]
+      assert_equal :ready, caps[:status]
+
+      # 2. With matching trusted SHA, external binary is verified
+      BOMEngine::BOMCTextureEncoder.trusted_external_sha256 = actual_sha
+      caps = BOMEngine::BOMCTextureEncoder.capabilities(force_refresh: true)
+      assert_equal true, caps[:available]
+      assert_equal true, caps[:verified]
+      assert_equal :ready, caps[:status]
+
+      # 3. With mismatched trusted SHA, external binary fails trust verification and is unavailable
+      BOMEngine::BOMCTextureEncoder.trusted_external_sha256 = '0000000000000000000000000000000000000000000000000000000000000000'
+      caps = BOMEngine::BOMCTextureEncoder.capabilities(force_refresh: true)
+      assert_equal false, caps[:available]
+      assert_equal false, caps[:verified]
+      assert_equal :external_trust_verification_failed, caps[:status]
+
+      BOMEngine::BOMCTextureEncoder.trusted_external_sha256 = nil
+    end
+  end
+
 
   private
 

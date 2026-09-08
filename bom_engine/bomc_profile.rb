@@ -108,6 +108,35 @@ module BOMEngine
 
     DEFAULT_PROFILE = :visual
 
+    LEGACY_PROFILES = {
+      production: Profile.new(
+        name: :production,
+        requires_source_size: true,
+        preferred_ratio: nil,
+        hard_ratio: 1.0,
+        position_error_m: :semantic_policy,
+        normal_error_deg: :semantic_policy,
+        uv_error: :semantic_policy,
+        transform_error: 0.00001,
+        texture_policy: :web_aggressive_bounded,
+        geometry_policy: :semantic_bounded,
+        allow_topology_simplification: false
+      ),
+      debug: Profile.new(
+        name: :debug,
+        requires_source_size: false,
+        preferred_ratio: nil,
+        hard_ratio: nil,
+        position_error_m: :semantic_policy,
+        normal_error_deg: :semantic_policy,
+        uv_error: :semantic_policy,
+        transform_error: 0.00001,
+        texture_policy: :web_aggressive_bounded,
+        geometry_policy: :semantic_bounded,
+        allow_topology_simplification: false
+      )
+    }.freeze
+
     module_function
 
     def names
@@ -116,15 +145,15 @@ module BOMEngine
 
     def fetch(name)
       key = name.to_s.downcase.to_sym
-      key = :visual if key == :production || key == :debug
-      profile = PROFILES[key]
+      profile = PROFILES[key] || LEGACY_PROFILES[key]
       return profile if profile
 
       raise ArgumentError, "Unknown BOMC profile '#{name}'. Supported profiles are: #{names.join(', ')}."
     end
 
     def valid?(name)
-      PROFILES.key?(name.to_s.downcase.to_sym)
+      key = name.to_s.downcase.to_sym
+      PROFILES.key?(key) || LEGACY_PROFILES.key?(key)
     end
   end
 end

@@ -5,6 +5,7 @@ require 'fileutils'
 require_relative 'bomc_writer'
 require_relative 'bomc_profile'
 require_relative 'bomc_budget_solver'
+require_relative 'bomc_export_cache'
 
 module BOMEngine
   module BOMCSizeGate
@@ -51,11 +52,15 @@ module BOMEngine
       return :pass unless contract.requires_source_size?
       return :unavailable unless source_info && source_info[:available] && source_info[:bytes].to_i > 0
 
-      hard_target = (Integer(source_info.fetch(:bytes)) * contract.hard_ratio).floor
+      hard_target = if contract.name == :production || contract.hard_ratio.nil? || contract.hard_ratio >= 1.0
+                      Integer(source_info.fetch(:bytes)) - 1
+                    else
+                      (Integer(source_info.fetch(:bytes)) * contract.hard_ratio).floor
+                    end
       Integer(candidate_bytes) <= hard_target ? :pass : :fail
     end
 
-    def compile_candidate(snapshot_or_graph = nil, profile: :visual, graph: nil, source_info: nil, base_path: nil, checkpoint: nil)
+    def compile_candidate(snapshot_or_graph = nil, profile: :visual, graph: nil, source_info: nil, base_path: nil, checkpoint: nil, target_bytes: nil, export_cache: nil)
       graph_obj = snapshot_or_graph || graph
       src_info = source_info
       b_path = base_path
@@ -81,11 +86,13 @@ module BOMEngine
         profile: profile,
         checkpoint: chk,
         output_path: nil,
-        enforce_smaller: false
+        enforce_smaller: false,
+        target_bytes: target_bytes,
+        export_cache: export_cache
       )
     end
 
-    def compile(graph:, source_info:, base_path:, profile: :visual, profile_contract: nil, checkpoint: nil, output_path: nil, enforce_smaller: true)
+    def compile(graph:, source_info:, base_path:, profile: :visual, profile_contract: nil, checkpoint: nil, output_path: nil, enforce_smaller: true, target_bytes: nil, export_cache: nil)
       contract = if profile_contract
                    profile_contract.is_a?(BOMCProfile::Profile) ? profile_contract : BOMCProfile.fetch(profile_contract)
                  elsif [:exact, :research, :visual, :production, :debug].include?(profile.to_sym)
@@ -95,6 +102,7 @@ module BOMEngine
                  end
 
       info = source_info || { available: false, bytes: nil }
+      cache = export_cache || BOMCExportCache::Cache.new
 
       if contract.profile == :exact
         result = BOMCWriter.pack(
@@ -104,7 +112,8 @@ module BOMEngine
           base_path: base_path,
           sparse: true,
           compact_directory: true,
-          checkpoint: checkpoint
+          checkpoint: checkpoint,
+          export_cache: cache
         )
         candidate_size = result[:bytes].bytesize
         publish_result(output_path, result, candidate_size, checkpoint, nil) if output_path
@@ -129,7 +138,17 @@ module BOMEngine
       strategies = info[:available] ? STRATEGIES : [STRATEGIES.first]
       attempts = []
       best = nil
-      hard_target = info[:available] ? (Integer(info[:bytes]) * contract.hard_ratio).floor : nil
+      hard_target = if info[:available]
+                      if contract.name == :production || contract.hard_ratio.nil? || contract.hard_ratio >= 1.0
+                        Integer(info[:bytes]) - 1
+                      else
+                        (Integer(info[:bytes]) * contract.hard_ratio).floor
+                      end
+                    else
+                      nil
+                    end
+      preferred_target = contract.preferred_ratio && info[:available] ? (Integer(info[:bytes]) * contract.preferred_ratio).floor : hard_target
+      effective_target = target_bytes ? Integer(target_bytes) : (preferred_target || hard_target || 0)
 
       strategies.each_with_index do |strategy, index|
         result = BOMCWriter.pack(
@@ -137,12 +156,14 @@ module BOMEngine
           profile: contract.name,
           profile_contract: contract,
           source_skp_bytes: info[:bytes].to_i,
+          target_bytes: effective_target,
           base_path: base_path,
           sparse: true,
           compact_directory: true,
           compression_level: strategy[:compression_level],
           minimal_metadata: strategy[:minimal_metadata],
-          checkpoint: checkpoint
+          checkpoint: checkpoint,
+          export_cache: cache
         )
         coverage = result.dig(:metrics, :coverage) || {}
         unless coverage[:unaccounted].to_i.zero?
