@@ -42,6 +42,12 @@ module BOMEngine
         end
       when Array
         value.map { |v| sanitize_for_json(v) }
+      when String
+        if value.encoding == Encoding::UTF_8 && value.valid_encoding?
+          value
+        else
+          value.dup.force_encoding(Encoding::UTF_8).scrub
+        end
       else
         value
       end
@@ -82,7 +88,7 @@ module BOMEngine
         validation = nil
         validation_error = nil
         begin
-          validation = BOMCValidator.validate!(graph, decoded)
+          validation = BOMCValidator.validate!(graph, decoded, base_path: base_path)
         rescue StandardError => e
           validation_error = e.message
         end
@@ -555,13 +561,28 @@ module BOMEngine
     end
 
     def run(argv)
-      corpus_path = File.expand_path('../benchmarks/profile-corpus.json', __dir__)
+      corpus_path = nil
+      output_prefix = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = 'Usage: bomc_profile_benchmark.rb [options]'
+        opts.on('--corpus PATH', 'Path to corpus JSON manifest') { |v| corpus_path = v }
+        opts.on('--output-prefix PREFIX', 'Output file prefix in benchmarks/results/') { |v| output_prefix = v }
+      end
+      parser.parse!(argv)
+
+      corpus_path ||= File.expand_path('../benchmarks/evolution-corpus.json', __dir__)
+      corpus_path = File.expand_path('../benchmarks/profile-corpus.json', __dir__) unless File.file?(corpus_path)
+
       results = run_corpus(corpus_path)
       bundle = generate_report(results)
 
-      json_out = File.expand_path('../benchmarks/results/bomc-profile-benchmark.json', __dir__)
-      gz_out = File.expand_path('../benchmarks/results/bomc-profile-benchmark.json.gz', __dir__)
-      md_out = File.expand_path('../benchmarks/results/BOMC_PROFILE_BENCHMARK.md', __dir__)
+      is_evolution = corpus_path.include?('evolution')
+      prefix = output_prefix || (is_evolution ? 'evolution-profile-benchmark' : 'bomc-profile-benchmark')
+      md_name = is_evolution ? 'EVOLUTION_PROFILE_BENCHMARK.md' : 'BOMC_PROFILE_BENCHMARK.md'
+
+      json_out = File.expand_path("../benchmarks/results/#{prefix}.json", __dir__)
+      gz_out = File.expand_path("../benchmarks/results/#{prefix}.json.gz", __dir__)
+      md_out = File.expand_path("../benchmarks/results/#{md_name}", __dir__)
 
       FileUtils.mkdir_p(File.dirname(json_out))
 

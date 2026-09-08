@@ -1,0 +1,262 @@
+{
+  "format": {
+    "name": "BOM Engine Canonical Graph",
+    "version": "1.2.0"
+  },
+  "units": "m",
+  "coordinate_system": {
+    "handedness": "right",
+    "up_axis": "+Z"
+  },
+  "materials": [
+    {
+      "id": "mat:cut_wall",
+      "name": "Section Wall Material",
+      "color": {
+        "r": 180,
+        "g": 120,
+        "b": 100,
+        "a": 255
+      },
+      "opacity": 1.0
+    },
+    {
+      "id": "mat:cut_slab",
+      "name": "Section Floor Slab",
+      "color": {
+        "r": 120,
+        "g": 130,
+        "b": 140,
+        "a": 255
+      },
+      "opacity": 1.0
+    }
+  ],
+  "tags": [
+    {
+      "id": "tag:architecture",
+      "name": "A-ARCH",
+      "visible": true
+    }
+  ],
+  "transforms": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "definitions": [
+    {
+      "id": "def:root",
+      "name": "Root Model",
+      "kind": "model_definition",
+      "mesh_id": null,
+      "node_ids": [
+        "node:cut_house"
+      ]
+    },
+    {
+      "id": "def:cut_house",
+      "name": "Section Cut House",
+      "kind": "component_definition",
+      "mesh_id": "mesh:cut_mesh",
+      "node_ids": [
+
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "node:root",
+      "name": "Root",
+      "kind": "root",
+      "definition_id": "def:root",
+      "transform_id": 0,
+      "material_id": null,
+      "tag_id": null,
+      "visible": true
+    },
+    {
+      "id": "node:cut_house",
+      "name": "Cut House 1",
+      "kind": "component_instance",
+      "definition_id": "def:cut_house",
+      "transform_id": 0,
+      "material_id": null,
+      "tag_id": "tag:architecture",
+      "visible": true,
+      "semantic": {
+        "role": "wall",
+        "classification_policy": "structural"
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "id": "mesh:cut_mesh",
+      "definition_id": "def:cut_house",
+      "positions_m": [
+        0.0,
+        0.0,
+        0.0,
+        4.0,
+        0.0,
+        0.0,
+        4.0,
+        4.0,
+        0.0,
+        0.0,
+        4.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        4.0,
+        0.0,
+        0.0,
+        4.0,
+        0.0,
+        3.0,
+        0.0,
+        0.0,
+        3.0
+      ],
+      "faces": [
+        {
+          "id": "f:ground_slab",
+          "outer": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "holes": [
+
+          ],
+          "triangles": [
+            0,
+            1,
+            2,
+            0,
+            2,
+            3
+          ],
+          "normal": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "area_m2": 16.0,
+          "front_material_id": "mat:cut_slab",
+          "tag_id": "tag:architecture",
+          "semantic": {
+            "role": "floor",
+            "label": "Ground Floor Slab",
+            "classification_policy": "structural"
+          }
+        },
+        {
+          "id": "f:sliced_wall",
+          "outer": [
+            4,
+            5,
+            6,
+            7
+          ],
+          "holes": [
+
+          ],
+          "triangles": [
+            4,
+            5,
+            6,
+            4,
+            6,
+            7
+          ],
+          "normal": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "area_m2": 12.0,
+          "front_material_id": "mat:cut_wall",
+          "tag_id": "tag:architecture",
+          "semantic": {
+            "role": "wall",
+            "label": "Section-Cut Exterior Wall",
+            "classification_policy": "structural"
+          }
+        }
+      ],
+      "edges": [
+
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "id": "scene:plan_cut",
+      "name": "Plan Section View",
+      "camera": {
+        "eye_m": [
+          2.0,
+          2.0,
+          15.0
+        ],
+        "target_m": [
+          2.0,
+          2.0,
+          0.0
+        ],
+        "up": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "field_of_view_degrees": 45.0,
+        "aspect_ratio": 1.33
+      },
+      "visibility": {
+        "visible_tag_ids": [
+          "tag:architecture"
+        ],
+        "hidden_tag_ids": [
+
+        ]
+      }
+    }
+  ],
+  "clip_planes": [
+    {
+      "id": "clip:floor1_cut",
+      "stable_id": "clip:floor1_cut",
+      "source_persistent_id": 3001,
+      "origin_m": [
+        0.0,
+        0.0,
+        1.2
+      ],
+      "normal": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "keep_side": 1
+    }
+  ]
+}

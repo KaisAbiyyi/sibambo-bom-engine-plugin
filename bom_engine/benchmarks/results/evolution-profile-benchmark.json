@@ -1,0 +1,1300 @@
+{
+  "schema_version": "1.2.0",
+  "producer_sha": "49ca51de52f1bd7561aaf24f1ff31fa622d96cce",
+  "timestamp": "2026-09-08T16:12:45Z",
+  "certification_status": "ready",
+  "missing_evidence": [
+
+  ],
+  "aggregates": {
+    "total_fixtures": 7,
+    "total_runs": 21,
+    "passed_runs": 21,
+    "incomplete_fixtures": 0,
+    "visual_profile": {
+      "min_ratio": 0.0,
+      "median_ratio": 0.003,
+      "mean_ratio": 0.0217,
+      "p95_ratio": 0.0858,
+      "worst_ratio": 0.0858,
+      "median_encode_time_ms": 3.2,
+      "max_position_error_m": 3.8e-05,
+      "max_normal_error_deg": 2.0e-06,
+      "max_uv_error": 0.0,
+      "max_transform_error": 0.0
+    },
+    "research_profile": {
+      "min_ratio": 0.0,
+      "median_ratio": 0.003,
+      "mean_ratio": 0.0217,
+      "p95_ratio": 0.0858,
+      "worst_ratio": 0.0858,
+      "max_position_error_m": 3.8e-05,
+      "max_normal_error_deg": 2.0e-06,
+      "max_uv_error": 0.0,
+      "max_transform_error": 0.0
+    },
+    "exact_profile": {
+      "min_ratio": 0.0,
+      "median_ratio": 0.0028,
+      "mean_ratio": 0.0256,
+      "p95_ratio": 0.0995,
+      "worst_ratio": 0.0995
+    }
+  },
+  "fixtures": [
+    {
+      "id": "tiny-box",
+      "category": "tiny",
+      "status": "pass",
+      "validation_status": "pass",
+      "missing_evidence": [
+
+      ],
+      "fixture_path": "D:/projects/sibambo/bom_engine_plugin/examples/model-eval-json-v1-small.json",
+      "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/test.skp",
+      "source_skp_bytes": 163941,
+      "profiles": {
+        "exact": {
+          "profile": "exact",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 862,
+          "ratio": 0.0053,
+          "encode_time_ms": 1.67,
+          "decode_time_ms": 0.42,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 1,
+            "tags": 1,
+            "meshes": 1,
+            "faces": 1,
+            "triangles": 2,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 0,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        },
+        "research": {
+          "profile": "research",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 936,
+          "ratio": 0.0057,
+          "encode_time_ms": 1.39,
+          "decode_time_ms": 0.45,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 5,
+                "total_pareto_candidates": 5
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 1,
+            "tags": 1,
+            "meshes": 1,
+            "faces": 1,
+            "triangles": 2,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 0,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        },
+        "visual": {
+          "profile": "visual",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 920,
+          "ratio": 0.0056,
+          "encode_time_ms": 1.56,
+          "decode_time_ms": 0.49,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 5,
+                "total_pareto_candidates": 5
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 1,
+            "tags": 1,
+            "meshes": 1,
+            "faces": 1,
+            "triangles": 2,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 0,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "small-textured-house2",
+      "category": "small-textured",
+      "status": "pass",
+      "validation_status": "pass",
+      "missing_evidence": [
+
+      ],
+      "fixture_path": "D:/projects/sibambo/bom_engine_plugin/bom_engine/benchmarks/fixtures/small-textured-house2.json",
+      "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/house2.skp",
+      "source_skp_bytes": 440016,
+      "profiles": {
+        "exact": {
+          "profile": "exact",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 1246,
+          "ratio": 0.0028,
+          "encode_time_ms": 1.85,
+          "decode_time_ms": 0.6,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 2,
+            "tags": 1,
+            "meshes": 1,
+            "faces": 2,
+            "triangles": 4,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 1,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        },
+        "research": {
+          "profile": "research",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 1320,
+          "ratio": 0.003,
+          "encode_time_ms": 2.62,
+          "decode_time_ms": 0.47,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 5,
+                "total_pareto_candidates": 5
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 2,
+            "tags": 1,
+            "meshes": 1,
+            "faces": 2,
+            "triangles": 4,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 1,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        },
+        "visual": {
+          "profile": "visual",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 1305,
+          "ratio": 0.003,
+          "encode_time_ms": 2.07,
+          "decode_time_ms": 0.73,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 5,
+                "total_pareto_candidates": 5
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 2,
+            "tags": 1,
+            "meshes": 1,
+            "faces": 2,
+            "triangles": 4,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 1,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "medium-architectural-presentation20",
+      "category": "medium-architectural",
+      "status": "pass",
+      "validation_status": "pass",
+      "missing_evidence": [
+
+      ],
+      "fixture_path": "D:/projects/sibambo/bom_engine_plugin/skps/model-eval-exports/presentation20_model-eval.json",
+      "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/presentation20.skp",
+      "source_skp_bytes": 2155445,
+      "profiles": {
+        "exact": {
+          "profile": "exact",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 214422,
+          "ratio": 0.0995,
+          "encode_time_ms": 671.75,
+          "decode_time_ms": 466.62,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 1.0e-06,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 115,
+                "total_candidates": 115,
+                "total_pareto_candidates": 115
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 31,
+            "tags": 5,
+            "meshes": 115,
+            "faces": 11625,
+            "triangles": 25518,
+            "instances": 484,
+            "definitions": 187,
+            "textures": 0,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        },
+        "research": {
+          "profile": "research",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 184928,
+          "ratio": 0.0858,
+          "encode_time_ms": 1408.75,
+          "decode_time_ms": 788.76,
+          "metrics": {
+            "position_max_error_m": 3.8e-05,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 3.0e-06,
+            "normal_max_error_deg": 2.0e-06,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 115,
+                "total_candidates": 575,
+                "total_pareto_candidates": 551
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 31,
+            "tags": 5,
+            "meshes": 115,
+            "faces": 11625,
+            "triangles": 25518,
+            "instances": 484,
+            "definitions": 187,
+            "textures": 0,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        },
+        "visual": {
+          "profile": "visual",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 184913,
+          "ratio": 0.0858,
+          "encode_time_ms": 2076.63,
+          "decode_time_ms": 770.87,
+          "metrics": {
+            "position_max_error_m": 3.8e-05,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 3.0e-06,
+            "normal_max_error_deg": 2.0e-06,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 115,
+                "total_candidates": 575,
+                "total_pareto_candidates": 551
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 31,
+            "tags": 5,
+            "meshes": 115,
+            "faces": 11625,
+            "triangles": 25518,
+            "instances": 484,
+            "definitions": 187,
+            "textures": 0,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "complex-architectural-sboost1",
+      "category": "complex-architectural",
+      "status": "pass",
+      "validation_status": "pass",
+      "missing_evidence": [
+
+      ],
+      "fixture_path": "D:/projects/sibambo/bom_engine_plugin/skps/model-eval-exports/PROJECT SBOOST 1_model-eval.json",
+      "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/PROJECT SBOOST 1.skp",
+      "source_skp_bytes": 3548875,
+      "profiles": {
+        "exact": {
+          "profile": "exact",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 251598,
+          "ratio": 0.0709,
+          "encode_time_ms": 624.24,
+          "decode_time_ms": 462.25,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 1.0e-06,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 70,
+                "total_candidates": 70,
+                "total_pareto_candidates": 70
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 50,
+            "tags": 22,
+            "meshes": 70,
+            "faces": 7092,
+            "triangles": 13868,
+            "instances": 134,
+            "definitions": 115,
+            "textures": 0,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        },
+        "research": {
+          "profile": "research",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 201864,
+          "ratio": 0.0569,
+          "encode_time_ms": 1183.33,
+          "decode_time_ms": 415.08,
+          "metrics": {
+            "position_max_error_m": 1.1e-05,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 1.0e-06,
+            "normal_max_error_deg": 2.0e-06,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 70,
+                "total_candidates": 350,
+                "total_pareto_candidates": 344
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 50,
+            "tags": 22,
+            "meshes": 70,
+            "faces": 7092,
+            "triangles": 13868,
+            "instances": 134,
+            "definitions": 115,
+            "textures": 0,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        },
+        "visual": {
+          "profile": "visual",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 201848,
+          "ratio": 0.0569,
+          "encode_time_ms": 1197.34,
+          "decode_time_ms": 448.34,
+          "metrics": {
+            "position_max_error_m": 1.1e-05,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 1.0e-06,
+            "normal_max_error_deg": 2.0e-06,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 70,
+                "total_candidates": 350,
+                "total_pareto_candidates": 344
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 50,
+            "tags": 22,
+            "meshes": 70,
+            "faces": 7092,
+            "triangles": 13868,
+            "instances": 134,
+            "definitions": 115,
+            "textures": 0,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "texture-heavy-rumah-y",
+      "category": "texture-heavy",
+      "status": "pass",
+      "validation_status": "pass",
+      "missing_evidence": [
+
+      ],
+      "fixture_path": "D:/projects/sibambo/bom_engine_plugin/bom_engine/benchmarks/fixtures/texture-heavy-rumah-y.json",
+      "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/RUMAH Y.skp",
+      "source_skp_bytes": 41785434,
+      "profiles": {
+        "exact": {
+          "profile": "exact",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 1863,
+          "ratio": 0.0,
+          "encode_time_ms": 5.21,
+          "decode_time_ms": 1.16,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 5,
+            "tags": 3,
+            "meshes": 1,
+            "faces": 5,
+            "triangles": 10,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 4,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        },
+        "research": {
+          "profile": "research",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 1969,
+          "ratio": 0.0,
+          "encode_time_ms": 6.72,
+          "decode_time_ms": 1.39,
+          "metrics": {
+            "position_max_error_m": 3.1e-05,
+            "position_p95_error_m": 3.1e-05,
+            "position_rms_error_m": 2.2e-05,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 5,
+                "total_pareto_candidates": 5
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 5,
+            "tags": 3,
+            "meshes": 1,
+            "faces": 5,
+            "triangles": 10,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 4,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        },
+        "visual": {
+          "profile": "visual",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 1953,
+          "ratio": 0.0,
+          "encode_time_ms": 10.3,
+          "decode_time_ms": 1.55,
+          "metrics": {
+            "position_max_error_m": 3.1e-05,
+            "position_p95_error_m": 3.1e-05,
+            "position_rms_error_m": 2.2e-05,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 5,
+                "total_pareto_candidates": 5
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 5,
+            "tags": 3,
+            "meshes": 1,
+            "faces": 5,
+            "triangles": 10,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 4,
+            "scenes": 1,
+            "clip_planes": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "scene-heavy-sboost2",
+      "category": "scene-heavy",
+      "status": "pass",
+      "validation_status": "pass",
+      "missing_evidence": [
+
+      ],
+      "fixture_path": "D:/projects/sibambo/bom_engine_plugin/bom_engine/benchmarks/fixtures/scene-heavy-sboost2.json",
+      "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/PROJECT SBOOST 2.skp",
+      "source_skp_bytes": 3363219,
+      "profiles": {
+        "exact": {
+          "profile": "exact",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 1246,
+          "ratio": 0.0004,
+          "encode_time_ms": 4.3,
+          "decode_time_ms": 0.98,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 3,
+            "tags": 3,
+            "meshes": 1,
+            "faces": 3,
+            "triangles": 6,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 0,
+            "scenes": 2,
+            "clip_planes": 0
+          }
+        },
+        "research": {
+          "profile": "research",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 1328,
+          "ratio": 0.0004,
+          "encode_time_ms": 4.78,
+          "decode_time_ms": 1.3,
+          "metrics": {
+            "position_max_error_m": 2.2e-05,
+            "position_p95_error_m": 2.2e-05,
+            "position_rms_error_m": 1.2e-05,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 5,
+                "total_pareto_candidates": 4
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 3,
+            "tags": 3,
+            "meshes": 1,
+            "faces": 3,
+            "triangles": 6,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 0,
+            "scenes": 2,
+            "clip_planes": 0
+          }
+        },
+        "visual": {
+          "profile": "visual",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 1312,
+          "ratio": 0.0004,
+          "encode_time_ms": 3.2,
+          "decode_time_ms": 1.27,
+          "metrics": {
+            "position_max_error_m": 2.2e-05,
+            "position_p95_error_m": 2.2e-05,
+            "position_rms_error_m": 1.2e-05,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 5,
+                "total_pareto_candidates": 4
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 3,
+            "tags": 3,
+            "meshes": 1,
+            "faces": 3,
+            "triangles": 6,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 0,
+            "scenes": 2,
+            "clip_planes": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "section-cut-heavy-rumah-l",
+      "category": "section-cut-heavy",
+      "status": "pass",
+      "validation_status": "pass",
+      "missing_evidence": [
+
+      ],
+      "fixture_path": "D:/projects/sibambo/bom_engine_plugin/bom_engine/benchmarks/fixtures/section-cut-heavy-rumah-l.json",
+      "skp_path": "D:/projects/sibambo/bom_engine_plugin/skps/RUMAH L.skp",
+      "source_skp_bytes": 33035617,
+      "profiles": {
+        "exact": {
+          "profile": "exact",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 1131,
+          "ratio": 0.0,
+          "encode_time_ms": 1.98,
+          "decode_time_ms": 0.45,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 1,
+                "total_pareto_candidates": 1
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 2,
+            "tags": 1,
+            "meshes": 1,
+            "faces": 2,
+            "triangles": 4,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 0,
+            "scenes": 1,
+            "clip_planes": 1
+          }
+        },
+        "research": {
+          "profile": "research",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 1203,
+          "ratio": 0.0,
+          "encode_time_ms": 1.61,
+          "decode_time_ms": 0.54,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 5,
+                "total_pareto_candidates": 5
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 2,
+            "tags": 1,
+            "meshes": 1,
+            "faces": 2,
+            "triangles": 4,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 0,
+            "scenes": 1,
+            "clip_planes": 1
+          }
+        },
+        "visual": {
+          "profile": "visual",
+          "status": "pass",
+          "validation_status": "pass",
+          "missing_evidence": [
+
+          ],
+          "bomc_bytes": 1187,
+          "ratio": 0.0,
+          "encode_time_ms": 3.03,
+          "decode_time_ms": 1.12,
+          "metrics": {
+            "position_max_error_m": 0.0,
+            "position_p95_error_m": 0.0,
+            "position_rms_error_m": 0.0,
+            "normal_max_error_deg": 0.0,
+            "uv_max_error": 0.0,
+            "transform_max_error": 0.0,
+            "geometry_candidate_frontiers": {
+              "positions": {
+                "mesh_count": 1,
+                "total_candidates": 5,
+                "total_pareto_candidates": 5
+              },
+              "normals": {
+                "mesh_count": 1,
+                "total_candidates": 2,
+                "total_pareto_candidates": 2
+              },
+              "uv": {
+                "mesh_count": 0,
+                "total_candidates": 0,
+                "total_pareto_candidates": 0
+              }
+            }
+          },
+          "invariants": {
+            "semantics_pass": true,
+            "scenes_pass": true,
+            "clip_planes_pass": true,
+            "protected_topology_pass": true
+          },
+          "counts": {
+            "materials": 2,
+            "tags": 1,
+            "meshes": 1,
+            "faces": 2,
+            "triangles": 4,
+            "instances": 2,
+            "definitions": 2,
+            "textures": 0,
+            "scenes": 1,
+            "clip_planes": 1
+          }
+        }
+      }
+    }
+  ]
+}

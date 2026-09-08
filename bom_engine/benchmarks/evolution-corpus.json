@@ -1,0 +1,409 @@
+{
+  "schema_version": 3,
+  "corpus_id": "sibambo-evolution-corpus-v3",
+  "description": "Fail-closed corpus manifest for SIBAMBO BOMC Evolution certification and multi-profile verification across 7 categories",
+  "units": "m",
+  "created_at": "2026-09-08T23:12:00Z",
+  "producer_repository": "https://github.com/KaisAbiyyi/sibambo-bom-engine-plugin.git",
+  "consumer_repository": "https://github.com/KaisAbiyyi/sibambo-model-eval.git",
+  "analytical_tolerances": {
+    "exact": {
+      "position_max_error_m": 0.0,
+      "normal_max_error_deg": 0.0,
+      "area_max_error_m2": 0.0,
+      "transform_max_error": 0.0,
+      "uv_max_error": 0.0,
+      "topology_exact": true,
+      "semantics_exact": true
+    },
+    "research": {
+      "position_max_error_m": 0.005,
+      "normal_max_error_deg": 0.05,
+      "area_max_error_m2": 0.04564,
+      "transform_max_error": 0.00001,
+      "uv_max_error": 0.0001,
+      "hard_ratio_ceiling": 0.90,
+      "topology_exact": true,
+      "semantics_exact": true
+    },
+    "visual": {
+      "position_max_error_m": 0.005,
+      "normal_max_error_deg": 0.05,
+      "area_max_error_m2": 0.04564,
+      "transform_max_error": 0.00001,
+      "uv_max_error": 0.0001,
+      "hard_ratio_ceiling": 0.90,
+      "preferred_ratio_target": 0.60,
+      "topology_exact": true,
+      "semantics_exact": true
+    }
+  },
+  "items": [
+    {
+      "id": "tiny-box",
+      "category": "tiny",
+      "provenance": {
+        "kind": "unit_synthetic",
+        "description": "Minimal synthetic single-panel unit box validating exact topology, tags, and quantization invariants",
+        "source_tool": "BOM Engine Test Harness",
+        "captured_at": "2026-07-13T00:00:00Z"
+      },
+      "skp_path": "skps/test.skp",
+      "skp_sha256": "11e2282c96c3bda1ca88ae952c6f99df5753936b2e722b1239606118355ebc92",
+      "skp_bytes": 163941,
+      "model_eval_fixture": "examples/model-eval-json-v1-small.json",
+      "fixture_sha256": "22172a45593c4d20be5287260a7e71e4984edab810bb62c0e6250352070c1f86",
+      "fixture_bytes": 1377,
+      "availability": "git",
+      "source_of_truth": "sketchup_model",
+      "supported_profiles": ["exact", "research", "visual"],
+      "minimum_source_counts": { "meshes": 1, "faces": 1 },
+      "visual_classification": {
+        "visual_class": "A",
+        "description": "Class A Structural: Topology-exact, rigid boundary, zero allowable geometric distortion",
+        "mixed_material": false
+      },
+      "required_for_release": true
+    },
+    {
+      "id": "small-textured-house2",
+      "category": "small-textured",
+      "provenance": {
+        "kind": "sketchup_capture",
+        "description": "Residential architectural wall assembly with real external PNG texture and interior plaster finish (House 2)",
+        "source_tool": "SketchUp 2026 / BOM Engine Exporter v1.2",
+        "captured_at": "2026-08-30T10:00:00Z"
+      },
+      "skp_path": "skps/house2.skp",
+      "skp_sha256": "4da3321be5da8d1999ea6a2019d0c7d9b2b8b2d5f17db28831d54f5f8db46bd4",
+      "skp_bytes": 440016,
+      "model_eval_fixture": "bom_engine/benchmarks/fixtures/small-textured-house2.json",
+      "fixture_sha256": "d672e7c379d2847753d390acc247b688f27a82d89d55f1b271f365a462618171",
+      "fixture_bytes": 4896,
+      "legacy_model_eval_fixture": "skps/model-eval-exports/house2_model-eval.json",
+      "legacy_fixture_sha256": "52d1c53b73c2e2db8838d168560dae21eb1d66dc4e02878eafa48d87729dd2cd",
+      "availability": "git",
+      "source_of_truth": "sketchup_model",
+      "supported_profiles": ["exact", "research", "visual"],
+      "minimum_source_counts": { "textures": 1, "faces": 2 },
+      "expected_features": {
+        "textures": { "min": 1, "has_opaque": true, "has_alpha": false, "has_shared": false, "has_fallback": false }
+      },
+      "visual_classification": {
+        "visual_class": "B",
+        "description": "Class B Architectural: External facade and internal plaster with mixed materials",
+        "mixed_material": true
+      },
+      "required_for_release": true
+    },
+    {
+      "id": "medium-architectural-presentation20",
+      "category": "medium-architectural",
+      "provenance": {
+        "kind": "sketchup_capture",
+        "description": "Architectural presentation model with multi-story spaces, structural envelopes, and 25k+ triangles (Presentation 20)",
+        "source_tool": "SketchUp 2026 / BOM Engine Exporter v1.2",
+        "captured_at": "2026-08-30T10:30:00Z"
+      },
+      "skp_path": "skps/presentation20.skp",
+      "skp_sha256": "d82c05d4fd062ebf0315f5fa3cc1dbfc5f39a1e421d33dd1fa1d459ed21c286e",
+      "skp_bytes": 2155445,
+      "model_eval_fixture": "skps/model-eval-exports/presentation20_model-eval.json",
+      "fixture_sha256": "c896f681bc3b3ce9fdbaf8ebfcd5f0a8b59f287704898bdc26af6a4e7cfd58e4",
+      "fixture_bytes": 1498069,
+      "availability": "git",
+      "source_of_truth": "sketchup_model",
+      "supported_profiles": ["exact", "research", "visual"],
+      "minimum_source_counts": { "faces": 1, "meshes": 1 },
+      "visual_classification": {
+        "visual_class": "B",
+        "description": "Class B Architectural: Presentation building envelope and spatial boundaries",
+        "mixed_material": true
+      },
+      "required_for_release": true
+    },
+    {
+      "id": "complex-architectural-sboost1",
+      "category": "complex-architectural",
+      "provenance": {
+        "kind": "sketchup_capture",
+        "description": "Complex architectural assembly with component instance hierarchy, multi-level framing, and nested definitions (PROJECT SBOOST 1)",
+        "source_tool": "SketchUp 2026 / BOM Engine Exporter v1.2",
+        "captured_at": "2026-08-30T11:00:00Z"
+      },
+      "skp_path": "skps/PROJECT SBOOST 1.skp",
+      "skp_sha256": "a659761236552b4fa2f7d70882c83d7b1edb9d67e3bc84ae29ff556685684f8c",
+      "skp_bytes": 3548875,
+      "model_eval_fixture": "skps/model-eval-exports/PROJECT SBOOST 1_model-eval.json",
+      "fixture_sha256": "b09a0936bc16e4c30d6123c3a010b8dd30a1f22b3da9e408045e2359d92d603b",
+      "fixture_bytes": 956075,
+      "availability": "git",
+      "source_of_truth": "sketchup_model",
+      "supported_profiles": ["exact", "research", "visual"],
+      "minimum_source_counts": { "instances": 2, "definitions": 2 },
+      "visual_classification": {
+        "visual_class": "B",
+        "description": "Class B Architectural: Deep component instance tree with complex framing hierarchy",
+        "mixed_material": true
+      },
+      "required_for_release": true
+    },
+    {
+      "id": "texture-heavy-rumah-y",
+      "category": "texture-heavy",
+      "provenance": {
+        "kind": "sketchup_capture",
+        "description": "Modern tropical residence featuring multi-texture finishes: opaque stone, alpha glass screen, shared timber siding, and source-file fallback ceramic (RUMAH Y)",
+        "source_tool": "SketchUp 2026 / BOM Engine Exporter v1.2",
+        "captured_at": "2026-08-30T11:30:00Z"
+      },
+      "skp_path": "skps/RUMAH Y.skp",
+      "skp_sha256": "5291179e1f4eac5ebf6b5eedc66135469a913f8df6a6d5a28238f497c75af119",
+      "skp_bytes": 41785434,
+      "model_eval_fixture": "bom_engine/benchmarks/fixtures/texture-heavy-rumah-y.json",
+      "fixture_sha256": "f3d3e0563c40f9fa66ca52c1dae85aeb0b93ad63f0a8611ff67a020de63d0a96",
+      "fixture_bytes": 10067,
+      "legacy_model_eval_fixture": "skps/model-eval-exports/RUMAH Y_model-eval.json",
+      "legacy_fixture_sha256": "e3f9fe157b92f14cd899a9ce1e811d1156c5996003852d12f07af91a4ef7034b",
+      "availability": "git",
+      "source_of_truth": "sketchup_model",
+      "supported_profiles": ["exact", "research", "visual"],
+      "minimum_source_counts": { "textures": 1, "materials": 2 },
+      "expected_features": {
+        "textures": {
+          "min": 1,
+          "has_opaque": true,
+          "has_alpha": true,
+          "has_shared": true,
+          "has_fallback": true
+        }
+      },
+      "visual_classification": {
+        "visual_class": "C",
+        "description": "Class C Decorative: Highly textured architectural finishes with alpha transparency and shared textures",
+        "mixed_material": true
+      },
+      "required_for_release": true
+    },
+    {
+      "id": "scene-heavy-sboost2",
+      "category": "scene-heavy",
+      "provenance": {
+        "kind": "sketchup_capture",
+        "description": "Multi-view building model with minimal two distinct source scenes: Exterior Perspective and Interior Furniture Layout with divergent tag visibility masks (PROJECT SBOOST 2)",
+        "source_tool": "SketchUp 2026 / BOM Engine Exporter v1.2",
+        "captured_at": "2026-08-30T12:00:00Z"
+      },
+      "skp_path": "skps/PROJECT SBOOST 2.skp",
+      "skp_sha256": "b367b9afe8b064d984393e552a836d2f10b1ee29f36fe72528326da17c43e265",
+      "skp_bytes": 3363219,
+      "model_eval_fixture": "bom_engine/benchmarks/fixtures/scene-heavy-sboost2.json",
+      "fixture_sha256": "272b2d46a78db11651b101f4f074e2b419d758c41482b12d9372895ba618d4c9",
+      "fixture_bytes": 6534,
+      "legacy_model_eval_fixture": "skps/model-eval-exports/PROJECT SBOOST 2_model-eval.json",
+      "legacy_fixture_sha256": "ec08f3e379dce4305c565000539cab5993302a31f7e131af22e83f0fddbb6ebe",
+      "availability": "git",
+      "source_of_truth": "sketchup_model",
+      "supported_profiles": ["exact", "research", "visual"],
+      "minimum_source_counts": { "scenes": 2 },
+      "expected_features": {
+        "scenes": {
+          "min": 2,
+          "distinct_cameras": true,
+          "distinct_visibility_masks": true
+        }
+      },
+      "visual_classification": {
+        "visual_class": "B",
+        "description": "Class B Architectural: Multi-scene architectural presentation testing visibility masks and scene transitions",
+        "mixed_material": true
+      },
+      "required_for_release": true
+    },
+    {
+      "id": "section-cut-heavy-rumah-l",
+      "category": "section-cut-heavy",
+      "provenance": {
+        "kind": "sketchup_capture",
+        "description": "Two-story classic residence with active floor plan section clip plane at elevation z=1.2m cutting structural walls and floor slabs (RUMAH L)",
+        "source_tool": "SketchUp 2026 / BOM Engine Exporter v1.2",
+        "captured_at": "2026-08-30T12:30:00Z"
+      },
+      "skp_path": "skps/RUMAH L.skp",
+      "skp_sha256": "e250ef5863e57b1f0026bdfcecd9759bb61ef29847803490b1d122176fb1e0ab",
+      "skp_bytes": 33035617,
+      "model_eval_fixture": "bom_engine/benchmarks/fixtures/section-cut-heavy-rumah-l.json",
+      "fixture_sha256": "f38337054baccb90964b7a67e858cbdb9d46666f04e0cac39ba55c9aaac84e9f",
+      "fixture_bytes": 4813,
+      "legacy_model_eval_fixture": "skps/model-eval-exports/RUMAH L_model-eval.json",
+      "legacy_fixture_sha256": "d79229ca3247e394422b4e92a263da4945092d32ec20cb7f38afe17ae793fda2",
+      "availability": "git",
+      "source_of_truth": "sketchup_model",
+      "supported_profiles": ["exact", "research", "visual"],
+      "minimum_source_counts": { "clip_planes": 1 },
+      "expected_features": {
+        "clip_planes": {
+          "min": 1,
+          "stable_id": "clip:floor1_cut",
+          "origin_m": [0.0, 0.0, 1.2],
+          "normal": [0.0, 0.0, -1.0],
+          "keep_side": 1
+        }
+      },
+      "visual_classification": {
+        "visual_class": "A",
+        "description": "Class A Structural: Section cutting plane with strict boundary polygon preservation",
+        "mixed_material": false
+      },
+      "required_for_release": true
+    }
+  ],
+  "texture_assets": [
+    {
+      "id": "opaque-texture",
+      "path": "bom_engine/benchmarks/fixtures/textures/opaque.png",
+      "sha256": "f6b373ee62d8abe053e1decceb83b38627e0ce3df932ce72729f10a2e6e8fc58",
+      "bytes": 77,
+      "media_type": "image/png",
+      "dimensions_px": [2, 2],
+      "has_alpha": false,
+      "availability": "git"
+    },
+    {
+      "id": "alpha-texture",
+      "path": "bom_engine/benchmarks/fixtures/textures/alpha.png",
+      "sha256": "e72d4901c8df3b79d1aa66c1c103d59e28f5a0f57a592084816b852b335d8710",
+      "bytes": 83,
+      "media_type": "image/png",
+      "dimensions_px": [2, 2],
+      "has_alpha": true,
+      "availability": "git"
+    },
+    {
+      "id": "shared-texture",
+      "path": "bom_engine/benchmarks/fixtures/textures/shared.png",
+      "sha256": "7dff8c7bc90f13e901bcafe0123d34077190a908cf67d4c883e0a5e67026d39f",
+      "bytes": 84,
+      "media_type": "image/png",
+      "dimensions_px": [2, 2],
+      "has_alpha": false,
+      "availability": "git"
+    },
+    {
+      "id": "fallback-texture",
+      "path": "bom_engine/benchmarks/fixtures/textures/fallback.png",
+      "sha256": "597bbd4a776fe7daf25070a28152dec0a574cb78e782a06475da691d4ca35a1a",
+      "bytes": 78,
+      "media_type": "image/png",
+      "dimensions_px": [2, 2],
+      "has_alpha": false,
+      "availability": "git"
+    }
+  ],
+  "verified_baseline_captures": [
+    {
+      "id": "rumah-l-exact",
+      "model": "RUMAH L",
+      "profile": "exact",
+      "scope": "consumer",
+      "path": "skps/model-eval-exports/RUMAH L__SIBAMBO-BOMC-v1.2.0__EXACT.bomc",
+      "bytes": 16687590,
+      "sha256": "a0ffe96f2f26a7f6575b4633175ce695aa89f9a698d2644d2b1d7476fcaea4dc",
+      "availability": "local_untracked",
+      "verified_container": {
+        "version_major": 1,
+        "version_minor": 2,
+        "section_count": 20,
+        "encoding_contract_profile": "exact",
+        "texture_policy": "pixel_lossless"
+      },
+      "provisioning": "Preserve untracked local file in model-eval/skps/model-eval-exports/"
+    },
+    {
+      "id": "rumah-l-research",
+      "model": "RUMAH L",
+      "profile": "research",
+      "scope": "consumer",
+      "path": "skps/model-eval-exports/RUMAH L__SIBAMBO-BOMC-v1.2.0__RESEARCH.bomc",
+      "bytes": 11675750,
+      "sha256": "820249c771c0a63f64af9f3a9a3a5d7c4c119ee7aecb9d09c8bd08e2dfa1ba0a",
+      "availability": "local_untracked",
+      "verified_container": {
+        "version_major": 1,
+        "version_minor": 2,
+        "section_count": 20,
+        "encoding_contract_profile": "research",
+        "texture_policy": "perceptual_bounded",
+        "source_skp_bytes": 33035617
+      },
+      "provisioning": "Preserve untracked local file in model-eval/skps/model-eval-exports/"
+    },
+    {
+      "id": "rumah-l-visual",
+      "model": "RUMAH L",
+      "profile": "visual",
+      "scope": "consumer",
+      "path": "skps/model-eval-exports/RUMAH L__SIBAMBO-BOMC-v1.2.0__VISUAL.bomc",
+      "bytes": 11661166,
+      "sha256": "067c556ac6fe1b4746db08e9752341430832fe4ed609e57b9b528a551e202ec0",
+      "availability": "local_untracked",
+      "verified_container": {
+        "version_major": 1,
+        "version_minor": 2,
+        "section_count": 20,
+        "encoding_contract_profile": "visual",
+        "texture_policy": "web_aggressive_bounded",
+        "source_skp_bytes": 33035617
+      },
+      "provisioning": "Preserve untracked local file in model-eval/skps/model-eval-exports/"
+    },
+    {
+      "id": "rumah-g-exact",
+      "model": "RUMAH G",
+      "profile": "exact",
+      "scope": "consumer",
+      "path": "skps/model-eval-exports/RUMAH G__SIBAMBO-BOMC-v1.2.0__EXACT.bomc",
+      "bytes": 53412078,
+      "sha256": "c3e1b1fd976f0c1d2ab8fc6918b990c94fe3d0fc009e9fd9425da2a018337453",
+      "availability": "local_untracked",
+      "verified_container": {
+        "version_major": 1,
+        "version_minor": 2,
+        "section_count": 21,
+        "encoding_contract_profile": "exact",
+        "texture_policy": "pixel_lossless"
+      },
+      "provisioning": "Preserve untracked local file in model-eval/skps/model-eval-exports/"
+    },
+    {
+      "id": "rumah-g-research",
+      "model": "RUMAH G",
+      "profile": "research",
+      "scope": "consumer",
+      "path": null,
+      "bytes": null,
+      "sha256": null,
+      "availability": "missing",
+      "status": "incomplete",
+      "reason": "RUMAH G has no research E3 capture."
+    },
+    {
+      "id": "rumah-g-visual",
+      "model": "RUMAH G",
+      "profile": "visual",
+      "scope": "consumer",
+      "path": null,
+      "bytes": null,
+      "sha256": null,
+      "availability": "missing",
+      "status": "incomplete",
+      "reason": "RUMAH G has no visual E3 capture."
+    }
+  ],
+  "explicit_evidence_gaps": [
+    "SketchUp version and export-stage timings were not captured in automated CI.",
+    "Browser and GPU identity are not captured in headless environments without display.",
+    "No five-run cold/warm consumer measurement artifact exists yet.",
+    "RUMAH G has no research or visual E3 capture (E3 baseline gap)."
+  ]
+}

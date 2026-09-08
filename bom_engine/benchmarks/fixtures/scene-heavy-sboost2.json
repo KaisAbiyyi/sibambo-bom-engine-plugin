@@ -1,0 +1,346 @@
+{
+  "format": {
+    "name": "BOM Engine Canonical Graph",
+    "version": "1.2.0"
+  },
+  "units": "m",
+  "coordinate_system": {
+    "handedness": "right",
+    "up_axis": "+Z"
+  },
+  "materials": [
+    {
+      "id": "mat:concrete",
+      "name": "Structural Concrete",
+      "color": {
+        "r": 150,
+        "g": 150,
+        "b": 150,
+        "a": 255
+      },
+      "opacity": 1.0
+    },
+    {
+      "id": "mat:partition",
+      "name": "Interior Gypsum Partition",
+      "color": {
+        "r": 230,
+        "g": 230,
+        "b": 220,
+        "a": 255
+      },
+      "opacity": 1.0
+    },
+    {
+      "id": "mat:furniture_wood",
+      "name": "Furniture Oak",
+      "color": {
+        "r": 180,
+        "g": 130,
+        "b": 80,
+        "a": 255
+      },
+      "opacity": 1.0
+    }
+  ],
+  "tags": [
+    {
+      "id": "tag:structural",
+      "name": "S-COLS-BEAM",
+      "visible": true
+    },
+    {
+      "id": "tag:interior",
+      "name": "A-WALL-INTR",
+      "visible": true
+    },
+    {
+      "id": "tag:furniture",
+      "name": "F-FURN-SITE",
+      "visible": true
+    }
+  ],
+  "transforms": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "definitions": [
+    {
+      "id": "def:root",
+      "name": "Root Model",
+      "kind": "model_definition",
+      "mesh_id": null,
+      "node_ids": [
+        "node:building"
+      ]
+    },
+    {
+      "id": "def:building",
+      "name": "Building Multi-Scene",
+      "kind": "component_definition",
+      "mesh_id": "mesh:building_elements",
+      "node_ids": [
+
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "node:root",
+      "name": "Root",
+      "kind": "root",
+      "definition_id": "def:root",
+      "transform_id": 0,
+      "material_id": null,
+      "tag_id": null,
+      "visible": true
+    },
+    {
+      "id": "node:building",
+      "name": "Building 1",
+      "kind": "component_instance",
+      "definition_id": "def:building",
+      "transform_id": 0,
+      "material_id": null,
+      "tag_id": "tag:structural",
+      "visible": true,
+      "semantic": {
+        "role": "structure",
+        "classification_policy": "structural"
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "id": "mesh:building_elements",
+      "definition_id": "def:building",
+      "positions_m": [
+        0.0,
+        0.0,
+        0.0,
+        3.0,
+        0.0,
+        0.0,
+        3.0,
+        3.0,
+        0.0,
+        0.0,
+        3.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        3.0,
+        0.0,
+        0.0,
+        3.0,
+        2.8,
+        0.0,
+        0.0,
+        2.8,
+        1.0,
+        1.0,
+        0.0,
+        2.0,
+        1.0,
+        0.0,
+        2.0,
+        2.0,
+        0.0,
+        1.0,
+        2.0,
+        0.0
+      ],
+      "faces": [
+        {
+          "id": "f:slab",
+          "outer": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "holes": [
+
+          ],
+          "triangles": [
+            0,
+            1,
+            2,
+            0,
+            2,
+            3
+          ],
+          "normal": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "area_m2": 9.0,
+          "front_material_id": "mat:concrete",
+          "tag_id": "tag:structural",
+          "semantic": {
+            "role": "floor",
+            "label": "Concrete Floor Slab",
+            "classification_policy": "structural"
+          }
+        },
+        {
+          "id": "f:partition",
+          "outer": [
+            4,
+            5,
+            6,
+            7
+          ],
+          "holes": [
+
+          ],
+          "triangles": [
+            4,
+            5,
+            6,
+            4,
+            6,
+            7
+          ],
+          "normal": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "area_m2": 8.4,
+          "front_material_id": "mat:partition",
+          "tag_id": "tag:interior",
+          "semantic": {
+            "role": "wall",
+            "label": "Demising Partition",
+            "classification_policy": "architectural"
+          }
+        },
+        {
+          "id": "f:table",
+          "outer": [
+            8,
+            9,
+            10,
+            11
+          ],
+          "holes": [
+
+          ],
+          "triangles": [
+            8,
+            9,
+            10,
+            8,
+            10,
+            11
+          ],
+          "normal": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "area_m2": 1.0,
+          "front_material_id": "mat:furniture_wood",
+          "tag_id": "tag:furniture",
+          "semantic": {
+            "role": "furniture",
+            "label": "Meeting Table",
+            "classification_policy": "decorative"
+          }
+        }
+      ],
+      "edges": [
+
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "id": "scene:exterior_perspective",
+      "name": "Scene 1 — Exterior Perspective",
+      "camera": {
+        "eye_m": [
+          12.0,
+          -15.0,
+          8.0
+        ],
+        "target_m": [
+          1.5,
+          1.5,
+          1.4
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "field_of_view_degrees": 35.0,
+        "aspect_ratio": 1.777
+      },
+      "visibility": {
+        "visible_tag_ids": [
+          "tag:structural",
+          "tag:interior"
+        ],
+        "hidden_tag_ids": [
+          "tag:furniture"
+        ]
+      }
+    },
+    {
+      "id": "scene:interior_furniture_view",
+      "name": "Scene 2 — Interior Furniture Layout",
+      "camera": {
+        "eye_m": [
+          1.5,
+          0.5,
+          1.6
+        ],
+        "target_m": [
+          1.5,
+          2.0,
+          0.8
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "field_of_view_degrees": 65.0,
+        "aspect_ratio": 1.777
+      },
+      "visibility": {
+        "visible_tag_ids": [
+          "tag:interior",
+          "tag:furniture"
+        ],
+        "hidden_tag_ids": [
+          "tag:structural"
+        ]
+      }
+    }
+  ],
+  "clip_planes": [
+
+  ]
+}

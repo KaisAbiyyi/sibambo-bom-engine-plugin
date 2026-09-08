@@ -250,4 +250,79 @@ class TestBOMCProfileBenchmark < Test::Unit::TestCase
     assert_equal corpus.fetch('bytes'), File.size(corpus_path)
     assert_equal corpus.fetch('sha256'), Digest::SHA256.file(corpus_path).hexdigest
   end
+
+  def test_evolution_corpus_manifest_structure_and_integrity
+    corpus_path = File.join(@root, 'bom_engine', 'benchmarks', 'evolution-corpus.json')
+    assert File.file?(corpus_path), 'evolution-corpus.json must exist'
+
+    corpus = JSON.parse(File.read(corpus_path), symbolize_names: true)
+    assert_equal 3, corpus[:schema_version]
+    assert_equal 'sibambo-evolution-corpus-v3', corpus[:corpus_id]
+    assert_kind_of Hash, corpus[:analytical_tolerances]
+    assert_equal [:exact, :research, :visual], corpus[:analytical_tolerances].keys.sort
+
+    categories = corpus[:items].map { |i| i[:category] }
+    expected_categories = ['tiny', 'small-textured', 'medium-architectural', 'complex-architectural', 'texture-heavy', 'scene-heavy', 'section-cut-heavy']
+    assert_equal expected_categories.sort, categories.sort
+
+    corpus[:items].each do |item|
+      assert item[:id], 'item must have id'
+      assert item[:category], 'item must have category'
+      assert item[:provenance], 'item must have provenance'
+      assert ['unit_synthetic', 'sketchup_capture'].include?(item.dig(:provenance, :kind)), 'provenance kind must be unit_synthetic or sketchup_capture'
+      assert item[:skp_path], 'item must have skp_path'
+      assert_match(/\A[0-9a-f]{64}\z/, item[:skp_sha256], 'item must have valid skp_sha256')
+      assert item[:model_eval_fixture], 'item must have model_eval_fixture'
+      assert_match(/\A[0-9a-f]{64}\z/, item[:fixture_sha256], 'item must have valid fixture_sha256')
+      assert_equal ['exact', 'research', 'visual'], item[:supported_profiles].sort
+      assert item[:minimum_source_counts], 'item must have minimum_source_counts'
+      assert item[:visual_classification], 'item must have visual_classification'
+      assert ['A', 'B', 'C'].include?(item.dig(:visual_classification, :visual_class)), 'visual_class must be A, B, or C'
+      assert [true, false].include?(item.dig(:visual_classification, :mixed_material)), 'mixed_material must be boolean'
+
+      fixture_full = File.join(@root, item[:model_eval_fixture])
+      assert File.file?(fixture_full), "model_eval_fixture must exist on disk: #{item[:model_eval_fixture]}"
+      assert_equal item[:fixture_sha256], Digest::SHA256.file(fixture_full).hexdigest, "fixture_sha256 mismatch for #{item[:id]}"
+    end
+
+    # Verify texture assets integrity
+    assert_kind_of Array, corpus[:texture_assets]
+    assert_equal 4, corpus[:texture_assets].length
+    corpus[:texture_assets].each do |tex|
+      tex_path = File.join(@root, tex[:path])
+      assert File.file?(tex_path), "texture file must exist on disk: #{tex[:path]}"
+      assert_equal tex[:sha256], Digest::SHA256.file(tex_path).hexdigest, "texture sha256 mismatch for #{tex[:id]}"
+    end
+
+    # Verify baseline captures
+    assert_kind_of Array, corpus[:verified_baseline_captures]
+    rumah_l = corpus[:verified_baseline_captures].select { |c| c[:model] == 'RUMAH L' }
+    assert_equal 3, rumah_l.length
+    assert_equal ['exact', 'research', 'visual'], rumah_l.map { |c| c[:profile] }.sort
+
+    rumah_g = corpus[:verified_baseline_captures].select { |c| c[:model] == 'RUMAH G' }
+    assert_equal 3, rumah_g.length
+    assert_equal 1, rumah_g.count { |c| c[:profile] == 'exact' && c[:availability] == 'local_untracked' }
+    assert_equal 2, rumah_g.count { |c| ['research', 'visual'].include?(c[:profile]) && c[:availability] == 'missing' && c[:status] == 'incomplete' }
+  end
+
+  def test_evolution_corpus_runs_and_passes_all_profiles
+    corpus_path = File.join(@root, 'bom_engine', 'benchmarks', 'evolution-corpus.json')
+    results = BOMEngine::BOMCProfileBenchmark.run_corpus(corpus_path)
+    assert_equal 7, results.length
+
+    results.each do |r|
+      assert_equal 'pass', r[:status], "fixture #{r[:id]} expected to pass, got #{r[:status]} (missing: #{r[:missing_evidence].inspect})"
+      assert_equal 'pass', r[:validation_status]
+      assert_empty r[:missing_evidence]
+      [:exact, :research, :visual].each do |prof|
+        assert_equal 'pass', r.dig(:profiles, prof, :status), "profile #{prof} for #{r[:id]} failed"
+      end
+    end
+
+    report = BOMEngine::BOMCProfileBenchmark.generate_report(results)
+    assert_equal 'ready', report[:certification_status]
+    assert_equal 21, report.dig(:aggregates, :passed_runs)
+    assert_equal 21, report.dig(:aggregates, :total_runs)
+  end
 end

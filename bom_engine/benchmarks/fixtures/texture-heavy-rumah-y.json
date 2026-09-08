@@ -1,0 +1,517 @@
+{
+  "format": {
+    "name": "BOM Engine Canonical Graph",
+    "version": "1.2.0"
+  },
+  "units": "m",
+  "coordinate_system": {
+    "handedness": "right",
+    "up_axis": "+Z"
+  },
+  "materials": [
+    {
+      "id": "mat:opaque_stone",
+      "name": "Opaque Natural Stone",
+      "color": {
+        "r": 180,
+        "g": 170,
+        "b": 160,
+        "a": 255
+      },
+      "opacity": 1.0,
+      "texture": {
+        "filename": "opaque.png",
+        "source_path": "textures/opaque.png",
+        "width_m": 0.6,
+        "height_m": 0.6,
+        "image_width_px": 2,
+        "image_height_px": 2
+      }
+    },
+    {
+      "id": "mat:alpha_glass",
+      "name": "Decorative Screen with Alpha",
+      "color": {
+        "r": 220,
+        "g": 230,
+        "b": 240,
+        "a": 180
+      },
+      "opacity": 0.7,
+      "texture": {
+        "filename": "alpha.png",
+        "source_path": "textures/alpha.png",
+        "width_m": 1.2,
+        "height_m": 2.4,
+        "image_width_px": 2,
+        "image_height_px": 2
+      }
+    },
+    {
+      "id": "mat:shared_timber_a",
+      "name": "Timber Siding Profile A",
+      "color": {
+        "r": 160,
+        "g": 110,
+        "b": 70,
+        "a": 255
+      },
+      "opacity": 1.0,
+      "texture": {
+        "filename": "shared.png",
+        "source_path": "textures/shared.png",
+        "width_m": 0.15,
+        "height_m": 2.0,
+        "image_width_px": 2,
+        "image_height_px": 2
+      }
+    },
+    {
+      "id": "mat:shared_timber_b",
+      "name": "Timber Soffit Profile B (Shared Texture)",
+      "color": {
+        "r": 160,
+        "g": 110,
+        "b": 70,
+        "a": 255
+      },
+      "opacity": 1.0,
+      "texture": {
+        "filename": "shared.png",
+        "source_path": "textures/shared.png",
+        "width_m": 0.15,
+        "height_m": 2.0,
+        "image_width_px": 2,
+        "image_height_px": 2
+      }
+    },
+    {
+      "id": "mat:fallback_ceramic",
+      "name": "Ceramic Tile (Source File Fallback)",
+      "color": {
+        "r": 240,
+        "g": 240,
+        "b": 240,
+        "a": 255
+      },
+      "opacity": 1.0,
+      "texture": {
+        "filename": "fallback.png",
+        "source_path": "textures/fallback.png",
+        "width_m": 0.3,
+        "height_m": 0.3,
+        "image_width_px": 2,
+        "image_height_px": 2
+      }
+    }
+  ],
+  "tags": [
+    {
+      "id": "tag:facade",
+      "name": "A-FACADE",
+      "visible": true
+    },
+    {
+      "id": "tag:screen",
+      "name": "A-DECR-SCRN",
+      "visible": true
+    },
+    {
+      "id": "tag:soffit",
+      "name": "A-CLNG-WOOD",
+      "visible": true
+    }
+  ],
+  "transforms": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "definitions": [
+    {
+      "id": "def:root",
+      "name": "Root Model",
+      "kind": "model_definition",
+      "mesh_id": null,
+      "node_ids": [
+        "node:textures_assembly"
+      ]
+    },
+    {
+      "id": "def:assembly",
+      "name": "Decorative Assembly",
+      "kind": "component_definition",
+      "mesh_id": "mesh:panels",
+      "node_ids": [
+
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "node:root",
+      "name": "Root",
+      "kind": "root",
+      "definition_id": "def:root",
+      "transform_id": 0,
+      "material_id": null,
+      "tag_id": null,
+      "visible": true
+    },
+    {
+      "id": "node:textures_assembly",
+      "name": "Decor Assembly 1",
+      "kind": "component_instance",
+      "definition_id": "def:assembly",
+      "transform_id": 0,
+      "material_id": null,
+      "tag_id": "tag:facade",
+      "visible": true,
+      "semantic": {
+        "role": "facade",
+        "classification_policy": "decorative"
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "id": "mesh:panels",
+      "definition_id": "def:assembly",
+      "positions_m": [
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        2.0,
+        0.0,
+        0.0,
+        2.0,
+        1.0,
+        0.0,
+        1.0,
+        1.0,
+        0.0,
+        2.0,
+        0.0,
+        0.0,
+        3.0,
+        0.0,
+        0.0,
+        3.0,
+        1.0,
+        0.0,
+        2.0,
+        1.0,
+        0.0,
+        3.0,
+        0.0,
+        0.0,
+        4.0,
+        0.0,
+        0.0,
+        4.0,
+        1.0,
+        0.0,
+        3.0,
+        1.0,
+        0.0,
+        4.0,
+        0.0,
+        0.0,
+        5.0,
+        0.0,
+        0.0,
+        5.0,
+        1.0,
+        0.0,
+        4.0,
+        1.0,
+        0.0
+      ],
+      "faces": [
+        {
+          "id": "f:p1_opaque",
+          "outer": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "holes": [
+
+          ],
+          "triangles": [
+            0,
+            1,
+            2,
+            0,
+            2,
+            3
+          ],
+          "normal": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "area_m2": 1.0,
+          "front_material_id": "mat:opaque_stone",
+          "tag_id": "tag:facade",
+          "uv": [
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0
+          ],
+          "semantic": {
+            "role": "facade",
+            "label": "Stone Cladding",
+            "classification_policy": "decorative"
+          }
+        },
+        {
+          "id": "f:p2_alpha",
+          "outer": [
+            4,
+            5,
+            6,
+            7
+          ],
+          "holes": [
+
+          ],
+          "triangles": [
+            4,
+            5,
+            6,
+            4,
+            6,
+            7
+          ],
+          "normal": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "area_m2": 1.0,
+          "front_material_id": "mat:alpha_glass",
+          "tag_id": "tag:screen",
+          "uv": [
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0
+          ],
+          "semantic": {
+            "role": "fixture",
+            "label": "Screen Panel",
+            "classification_policy": "decorative"
+          }
+        },
+        {
+          "id": "f:p3_shared_a",
+          "outer": [
+            8,
+            9,
+            10,
+            11
+          ],
+          "holes": [
+
+          ],
+          "triangles": [
+            8,
+            9,
+            10,
+            8,
+            10,
+            11
+          ],
+          "normal": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "area_m2": 1.0,
+          "front_material_id": "mat:shared_timber_a",
+          "tag_id": "tag:soffit",
+          "uv": [
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0
+          ],
+          "semantic": {
+            "role": "ceiling",
+            "label": "Timber Siding A",
+            "classification_policy": "decorative"
+          }
+        },
+        {
+          "id": "f:p4_shared_b",
+          "outer": [
+            12,
+            13,
+            14,
+            15
+          ],
+          "holes": [
+
+          ],
+          "triangles": [
+            12,
+            13,
+            14,
+            12,
+            14,
+            15
+          ],
+          "normal": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "area_m2": 1.0,
+          "front_material_id": "mat:shared_timber_b",
+          "tag_id": "tag:soffit",
+          "uv": [
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0
+          ],
+          "semantic": {
+            "role": "ceiling",
+            "label": "Timber Siding B",
+            "classification_policy": "decorative"
+          }
+        },
+        {
+          "id": "f:p5_fallback",
+          "outer": [
+            16,
+            17,
+            18,
+            19
+          ],
+          "holes": [
+
+          ],
+          "triangles": [
+            16,
+            17,
+            18,
+            16,
+            18,
+            19
+          ],
+          "normal": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "area_m2": 1.0,
+          "front_material_id": "mat:fallback_ceramic",
+          "tag_id": "tag:facade",
+          "uv": [
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0
+          ],
+          "semantic": {
+            "role": "floor",
+            "label": "Tile Panel",
+            "classification_policy": "decorative"
+          }
+        }
+      ],
+      "edges": [
+
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "id": "scene:textures_overview",
+      "name": "Textures Overview",
+      "camera": {
+        "eye_m": [
+          2.5,
+          -4.0,
+          3.0
+        ],
+        "target_m": [
+          2.5,
+          0.5,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "field_of_view_degrees": 45.0,
+        "aspect_ratio": 1.5
+      },
+      "visibility": {
+        "visible_tag_ids": [
+          "tag:facade",
+          "tag:screen",
+          "tag:soffit"
+        ],
+        "hidden_tag_ids": [
+
+        ]
+      }
+    }
+  ],
+  "clip_planes": [
+
+  ]
+}

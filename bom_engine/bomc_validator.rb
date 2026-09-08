@@ -25,8 +25,8 @@ module BOMEngine
       area_absolute_m2: 1.0e-6
     }.freeze
 
-    def self.compare(source, decoded, tolerances: {})
-      normalized = BOMC::ModelAdapter.normalize(source)
+    def self.compare(source, decoded, tolerances: {}, base_path: nil)
+      normalized = BOMC::ModelAdapter.normalize(source, base_path: base_path)
       limits = DEFAULT_TOLERANCES.merge(tolerances)
       position_errors = []
       normal_errors = []
@@ -171,8 +171,8 @@ module BOMEngine
       }
     end
 
-    def self.validate!(source, decoded, tolerances: {})
-      result = compare(source, decoded, tolerances: tolerances)
+    def self.validate!(source, decoded, tolerances: {}, base_path: nil)
+      result = compare(source, decoded, tolerances: tolerances, base_path: base_path)
       failures = []
       failures << 'table counts' unless result[:counts][:exact]
       failures << 'materials' unless result[:materials][:exact]
@@ -194,11 +194,11 @@ module BOMEngine
       result
     end
 
-    def self.validate_profile(source:, decoded:, profile: :visual, texture_evidence: nil)
+    def self.validate_profile(source:, decoded:, profile: :visual, texture_evidence: nil, base_path: nil)
       normalized = if source.is_a?(Hash) && source[:meshes] && source[:instances] && !source.dig(:format, :name).to_s.include?('BOM Engine Canonical')
                      source
                    else
-                     BOMC::ModelAdapter.normalize(source)
+                     BOMC::ModelAdapter.normalize(source, base_path: base_path)
                    end
 
       prof = profile.to_s.downcase.to_sym
@@ -599,12 +599,13 @@ module BOMEngine
       }
     end
 
-    def self.validate_profile!(source:, decoded:, profile: :visual, texture_evidence: nil)
+    def self.validate_profile!(source:, decoded:, profile: :visual, texture_evidence: nil, base_path: nil)
       report = validate_profile(
         source: source,
         decoded: decoded,
         profile: profile,
-        texture_evidence: texture_evidence
+        texture_evidence: texture_evidence,
+        base_path: base_path
       )
       unless report[:passed]
         raise ProfileValidationError.new(

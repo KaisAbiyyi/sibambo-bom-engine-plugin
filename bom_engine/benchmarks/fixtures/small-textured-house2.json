@@ -1,0 +1,265 @@
+{
+  "format": {
+    "name": "BOM Engine Canonical Graph",
+    "version": "1.2.0"
+  },
+  "units": "m",
+  "coordinate_system": {
+    "handedness": "right",
+    "up_axis": "+Z"
+  },
+  "materials": [
+    {
+      "id": "mat:textured_wall",
+      "name": "Textured Wall Finish",
+      "color": {
+        "r": 200,
+        "g": 180,
+        "b": 160,
+        "a": 255
+      },
+      "opacity": 1.0,
+      "texture": {
+        "filename": "opaque.png",
+        "source_path": "textures/opaque.png",
+        "width_m": 1.0,
+        "height_m": 1.0,
+        "image_width_px": 2,
+        "image_height_px": 2
+      }
+    },
+    {
+      "id": "mat:smooth_plaster",
+      "name": "Smooth Interior Plaster",
+      "color": {
+        "r": 240,
+        "g": 240,
+        "b": 240,
+        "a": 255
+      },
+      "opacity": 1.0
+    }
+  ],
+  "tags": [
+    {
+      "id": "tag:envelope",
+      "name": "A-WALL-EXTR",
+      "visible": true
+    }
+  ],
+  "transforms": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "definitions": [
+    {
+      "id": "def:root",
+      "name": "Root Model",
+      "kind": "model_definition",
+      "mesh_id": null,
+      "node_ids": [
+        "node:wall_panel"
+      ]
+    },
+    {
+      "id": "def:wall",
+      "name": "Wall Panel",
+      "kind": "component_definition",
+      "mesh_id": "mesh:wall",
+      "node_ids": [
+
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "node:root",
+      "name": "Root",
+      "kind": "root",
+      "definition_id": "def:root",
+      "transform_id": 0,
+      "material_id": null,
+      "tag_id": null,
+      "visible": true
+    },
+    {
+      "id": "node:wall_panel",
+      "name": "Wall Panel 1",
+      "kind": "component_instance",
+      "definition_id": "def:wall",
+      "transform_id": 0,
+      "material_id": null,
+      "tag_id": "tag:envelope",
+      "visible": true,
+      "semantic": {
+        "role": "wall",
+        "classification_policy": "architectural"
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "id": "mesh:wall",
+      "definition_id": "def:wall",
+      "positions_m": [
+        0.0,
+        0.0,
+        0.0,
+        2.0,
+        0.0,
+        0.0,
+        2.0,
+        2.0,
+        0.0,
+        0.0,
+        2.0,
+        0.0,
+        2.0,
+        0.0,
+        0.0,
+        4.0,
+        0.0,
+        0.0,
+        4.0,
+        2.0,
+        0.0,
+        2.0,
+        2.0,
+        0.0
+      ],
+      "faces": [
+        {
+          "id": "f:textured_quad",
+          "outer": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "holes": [
+
+          ],
+          "triangles": [
+            0,
+            1,
+            2,
+            0,
+            2,
+            3
+          ],
+          "normal": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "area_m2": 4.0,
+          "front_material_id": "mat:textured_wall",
+          "tag_id": "tag:envelope",
+          "uv": [
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0
+          ],
+          "semantic": {
+            "role": "wall",
+            "label": "Exterior Wall",
+            "classification_policy": "architectural"
+          }
+        },
+        {
+          "id": "f:plain_quad",
+          "outer": [
+            4,
+            5,
+            6,
+            7
+          ],
+          "holes": [
+
+          ],
+          "triangles": [
+            4,
+            5,
+            6,
+            4,
+            6,
+            7
+          ],
+          "normal": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "area_m2": 4.0,
+          "front_material_id": "mat:smooth_plaster",
+          "tag_id": "tag:envelope",
+          "semantic": {
+            "role": "wall",
+            "label": "Interior Wall",
+            "classification_policy": "architectural"
+          }
+        }
+      ],
+      "edges": [
+
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "id": "scene:default",
+      "name": "Default Scene",
+      "camera": {
+        "eye_m": [
+          5.0,
+          -5.0,
+          4.0
+        ],
+        "target_m": [
+          2.0,
+          1.0,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "field_of_view_degrees": 45.0,
+        "aspect_ratio": 1.33
+      },
+      "visibility": {
+        "visible_tag_ids": [
+          "tag:envelope"
+        ],
+        "hidden_tag_ids": [
+
+        ]
+      }
+    }
+  ],
+  "clip_planes": [
+
+  ]
+}
