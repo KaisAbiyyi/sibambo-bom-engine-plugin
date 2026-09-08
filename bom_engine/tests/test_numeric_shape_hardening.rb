@@ -127,10 +127,75 @@ module BOMEngine
         assert(!error.message.include?("undefined method `to_f'"), 'invalid numeric shape does not leak raw Ruby NoMethodError')
       end
 
+      def test_scalar_strictness_and_non_finite_rejection
+        assert_raises('rejects non-numeric string', 'BOMC numeric shape invalid at test.field') do
+          NumericShape.scalar('not-a-number', path: 'test.field')
+        end
+        assert_raises('rejects mixed garbage string', 'BOMC numeric shape invalid at test.field') do
+          NumericShape.scalar('1.2garbage', path: 'test.field')
+        end
+        assert_raises('rejects Float::NAN', 'BOMC numeric shape invalid at test.field') do
+          NumericShape.scalar(Float::NAN, path: 'test.field')
+        end
+        assert_raises('rejects NaN string', 'BOMC numeric shape invalid at test.field') do
+          NumericShape.scalar('NaN', path: 'test.field')
+        end
+        assert_raises('rejects Float::INFINITY', 'BOMC numeric shape invalid at test.field') do
+          NumericShape.scalar(Float::INFINITY, path: 'test.field')
+        end
+        assert_raises('rejects -Float::INFINITY', 'BOMC numeric shape invalid at test.field') do
+          NumericShape.scalar(-Float::INFINITY, path: 'test.field')
+        end
+        assert_raises('rejects nil', 'BOMC numeric shape invalid at test.field') do
+          NumericShape.scalar(nil, path: 'test.field')
+        end
+        assert_raises('rejects boolean', 'BOMC numeric shape invalid at test.field') do
+          NumericShape.scalar(true, path: 'test.field')
+        end
+        assert_raises('rejects symbol', 'BOMC numeric shape invalid at test.field') do
+          NumericShape.scalar(:sym, path: 'test.field')
+        end
+
+        assert(NumericShape.scalar(42, path: 'test.field') == 42.0, 'integer parses to float')
+        assert(NumericShape.scalar('3.14159', path: 'test.field') == 3.14159, 'clean numeric string parses')
+      end
+
+      class MockSketchupLength
+        def initialize(inches)
+          @inches = inches
+        end
+
+        def to_f
+          @inches * 0.0254
+        end
+      end
+
+      def test_sketchup_length_support
+        len = MockSketchupLength.new(100.0)
+        result = NumericShape.scalar(len, path: 'test.length')
+        assert((result - 2.54).abs < 1e-6, 'MockSketchupLength converts to meter float')
+
+        coords = NumericShape.vec3([len, len, len], path: 'test.vec3')
+        assert(coords.all? { |c| (c - 2.54).abs < 1e-6 }, 'vec3 accepts length objects')
+      end
+
+      def test_optional_vectors
+        assert(NumericShape.optional_vec2(nil, path: 'test.uv').nil?, 'optional_vec2 preserves nil')
+        assert(NumericShape.optional_vec3(nil, path: 'test.normal').nil?, 'optional_vec3 preserves nil')
+        assert(NumericShape.optional_vec2([1.0, 2.0], path: 'test.uv') == [1.0, 2.0], 'optional_vec2 parses valid vec2')
+        assert(NumericShape.optional_vec3([1.0, 2.0, 3.0], path: 'test.pos') == [1.0, 2.0, 3.0], 'optional_vec3 parses valid vec3')
+        assert_raises('optional_vec2 validates invalid content', 'BOMC numeric shape invalid') do
+          NumericShape.optional_vec2([1.0, 'bad'], path: 'test.uv')
+        end
+      end
+
       def run
         test_structured_xyz_hashes_are_normalized_without_array_pair_to_f
         test_clip_plane_accepts_structured_xyz_hashes
         test_invalid_numeric_shape_reports_field_path_instead_of_naked_no_method_error
+        test_scalar_strictness_and_non_finite_rejection
+        test_sketchup_length_support
+        test_optional_vectors
         puts 'Numeric Shape Hardening Tests: ALL PASSED'
         true
       rescue StandardError => error

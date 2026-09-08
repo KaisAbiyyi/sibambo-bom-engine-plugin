@@ -7,16 +7,41 @@ module BOMEngine
     module_function
 
     def scalar(value, path:)
-      if value.is_a?(Array) || value.is_a?(Hash)
+      if value.nil? || value.is_a?(Array) || value.is_a?(Hash) || value.is_a?(TrueClass) || value.is_a?(FalseClass) || value.is_a?(Symbol)
         raise_shape(path, 'numeric scalar', value)
       end
-      return value.to_f if value.respond_to?(:to_f)
 
-      raise_shape(path, 'numeric scalar', value)
+      num = if value.is_a?(Numeric)
+              value.to_f
+            elsif length_like?(value) && value.respond_to?(:to_f)
+              value.to_f
+            elsif value.is_a?(String)
+              Float(value)
+            else
+              raise_shape(path, 'numeric scalar', value)
+            end
+
+      unless num.finite?
+        raise_shape(path, 'finite numeric scalar', value)
+      end
+
+      num
     rescue ShapeError
       raise
     rescue StandardError
       raise_shape(path, 'numeric scalar', value)
+    end
+
+    def optional_vec2(value, path:)
+      return nil if value.nil?
+
+      vec2(value, path: path)
+    end
+
+    def optional_vec3(value, path:)
+      return nil if value.nil?
+
+      vec3(value, path: path)
     end
 
     def vec2(value, path:)
@@ -99,8 +124,28 @@ module BOMEngine
     end
     private_class_method :coordinate_value
 
+    def length_like?(value)
+      return true if defined?(Length) && value.is_a?(Length)
+      name = value.class.name
+      name == 'Length' || (name && name.end_with?('::Length')) || (value.respond_to?(:to_f) && name =~ /Length/i)
+    end
+    private_class_method :length_like?
+
     def scalar_like?(value)
-      !value.is_a?(Array) && !value.is_a?(Hash) && value.respond_to?(:to_f)
+      return false if value.nil? || value.is_a?(Array) || value.is_a?(Hash) || value.is_a?(TrueClass) || value.is_a?(FalseClass) || value.is_a?(Symbol)
+      if value.is_a?(Numeric)
+        value.to_f.finite?
+      elsif length_like?(value) && value.respond_to?(:to_f)
+        value.to_f.finite? rescue false
+      elsif value.is_a?(String)
+        begin
+          Float(value).finite?
+        rescue ArgumentError, TypeError
+          false
+        end
+      else
+        false
+      end
     end
     private_class_method :scalar_like?
 

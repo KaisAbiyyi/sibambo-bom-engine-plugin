@@ -11,7 +11,7 @@ module BOMEngine
     # @param tw          [Sketchup::TextureWriter]
     # @param texture_dir [String, nil] output directory; nil means skip texture export
     # @return            [Array<Hash>] material descriptors
-    def self.extract(model, tw, texture_dir, checkpoint: nil, optimize_textures: false, profile: :visual, semantic_class: :class_b)
+    def self.extract(model, tw, texture_dir, checkpoint: nil, optimize_textures: false, profile: :visual, semantic_class: :class_b, material_classes: nil)
       Dir.mkdir(texture_dir) if texture_dir && !Dir.exist?(texture_dir)
       written = 0
       materials = model.materials
@@ -28,7 +28,7 @@ module BOMEngine
                            hex: "#%02x%02x%02x" % [c.red, c.green, c.blue] },
           alpha:         mat.alpha,
           material_type: mat.materialType,
-          attributes:    Traversal.extract_dicts(mat)
+          attributes:    defined?(Traversal) ? Traversal.extract_dicts(mat) : {}
         }
 
         if mat.texture && !texture_dir.nil?
@@ -42,13 +42,23 @@ module BOMEngine
           end
           tex_filename = "#{safe_name}.png"
 
+          mat_class = if material_classes
+                        material_classes[mat.name] || material_classes[mat.object_id.to_s] || semantic_class
+                      else
+                        semantic_class
+                      end
+
+          in_to_m = defined?(Constants::IN_TO_M) ? Constants::IN_TO_M : 0.0254
+
           entry[:texture] = {
-            filename:        tex_filename,
-            source_path:     tex.filename,
-            width_m:         (tex.width  * Constants::IN_TO_M).round(4),
-            height_m:        (tex.height * Constants::IN_TO_M).round(4),
-            image_width_px:  tex.image_width,
-            image_height_px: tex.image_height
+            filename:          tex_filename,
+            source_path:       tex.filename,
+            width_m:           (tex.width  * in_to_m).round(4),
+            height_m:          (tex.height * in_to_m).round(4),
+            image_width_px:    tex.image_width,
+            image_height_px:   tex.image_height,
+            source_dimensions: { width_px: tex.image_width, height_px: tex.image_height },
+            semantic_class:    mat_class
           }
 
           # Keep a lossless PNG fallback. An opaque JPEG candidate is accepted
@@ -62,7 +72,7 @@ module BOMEngine
                 basename: safe_name,
                 source_path: tex.filename,
                 profile: profile,
-                semantic_class: semantic_class
+                semantic_class: mat_class
               ) do |_processed_pixels, _total_pixels|
                 checkpoint.call(stage: :snapshot_textures, processed: index, total: total) if checkpoint
               end
@@ -72,18 +82,19 @@ module BOMEngine
             else
               out_path = File.join(texture_dir, tex_filename)
               written += 1 if tex.write(out_path, true)
+              entry[:texture][:staging_evidence] = { selected: :staged_png, path: out_path, staged_bytes: File.size(out_path) } if File.file?(out_path)
             end
             checkpoint.call(stage: :snapshot_textures, processed: index + 1, total: total, force: true) if checkpoint
           rescue => e
             raise if e.class.ancestors.any? { |ancestor| ancestor.respond_to?(:name) && ancestor.name.to_s.end_with?('Cancelled') }
-            Logger.warn("Could not write texture for '#{mat.name}': #{e.message}")
+            Logger.warn("Could not write texture for '#{mat.name}': #{e.message}") if defined?(Logger)
           end
         end
 
         entry
       end.tap do
         checkpoint.call(stage: :snapshot_materials, processed: total, total: total) if checkpoint
-        Logger.info("Wrote #{written} texture(s) to #{texture_dir}") if texture_dir
+        Logger.info("Wrote #{written} texture(s) to #{texture_dir}") if texture_dir && defined?(Logger)
       end
     end
 
