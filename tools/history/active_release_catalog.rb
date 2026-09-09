@@ -19,7 +19,7 @@ module EvolutionActiveCatalog
     bomc-next-v1
   ].freeze
 
-  ALLOWED_STATES = %w[uncertified ready development].freeze
+  ALLOWED_STATES = %w[uncertified ready development incomplete].freeze
   ALLOWED_ENTRY_KINDS = %w[legacy-scene bomc-three-profile].freeze
   ALLOWED_PROFILES = %w[visual research exact].freeze
   E4_BASE_PRODUCER_SHA = '8082541d852cd68b9874231e41c6b9c967c74d26'.freeze
@@ -27,7 +27,7 @@ module EvolutionActiveCatalog
   HEX_40_RE = /\A[0-9a-f]{40}\z/.freeze
   HEX_64_RE = /\A[0-9a-f]{64}\z/.freeze
 
-  def self.load(path: nil)
+  def self.load(path: nil, verify_certifications: true, root_dir: nil)
     catalog_path = path ? File.expand_path(path) : DEFAULT_PATH
     raise "Active releases catalog not found: #{catalog_path}" unless File.file?(catalog_path)
 
@@ -35,7 +35,8 @@ module EvolutionActiveCatalog
     records = data.is_a?(Array) ? data : data['releases']
     raise 'Invalid catalog format: expected array of releases' unless records.is_a?(Array)
 
-    validate!(records)
+    effective_root = root_dir || File.dirname(File.dirname(catalog_path))
+    validate!(records, verify_certifications: verify_certifications, root_dir: effective_root)
     records
   end
 
@@ -45,13 +46,91 @@ module EvolutionActiveCatalog
     end
   end
 
+  def self.buildable(records)
+    records.select do |record|
+      !record['producerSha'].nil?
+    end
+  end
+
   def self.find_candidate(records, candidate_id)
     records.find do |record|
       record['id'] == candidate_id && !record['producerSha'].nil?
     end
   end
 
-  def self.validate!(records)
+  def self.resolve_certification(record, root_dir: nil)
+    root = root_dir || File.expand_path('../..', __dir__)
+    cert_id = record['certificationId']
+    return nil if cert_id.nil? || cert_id.to_s.strip.empty?
+
+    candidates = []
+    if record['certificationPath']
+      candidates << File.expand_path(record['certificationPath'], root)
+    end
+    candidates << File.join(root, 'history', 'certifications', "#{record['id']}.json")
+    candidates << File.join(root, 'history', 'certifications', "#{cert_id}.json")
+    candidates << File.join(root, 'artifacts', 'evolution-certification', record['id'], 'certification.json')
+    candidates << File.join(root, '..', 'scratch', 't7-worktrees-20260908', 'consumer', 'artifacts', 'evolution-certification', 't7-20260908', record['id'], 'certification.json')
+    candidates << File.join(root, '..', 'scratch', 't0-worktrees-20260907', 'consumer', 'artifacts', 'evolution-certification', record['id'], 'certification.json')
+
+    candidates.each do |cand|
+      return cand if File.file?(cand)
+    end
+    nil
+  end
+
+  def self.verify_certification!(record, root_dir: nil)
+    cert_path = resolve_certification(record, root_dir: root_dir)
+    unless cert_path
+      raise "ready release #{record['id']} references certificationId #{record['certificationId'].inspect} but no certification artifact could be resolved"
+    end
+
+    begin
+      cert = JSON.parse(File.read(cert_path))
+    rescue StandardError => e
+      raise "ready release #{record['id']} certification artifact #{cert_path} is invalid JSON: #{e.message}"
+    end
+
+    schema_version = cert['schemaVersion']
+    unless schema_version.to_s =~ /\A(t7|sibambo)-evolution-certification-v\d+\z/
+      raise "ready release #{record['id']} has invalid certification schemaVersion: #{schema_version.inspect}"
+    end
+
+    if cert['certificationId'] != record['certificationId']
+      raise "ready release #{record['id']} certificationId mismatch: catalog has #{record['certificationId'].inspect}, artifact has #{cert['certificationId'].inspect}"
+    end
+
+    if cert['releaseId'] != record['id']
+      raise "ready release #{record['id']} releaseId mismatch: catalog has #{record['id'].inspect}, artifact has #{cert['releaseId'].inspect}"
+    end
+
+    if cert['ready'] != true
+      raise "ready release #{record['id']} has ready=false in certification artifact (status: #{cert['status']})"
+    end
+
+    if cert['status'] != 'ready'
+      raise "ready release #{record['id']} has status=#{cert['status'].inspect} in certification artifact; expected 'ready'"
+    end
+
+    if cert['provisional'] == true
+      raise "ready release #{record['id']} certification is provisional (dirty consumer checkout) and cannot be promoted"
+    end
+
+    tuple = cert['tuple'] || {}
+    if tuple['producerSha'] && tuple['producerSha'] != record['producerSha']
+      raise "ready release #{record['id']} producerSha mismatch: catalog #{record['producerSha']}, cert #{tuple['producerSha']}"
+    end
+    if tuple['consumerSha'] && tuple['consumerSha'] != record['consumerSha']
+      raise "ready release #{record['id']} consumerSha mismatch: catalog #{record['consumerSha']}, cert #{tuple['consumerSha']}"
+    end
+    if tuple['packageSha256'] && tuple['packageSha256'] != record['packageSha256']
+      raise "ready release #{record['id']} packageSha256 mismatch: catalog #{record['packageSha256']}, cert #{tuple['packageSha256']}"
+    end
+
+    cert
+  end
+
+  def self.validate!(records, verify_certifications: true, root_dir: nil)
     raise 'expected four slots' unless records.length == 4
 
     # 1. Unique IDs
@@ -122,6 +201,7 @@ module EvolutionActiveCatalog
         raise "ready release #{record['id']} must have consumerSha" unless consumer_sha
         raise "ready release #{record['id']} must have packageSha256" unless pkg_sha
         raise "ready release #{record['id']} must have certificationId" if record['certificationId'].to_s.strip.empty?
+        verify_certification!(record, root_dir: root_dir) if verify_certifications
       end
     end
   end

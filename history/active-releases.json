@@ -44,7 +44,7 @@
       "id": "baseline-8082541",
       "title": "SIBAMBO BOMC 1.2 Baseline (8082541)",
       "order": 3,
-      "state": "ready",
+      "state": "uncertified",
       "baseProducerSha": "8082541d852cd68b9874231e41c6b9c967c74d26",
       "producerSha": "8082541d852cd68b9874231e41c6b9c967c74d26",
       "consumerSha": "d49270130502ce676c0ba5a9a7bb13f1e913c1c8",
@@ -57,7 +57,7 @@
       "requiredSections": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
       "packageSha256": "9a9fbe162f021c6dfdd7cbfc0cd53946436bae2835d0b18de01f6f327a1060ef",
       "snapshotTreeSha256": "27c34e72125dd14d18723c34eeefb02540b686300407fcf8f0d57e51ca221976",
-      "certificationId": "baseline-8082541-d492701"
+      "certificationId": null
     },
     {
       "id": "next-from-8082541",
