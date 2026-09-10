@@ -256,47 +256,52 @@ module BOMEngine
 
     def compute_material_classes(model)
       return {} if model.nil?
-      return model.material_classes if model.respond_to?(:material_classes) && model.material_classes
+      if model.respond_to?(:material_classes)
+        supplied_classes = model.material_classes
+        return supplied_classes if supplied_classes.is_a?(Hash)
+      end
       return compute_material_classes_from_graph(model) if model.is_a?(Hash)
 
       material_usages = Hash.new { |h, k| h[k] = [] }
       texture_materials = Hash.new { |h, k| h[k] = [] }
+      visited_definitions = {}
 
       classify_entity = lambda do |entity, parent_role = nil|
-        current_role = nil
-        if entity.respond_to?(:name)
-          defn_name = entity.definition.name if entity.respond_to?(:definition) && entity.definition.respond_to?(:name)
-          tag_name = entity.layer.name if entity.respond_to?(:layer) && entity.layer.respond_to?(:name)
-          if defined?(SemanticLabeler)
-            built = SemanticLabeler.build(instance_name: entity.name, definition_name: defn_name, tag_name: tag_name)
-            current_role = built[:role] if built
+        begin
+          current_role = nil
+          if entity.respond_to?(:name)
+            defn_name = entity.definition.name if entity.respond_to?(:definition) && entity.definition.respond_to?(:name)
+            tag_name = entity.layer.name if entity.respond_to?(:layer) && entity.layer.respond_to?(:name)
+            if defined?(SemanticLabeler)
+              built = SemanticLabeler.build(instance_name: entity.name, definition_name: defn_name, tag_name: tag_name)
+              current_role = built[:role] if built
+            end
           end
-        end
-        role = current_role || (entity.respond_to?(:semantic_role) ? entity.semantic_role : nil) || parent_role
-        klass = BOMCGeometryPolicy.classify_role(role)
+          role = current_role || (entity.respond_to?(:semantic_role) ? entity.semantic_role : nil) || parent_role
+          klass = BOMCGeometryPolicy.classify_role(role)
 
-        if entity.respond_to?(:material) && entity.material
-          mat = entity.material
-          material_usages[mat.name] << klass if mat.respond_to?(:name)
-          material_usages[mat.object_id.to_s] << klass if mat.respond_to?(:object_id)
-          if mat.respond_to?(:texture) && mat.texture
-            tex_key = mat.texture.respond_to?(:filename) ? mat.texture.filename : mat.texture.to_s
-            texture_materials[tex_key] << (mat.respond_to?(:name) ? mat.name : mat.to_s)
+          [:material, :back_material].each do |accessor|
+            next unless entity.respond_to?(accessor)
+            mat = entity.public_send(accessor)
+            next unless mat
+            material_usages[mat.name] << klass if mat.respond_to?(:name)
+            material_usages[mat.object_id.to_s] << klass
+            if mat.respond_to?(:texture) && mat.texture
+              tex_key = mat.texture.respond_to?(:filename) ? mat.texture.filename : mat.texture.to_s
+              texture_materials[tex_key] << (mat.respond_to?(:name) ? mat.name : mat.to_s)
+            end
           end
-        end
 
-        if entity.respond_to?(:back_material) && entity.back_material
-          mat = entity.back_material
-          material_usages[mat.name] << klass if mat.respond_to?(:name)
-          material_usages[mat.object_id.to_s] << klass if mat.respond_to?(:object_id)
-          if mat.respond_to?(:texture) && mat.texture
-            tex_key = mat.texture.respond_to?(:filename) ? mat.texture.filename : mat.texture.to_s
-            texture_materials[tex_key] << (mat.respond_to?(:name) ? mat.name : mat.to_s)
+          if entity.respond_to?(:definition) && entity.definition.respond_to?(:entities)
+            definition = entity.definition
+            definition_key = definition.object_id
+            unless visited_definitions[definition_key]
+              visited_definitions[definition_key] = true
+              definition.entities.each { |child| classify_entity.call(child, role) }
+            end
           end
-        end
-
-        if entity.respond_to?(:definition) && entity.definition.respond_to?(:entities)
-          entity.definition.entities.each { |child| classify_entity.call(child, role) }
+        rescue StandardError => error
+          Logger.warn("Skipping material classification for #{entity.class}: #{error.message}") if defined?(Logger)
         end
       end
 

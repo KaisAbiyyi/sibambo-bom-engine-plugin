@@ -166,8 +166,14 @@ module BOMEngine
     def failed(error)
       finish_timer
       @finished = true
-      Logger.error("Model-Eval cooperative export failed: #{error.message}\n#{Array(error.backtrace).first(8).join("\n")}")
-      execute("failConversion(#{JSON.generate(message: error.message)})")
+      detail = "#{error.class}: #{error.message}\n#{Array(error.backtrace).first(20).join("\n")}"
+      Logger.error("Model-Eval cooperative export failed: #{detail}")
+      begin
+        File.write("#{@output_path}.error.log", detail, encoding: 'UTF-8')
+      rescue StandardError
+        nil
+      end
+      execute("failConversion(#{JSON.generate(message: "#{error.class}: #{error.message}")})")
       self.class.release(self)
     end
 

@@ -109,6 +109,16 @@ class TestProfilePublication < Test::Unit::TestCase
   end
 
   # Test 2: Shared texture Class A/C resolves to strictest Class A
+  def test_non_hash_model_material_classes_is_not_used_as_an_index
+    indexed_collection = Object.new
+    indexed_collection.define_singleton_method(:[]) do |index|
+      raise IndexError, "index #{index} too big"
+    end
+    model = FakeModel.new([], [], indexed_collection)
+
+    assert_equal({}, BOMEngine::BOMCExtension.compute_material_classes(model))
+  end
+
   def test_shared_texture_strictest_semantic_class
     graph = {
       materials: [
