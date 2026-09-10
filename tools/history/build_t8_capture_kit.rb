@@ -17,7 +17,7 @@ module T8CaptureKitBuilder
   E4_RELEASE_ID = 'next-from-8082541'
   PINNED_PRODUCER_SHA = '7284982b26834f2635a839c6c7a1e687f83dca35'
   BASE_PRODUCER_SHA = '8082541d852cd68b9874231e41c6b9c967c74d26'
-  PINNED_CONSUMER_SHA = 'd2f71f98e1376172cf5204f042d3b5e448aab71f'
+  PINNED_CONSUMER_SHA = '4c927dfc4c38dea767ff8f7a3f796230e25c45bf'
   EXPECTED_SNAPSHOT_TREE_SHA256 = '71373d0fcda67580ab9333df8de4e1628d36b9f5c8d0c03f6e97061d8634a6f4'
   EXPECTED_CATALOG_PACKAGE_SHA256 = '1e929b7b552c48cd6e8552f10150c0fc56eab0d99b4b95503ba43b9dafc4fc21'
 
@@ -134,6 +134,7 @@ module T8CaptureKitBuilder
       require 'time'
       require 'fileutils'
       require 'digest'
+      require 'zlib'
 
       module SibamboCaptureKit
         KIT_DIR = File.expand_path(__dir__)
@@ -144,6 +145,49 @@ module T8CaptureKitBuilder
         PROFILES = %i[visual research exact].freeze
         PRODUCER_SHA = '7284982b26834f2635a839c6c7a1e687f83dca35'.freeze
         RELEASE_ID = 'next-from-8082541'.freeze
+        EXPECTED_PROFILE_CONTRACT_REVISION = 2
+
+        EXPECTED_EXPORT_STAGES = %w[
+          INITIALIZE SCAN_MODEL SNAPSHOT_MATERIALS SNAPSHOT_TEXTURES
+          SNAPSHOT_ENTITIES CLASSIFY BUILD_COVERAGE BUILD_DEFINITIONS
+          BUILD_INSTANCES COMPILE_METADATA ENCODE_POSITIONS ENCODE_TOPOLOGY
+          ENCODE_NORMALS ENCODE_UV ENCODE_TRANSFORMS ENCODE_TEXTURES
+          COMPRESS_SECTIONS WRITE_CONTAINER SIZE_GATE VALIDATE DONE
+        ].freeze
+
+        def self.read_bomc_encoding_contract_profile(bomc_path)
+          return nil unless File.file?(bomc_path) && File.size(bomc_path) >= 32
+          bytes = File.binread(bomc_path)
+          return nil if bytes.bytesize < 32
+          magic, major, minor, endian, flags, section_count, dir_offset = bytes[0, 32].unpack('a8vvVVVQ<')
+          return nil unless magic == "BOMC\r\n\x1a\n".b
+
+          compact = (flags & 0x10) != 0
+          entry_bytes = compact ? 24 : 40
+          entry_pack = compact ? 'vCCVVVVV' : 'vCCQ<Q<Q<VVV'
+          dir_size = section_count * entry_bytes
+          return nil if dir_offset + dir_size > bytes.bytesize
+
+          section_count.times do |i|
+            entry_raw = bytes.byteslice(dir_offset + i * entry_bytes, entry_bytes)
+            vals = entry_raw.unpack(entry_pack)
+            sec_type, sec_codec, sec_flags, sec_offset, stored_size, raw_size = vals[0, 6]
+            if sec_type == 20 # SECTION_ENCODING_CONTRACT
+              return nil if sec_offset + stored_size > bytes.bytesize
+              sec_data = bytes.byteslice(sec_offset, stored_size)
+              if sec_codec == 1 # DEFLATE
+                sec_data = Zlib::Inflate.inflate(sec_data) rescue nil
+              end
+              return nil unless sec_data && sec_data.bytesize >= 76
+              c_vals = sec_data.unpack('vCCQ<EEQ<EEEECCCCV')
+              prof_map = { 1 => 'exact', 2 => 'research', 3 => 'visual' }
+              return prof_map[c_vals[1]]
+            end
+          end
+          nil
+        rescue StandardError
+          nil
+        end
 
         def self.ensure_extension_loaded!
           unless defined?(Sketchup)
@@ -205,7 +249,16 @@ module T8CaptureKitBuilder
           puts '======================================================================'
 
           manifest = File.file?(MANIFEST_PATH) ? JSON.parse(File.read(MANIFEST_PATH)) : {}
+          release_id = manifest['release_id'] || RELEASE_ID
+          producer_sha = manifest['producer_sha'] || PRODUCER_SHA
+          consumer_sha = manifest['consumer_sha'] || '4c927dfc4c38dea767ff8f7a3f796230e25c45bf'
+          loader_id = manifest['loader_id'] || 'bomc-next-v1'
+          contract_revision = manifest['profile_contract_revision'] || EXPECTED_PROFILE_CONTRACT_REVISION
           package_sha256 = manifest['package_sha256'] || manifest['catalog_package_sha256']
+          snapshot_tree_sha256 = manifest['snapshot_tree_sha256'] || '71373d0fcda67580ab9333df8de4e1628d36b9f5c8d0c03f6e97061d8634a6f4'
+
+          source_model_bytes = (File.size(model.path) rescue nil)
+          source_model_sha256 = (File.file?(model.path) ? Digest::SHA256.file(model.path).hexdigest : nil rescue nil)
 
           stage_timings = {}
           current_stage = nil
@@ -256,45 +309,56 @@ module T8CaptureKitBuilder
             }
           end
 
-          stage_evidence = if stage_timings.length >= 3
-                             'complete'
-                           elsif !stage_timings.empty?
-                             'partial'
-                           else
-                             'incomplete'
-                           end
+          observed_stages = stage_timings.keys
+          unavailable_stages = EXPECTED_EXPORT_STAGES - observed_stages
+          stage_evidence = (unavailable_stages.empty? && !observed_stages.empty?) ? 'complete' : 'incomplete'
 
-          bomc_sha256 = File.file?(output_bomc_path) ? Digest::SHA256.file(output_bomc_path).hexdigest : nil
           bomc_bytes = File.file?(output_bomc_path) ? File.size(output_bomc_path) : 0
+          bomc_sha256 = (File.file?(output_bomc_path) && bomc_bytes > 0) ? Digest::SHA256.file(output_bomc_path).hexdigest : nil
+          actual_bomc_prof = read_bomc_encoding_contract_profile(output_bomc_path)
+
+          # Strict fail-closed evidence flag: only true when export succeeded, file exists, has nonzero bytes, and SHA calculated
+          real_runtime_evidence = export_errors.empty? && File.file?(output_bomc_path) && bomc_bytes > 0 && !bomc_sha256.nil?
+          export_status = real_runtime_evidence ? 'success' : 'failed'
 
           record = {
             'schema_version' => 't8-runtime-capture-v1',
-            'release_id' => RELEASE_ID,
-            'producer_sha' => PRODUCER_SHA,
+            'release_id' => release_id,
+            'producer_sha' => producer_sha,
+            'consumer_sha' => consumer_sha,
+            'loader_id' => loader_id,
+            'profile_contract_revision' => contract_revision,
+            'package_sha256' => package_sha256,
+            'snapshot_tree_sha256' => snapshot_tree_sha256,
             'profile' => prof_sym.to_s,
+            'actual_bomc_profile' => actual_bomc_prof,
             'timestamp' => Time.now.utc.iso8601,
             'source_model_path' => model.path.to_s.gsub('\\', '/'),
-            'source_model_bytes' => (File.size(model.path) rescue nil),
+            'source_model_bytes' => source_model_bytes,
+            'source_model_sha256' => source_model_sha256,
             'output_bomc_path' => output_bomc_path.gsub('\\', '/'),
             'bomc_sha256' => bomc_sha256,
             'bomc_bytes' => bomc_bytes,
-            'package_sha256' => package_sha256,
             'sketchup_version' => Sketchup.version,
             'ruby_version' => defined?(RUBY_DESCRIPTION) ? RUBY_DESCRIPTION : RUBY_VERSION,
-            'real_runtime_evidence' => true,
+            'real_runtime_evidence' => real_runtime_evidence,
+            'export_status' => export_status,
             'export_errors' => export_errors,
             'timings' => {
               'total_wall_clock_ms' => total_wall_clock_ms,
               'stage_timings' => stage_timings,
+              'observed_stages' => observed_stages,
+              'unavailable_stages' => unavailable_stages,
               'stage_timing_evidence' => stage_evidence
             }
           }
 
           File.write(capture_json_path, JSON.pretty_generate(record), encoding: 'UTF-8')
 
-          if export_errors.empty? && File.file?(output_bomc_path)
+          if export_status == 'success'
             puts "  [SUCCESS] Profile '#{prof_sym}' exported in #{total_wall_clock_ms} ms."
             puts "  BOMC file: #{output_bomc_path} (#{bomc_bytes} bytes, SHA256: #{bomc_sha256[0..11]}...)"
+            puts "  Section 20 profile: #{actual_bomc_prof}"
             puts "  Capture record: #{capture_json_path}"
           else
             puts "  [FAILED] Profile '#{prof_sym}' failed. See #{capture_json_path} for details."
@@ -328,30 +392,47 @@ module T8CaptureKitBuilder
     content = <<~MARKDOWN
       # SIBAMBO T8 Runtime Capture Kit — Operator Instructions
 
-      **Target Release**: \`next-from-8082541\` (Candidate E4)  
-      **Producer SHA**: \`7284982b26834f2635a839c6c7a1e687f83dca35\`  
-      **Package SHA-256**: \`#{package_sha256}\`  
-      **Kit Path**: \`#{kit_dir.gsub('\\', '/')}\`  
+      **Target Release**: `next-from-8082541` (Candidate E4)  
+      **Producer SHA**: `7284982b26834f2635a839c6c7a1e687f83dca35`  
+      **Consumer Pinned SHA**: `#{PINNED_CONSUMER_SHA}`  
+      **Package SHA-256**: `#{package_sha256}`  
+      **Kit Path**: `#{kit_dir.gsub('\\', '/')}`  
+
+      > [!IMPORTANT]
+      > **Readiness Invariant**: Successful completion of this capture kit produces `captured_pending_certification`, **NOT** release-ready (`ready: false`). Real-runtime certification requires subsequent 5-run browser cold/warm benchmarking and formal release certification.
 
       ---
 
-      ## Step 1: Open SketchUp 2026 Pro and Open Model
+      ## Step 1: Pre-Install Verification Gate
+      Before installing the candidate package or running SketchUp, verify kit integrity from your terminal:
+
+      ```powershell
+      ruby #{File.join(kit_dir, 'verify_capture.rb').gsub('\\', '/')}
+      ```
+      *(or via consumer Bun verifier: `bun D:/projects/sibambo/scratch/t0-worktrees-20260907/consumer/scripts/verify-t8-capture.ts`)*
+
+      - **Expected Pre-Install Result**: `incomplete (ready: false, provisional: true)` with missing profiles `["visual", "research", "exact"]`.
+      - The verifier will confirm that `manifest.json`, the RBZ package, and repository provenance are valid and fail-closed.
+
+      ---
+
+      ## Step 2: Open SketchUp 2026 Pro and Open Model
       1. Launch **Trimble SketchUp Pro 2026**.
-      2. Open a real architectural \`.skp\` model (e.g. \`RUMAH L.skp\` or \`RUMAH G.skp\`).
+      2. Open a real architectural `.skp` model (e.g. `RUMAH L.skp` or `RUMAH G.skp`).
       3. Verify the model is saved on disk.
 
       ---
 
-      ## Step 2: Install Candidate E4 RBZ Package
+      ## Step 3: Install Candidate E4 RBZ Package
       1. In SketchUp, open **Extensions > Extension Manager**.
       2. Click **Install Extension...** at the bottom left.
       3. Select:
-         \`#{File.join(kit_dir, 'sibambo_bom_engine_next_from_8082541.rbz').gsub('/', '\\')}\`
+         `#{File.join(kit_dir, 'sibambo_bom_engine_next_from_8082541.rbz').gsub('/', '\\')}`
       4. Confirm installation. The extension **"Sibambo BOM Engine — Next Evolution (Candidate from 8082541)"** is now active.
 
       ---
 
-      ## Step 3: Run Captures via Ruby Console
+      ## Step 4: Run Captures via Ruby Console
       Open **Window > Ruby Console** in SketchUp, then copy and paste the command for each profile.
 
       ### Option A: Run All 3 Profiles at Once (Recommended)
@@ -375,20 +456,20 @@ module T8CaptureKitBuilder
 
       ---
 
-      ## Step 4: Expected Output Files
-      After export, the following files will be created in \`#{File.join(kit_dir, 'results').gsub('\\', '/')}/\`:
-      - `<model>__E4__VISUAL.bomc` and `capture_visual.json`
-      - `<model>__E4__RESEARCH.bomc` and `capture_research.json`
-      - `<model>__E4__EXACT.bomc` and `capture_exact.json`
-      - `t8_capture_session.json`
+      ## Step 5: Post-Capture Verification Gate
+      After running the captures in SketchUp, verify the generated evidence:
 
-      ---
-
-      ## Step 5: Verification
-      From terminal/PowerShell, verify the capture kit evidence:
       ```powershell
       ruby #{File.join(kit_dir, 'verify_capture.rb').gsub('\\', '/')}
       ```
+      *(or via consumer Bun verifier: `bun D:/projects/sibambo/scratch/t0-worktrees-20260907/consumer/scripts/verify-t8-capture.ts`)*
+
+      - **Expected Post-Capture Result**: `captured_pending_certification (ready: false)` (or `blocked` if consumer checkout is dirty).
+      - The verifier validates:
+        1. All 3 BOMC output files exist with matching SHA-256 digests and non-zero bytes.
+        2. Actual BOMC Section 20 encoding contract matches the profile identity.
+        3. Source model SHA-256 and package tuple are consistent across all 3 profiles.
+        4. Real-runtime evidence flag is true and export errors array is empty.
 
       ---
 
@@ -397,7 +478,7 @@ module T8CaptureKitBuilder
       1. Open **Extensions > Extension Manager**.
       2. Find **Sibambo BOM Engine — Next Evolution (Candidate from 8082541)**.
       3. Click **Uninstall** (or toggle **Disabled**).
-      4. Alternatively, remove \`sibambo_bom_engine_next_from_8082541*\` from your SketchUp \`Plugins\` folder.
+      4. Alternatively, remove `sibambo_bom_engine_next_from_8082541*` from your SketchUp `Plugins` folder.
 
       ---
 
@@ -413,36 +494,98 @@ module T8CaptureKitBuilder
     code = <<~'RUBY'
       # frozen_string_literal: true
       # SIBAMBO T8 Runtime Capture Verifier
-      # Validates manifest, capture JSON schema, file existence, SHA256 digests, and profile identities.
+      # Validates manifest, capture JSON schema, file existence, SHA256 digests, Section 20 profile identity,
+      # path traversal safety, cross-profile consistency, and consumer repository provenance.
 
       require 'json'
       require 'digest'
       require 'fileutils'
+      require 'zlib'
+      require 'open3'
 
       module T8CaptureVerifier
         KIT_DIR = File.expand_path(__dir__)
         MANIFEST_FILE = File.join(KIT_DIR, 'manifest.json')
         RESULTS_DIR = File.join(KIT_DIR, 'results')
+        CONSUMER_DEFAULT_DIR = File.expand_path('../t0-worktrees-20260907/consumer', __dir__)
 
         REQUIRED_PROFILES = %w[visual research exact].freeze
         EXPECTED_PRODUCER_SHA = '7284982b26834f2635a839c6c7a1e687f83dca35'.freeze
         EXPECTED_LOADER_ID = 'bomc-next-v1'.freeze
         EXPECTED_SNAPSHOT_TREE_SHA256 = '71373d0fcda67580ab9333df8de4e1628d36b9f5c8d0c03f6e97061d8634a6f4'.freeze
+        EXPECTED_PROFILE_CONTRACT_REVISION = 2
 
-        def self.verify(results_dir = nil)
+        def self.read_bomc_encoding_contract_profile(bomc_path)
+          return nil unless File.file?(bomc_path) && File.size(bomc_path) >= 32
+          bytes = File.binread(bomc_path)
+          return nil if bytes.bytesize < 32
+          magic, major, minor, endian, flags, section_count, dir_offset = bytes[0, 32].unpack('a8vvVVVQ<')
+          return nil unless magic == "BOMC\r\n\x1a\n".b
+
+          compact = (flags & 0x10) != 0
+          entry_bytes = compact ? 24 : 40
+          entry_pack = compact ? 'vCCVVVVV' : 'vCCQ<Q<Q<VVV'
+          dir_size = section_count * entry_bytes
+          return nil if dir_offset + dir_size > bytes.bytesize
+
+          section_count.times do |i|
+            entry_raw = bytes.byteslice(dir_offset + i * entry_bytes, entry_bytes)
+            vals = entry_raw.unpack(entry_pack)
+            sec_type, sec_codec, sec_flags, sec_offset, stored_size, raw_size = vals[0, 6]
+            if sec_type == 20 # SECTION_ENCODING_CONTRACT
+              return nil if sec_offset + stored_size > bytes.bytesize
+              sec_data = bytes.byteslice(sec_offset, stored_size)
+              if sec_codec == 1 # DEFLATE
+                sec_data = Zlib::Inflate.inflate(sec_data) rescue nil
+              end
+              return nil unless sec_data && sec_data.bytesize >= 76
+              c_vals = sec_data.unpack('vCCQ<EEQ<EEEECCCCV')
+              prof_map = { 1 => 'exact', 2 => 'research', 3 => 'visual' }
+              return prof_map[c_vals[1]]
+            end
+          end
+          nil
+        rescue StandardError
+          nil
+        end
+
+        def self.inspect_consumer_provenance(consumer_dir = CONSUMER_DEFAULT_DIR)
+          unless Dir.exist?(consumer_dir)
+            return { available: false, error: "Consumer dir not found at #{consumer_dir}" }
+          end
+          head_sha, _status = Open3.capture2('git', '-C', consumer_dir, 'rev-parse', 'HEAD') rescue nil
+          head_sha = head_sha.to_s.strip
+          status_out, _status = Open3.capture2('git', '-C', consumer_dir, 'status', '--porcelain') rescue nil
+          uncommitted = status_out.to_s.split("\n").map(&:strip).reject(&:empty?)
+          is_dirty = !uncommitted.empty?
+          req = is_dirty ? 'Consumer checkout is dirty. All consumer modifications must be committed to a clean Git commit before browser benchmark certification, and the kit manifest must be pinned to that clean commit.' : nil
+
+          {
+            available: true,
+            head_sha: head_sha,
+            is_dirty: is_dirty,
+            uncommitted_files: uncommitted,
+            requirement: req
+          }
+        rescue StandardError => e
+          { available: false, error: e.message }
+        end
+
+        def self.verify(results_dir = nil, consumer_dir: nil, skip_consumer_inspection: false)
           res_dir = results_dir ? File.expand_path(results_dir) : RESULTS_DIR
           errors = []
           warnings = []
           missing_profiles = []
+          verified_captures = {}
 
           puts '======================================================================'
-          puts '  SIBAMBO — T8 RUNTIME CAPTURE VERIFIER'
+          puts '  SIBAMBO — T8 RUNTIME CAPTURE VERIFIER (HARDENED)'
           puts '======================================================================'
 
           # 1. Verify Manifest
           unless File.file?(MANIFEST_FILE)
             puts "  [FAIL] Manifest missing: #{MANIFEST_FILE}"
-            return { status: 'failed', ready: false, errors: ['manifest.json not found'] }
+            return { status: 'failed', ready: false, errors: ['manifest.json not found'], warnings: [], missing_profiles: REQUIRED_PROFILES }
           end
 
           manifest = JSON.parse(File.read(MANIFEST_FILE))
@@ -470,11 +613,31 @@ module T8CaptureKitBuilder
             errors << "Snapshot tree digest mismatch in manifest: expected #{EXPECTED_SNAPSHOT_TREE_SHA256}, got #{manifest['snapshot_tree_sha256']}"
           end
 
+          if manifest['profile_contract_revision'] != EXPECTED_PROFILE_CONTRACT_REVISION
+            errors << "Profile contract revision mismatch in manifest: expected #{EXPECTED_PROFILE_CONTRACT_REVISION}, got #{manifest['profile_contract_revision']}"
+          end
+
+          unless manifest['consumer_sha'] && manifest['consumer_sha'].match?(/\A[0-9a-f]{40}\z/i)
+            errors << "Manifest consumer_sha missing or not a 40-char hex string: #{manifest['consumer_sha']}"
+          end
+
+          # 2. Inspect Consumer Provenance
+          consumer_info = nil
+          unless skip_consumer_inspection
+            consumer_info = inspect_consumer_provenance(consumer_dir || CONSUMER_DEFAULT_DIR)
+            if consumer_info[:available]
+              if consumer_info[:head_sha] && manifest['consumer_sha'] && consumer_info[:head_sha] != manifest['consumer_sha']
+                errors << "Consumer SHA mismatch: manifest has #{manifest['consumer_sha']}, but actual consumer Git HEAD is #{consumer_info[:head_sha]}"
+              end
+              if consumer_info[:is_dirty]
+                warnings << "Consumer checkout is dirty (#{consumer_info[:uncommitted_files].length} uncommitted files). Capture is provisional and certification is blocked."
+              end
+            end
+          end
+
           puts "  Manifest check: #{errors.empty? ? 'PASS' : 'FAIL'}"
 
-          # 2. Verify Profiles & Captures
-          verified_captures = {}
-
+          # 3. Verify Profiles & Captures
           REQUIRED_PROFILES.each do |prof|
             capture_file = File.join(res_dir, "capture_#{prof}.json")
             unless File.file?(capture_file)
@@ -490,52 +653,150 @@ module T8CaptureKitBuilder
             end
 
             # Check schema fields
-            %w[schema_version release_id producer_sha profile timestamp source_model_path output_bomc_path bomc_sha256 package_sha256 sketchup_version timings].each do |field|
-              unless rec.key?(field) && !rec[field].nil?
+            required_fields = %w[
+              schema_version release_id producer_sha consumer_sha loader_id profile_contract_revision
+              package_sha256 snapshot_tree_sha256 profile timestamp source_model_path source_model_bytes
+              source_model_sha256 output_bomc_path bomc_sha256 bomc_bytes sketchup_version ruby_version
+              real_runtime_evidence export_errors timings
+            ]
+            required_fields.each do |field|
+              if rec[field].nil?
                 errors << "Capture #{prof} missing required field: #{field}"
               end
             end
 
+            # Manifest identity agreement
+            errors << "Release ID mismatch for #{prof}: expected #{manifest['release_id']}, got #{rec['release_id']}" if rec['release_id'] != manifest['release_id']
+            errors << "Producer SHA mismatch for #{prof}: expected #{manifest['producer_sha']}, got #{rec['producer_sha']}" if rec['producer_sha'] != manifest['producer_sha']
+            errors << "Consumer SHA mismatch for #{prof}: expected #{manifest['consumer_sha']}, got #{rec['consumer_sha']}" if rec['consumer_sha'] != manifest['consumer_sha']
+            errors << "Loader ID mismatch for #{prof}: expected #{manifest['loader_id']}, got #{rec['loader_id']}" if rec['loader_id'] != manifest['loader_id']
+            errors << "Profile contract revision mismatch for #{prof}: expected #{manifest['profile_contract_revision']}, got #{rec['profile_contract_revision']}" if rec['profile_contract_revision'].to_i != manifest['profile_contract_revision'].to_i
+            errors << "Package SHA256 mismatch for #{prof}: expected #{manifest['package_sha256']}, got #{rec['package_sha256']}" if rec['package_sha256'] != manifest['package_sha256']
+            errors << "Snapshot tree digest mismatch for #{prof}: expected #{manifest['snapshot_tree_sha256']}, got #{rec['snapshot_tree_sha256']}" if rec['snapshot_tree_sha256'] != manifest['snapshot_tree_sha256']
+
+            # Profile match
             if rec['profile'] != prof
               errors << "Profile mismatch in capture #{prof}: expected #{prof}, got #{rec['profile']}"
             end
 
-            if rec['producer_sha'] != EXPECTED_PRODUCER_SHA
-              errors << "Producer SHA mismatch in capture #{prof}: expected #{EXPECTED_PRODUCER_SHA}, got #{rec['producer_sha']}"
+            # Source model validation
+            unless rec['source_model_bytes'].is_a?(Integer) && rec['source_model_bytes'] > 0
+              errors << "Capture #{prof} source_model_bytes must be a positive integer, got #{rec['source_model_bytes'].inspect}"
+            end
+            unless rec['source_model_sha256'].is_a?(String) && rec['source_model_sha256'].match?(/\A[0-9a-f]{64}\z/i)
+              errors << "Capture #{prof} source_model_sha256 missing or not a 64-char hex string: #{rec['source_model_sha256'].inspect}"
+            end
+            if rec['source_model_path'].to_s.strip.empty?
+              errors << "Capture #{prof} source_model_path is missing or empty"
             end
 
-            bomc_path = rec['output_bomc_path']
-            unless bomc_path && File.file?(bomc_path)
-              errors << "BOMC file missing on disk for #{prof}: #{bomc_path}"
-            end
+            # BOMC output validation & path traversal check
+            bomc_path_val = rec['output_bomc_path'].to_s
+            if bomc_path_val.empty?
+              errors << "Capture #{prof} output_bomc_path is missing"
+            else
+              resolved_bomc = File.expand_path(bomc_path_val, res_dir)
+              clean_res_dir = File.expand_path(res_dir)
+              unless resolved_bomc.start_with?(clean_res_dir + File::SEPARATOR) || resolved_bomc == clean_res_dir
+                errors << "Output BOMC path escapes results directory for #{prof}: #{bomc_path_val}"
+              end
 
-            if bomc_path && File.file?(bomc_path)
-              actual_bomc_sha = Digest::SHA256.file(bomc_path).hexdigest
-              if rec['bomc_sha256'] && actual_bomc_sha != rec['bomc_sha256']
-                errors << "BOMC SHA256 mismatch for #{prof}: recorded=#{rec['bomc_sha256']} actual=#{actual_bomc_sha}"
+              unless File.file?(resolved_bomc)
+                errors << "BOMC file missing on disk for #{prof}: #{resolved_bomc}"
+              else
+                actual_bytes = File.size(resolved_bomc)
+                if actual_bytes <= 0
+                  errors << "BOMC file is empty on disk for #{prof}: #{resolved_bomc}"
+                end
+                if rec['bomc_bytes'] != actual_bytes
+                  errors << "BOMC byte count mismatch for #{prof}: recorded #{rec['bomc_bytes']}, actual is #{actual_bytes}"
+                end
+                actual_bomc_sha = Digest::SHA256.file(resolved_bomc).hexdigest
+                if rec['bomc_sha256'] != actual_bomc_sha
+                  errors << "BOMC SHA256 mismatch for #{prof}: recorded #{rec['bomc_sha256']}, actual is #{actual_bomc_sha}"
+                end
+
+                # Section 20 encoding contract check
+                actual_bomc_prof = read_bomc_encoding_contract_profile(resolved_bomc)
+                if actual_bomc_prof.nil?
+                  errors << "Could not read Section 20 encoding contract profile from BOMC for #{prof}"
+                elsif actual_bomc_prof != prof
+                  errors << "Profile mismatch with BOMC encoding contract for #{prof}: capture declared '#{prof}', BOMC Section 20 encoded '#{actual_bomc_prof}'"
+                end
+                if rec['actual_bomc_profile'] && rec['actual_bomc_profile'] != prof
+                  errors << "actual_bomc_profile mismatch in record for #{prof}: expected '#{prof}', got '#{rec['actual_bomc_profile']}'"
+                end
               end
             end
 
-            if rec['export_errors'] && !rec['export_errors'].empty?
+            # Environment validation
+            errors << "Capture #{prof} sketchup_version missing or empty" if rec['sketchup_version'].to_s.strip.empty?
+            errors << "Capture #{prof} ruby_version missing or empty" if rec['ruby_version'].to_s.strip.empty?
+            if rec['timestamp'].to_s.strip.empty?
+              errors << "Capture #{prof} timestamp missing or empty"
+            else
+              begin
+                Time.iso8601(rec['timestamp'])
+              rescue ArgumentError
+                errors << "Capture #{prof} timestamp is not a valid ISO-8601 string: #{rec['timestamp']}"
+              end
+            end
+
+            # Fail-closed checks
+            if rec['export_errors'].is_a?(Array) && !rec['export_errors'].empty?
               errors << "Export errors recorded in #{prof}: #{rec['export_errors'].join('; ')}"
             end
-
+            if rec['export_status'] && rec['export_status'] != 'success'
+              errors << "Capture #{prof} export_status is '#{rec['export_status']}', expected 'success'"
+            end
             unless rec['real_runtime_evidence'] == true
-              warnings << "Capture #{prof} does not declare real_runtime_evidence: true"
+              errors << "Capture #{prof} real_runtime_evidence must be true, got #{rec['real_runtime_evidence'].inspect}"
             end
 
-            timing_evidence = rec.dig('timings', 'stage_timing_evidence')
-            if timing_evidence == 'incomplete' || timing_evidence.nil?
-              warnings << "Capture #{prof} stage timing evidence is incomplete"
+            # Timings
+            timings = rec['timings']
+            if !timings.is_a?(Hash)
+              errors << "Capture #{prof} timings object missing"
+            else
+              unless timings['total_wall_clock_ms'].is_a?(Numeric) && timings['total_wall_clock_ms'] > 0
+                errors << "Capture #{prof} total_wall_clock_ms must be positive, got #{timings['total_wall_clock_ms'].inspect}"
+              end
+              if timings['stage_timing_evidence'] != 'complete'
+                warnings << "Capture #{prof} stage timing evidence is incomplete (#{timings['stage_timing_evidence']})"
+              end
             end
 
             verified_captures[prof] = rec
           end
 
+          # 4. Cross-Profile Consistency Checks
+          if verified_captures.length > 1
+            source_shas = verified_captures.values.map { |c| c['source_model_sha256'] }.compact.uniq
+            if source_shas.length > 1
+              errors << "Inconsistent source model across profiles: captures refer to different source models (#{source_shas.join(', ')})"
+            end
+            pkg_shas = verified_captures.values.map { |c| c['package_sha256'] }.compact.uniq
+            if pkg_shas.length > 1
+              errors << "Inconsistent package SHA across profiles: captures refer to different packages (#{pkg_shas.join(', ')})"
+            end
+            prod_shas = verified_captures.values.map { |c| c['producer_sha'] }.compact.uniq
+            if prod_shas.length > 1
+              errors << "Inconsistent producer SHA across profiles (#{prod_shas.join(', ')})"
+            end
+            con_shas = verified_captures.values.map { |c| c['consumer_sha'] }.compact.uniq
+            if con_shas.length > 1
+              errors << "Inconsistent consumer SHA across profiles (#{con_shas.join(', ')})"
+            end
+          end
+
+          # 5. Overall Status Resolution
+          provisional = consumer_info ? consumer_info[:is_dirty] : false
           status = if !errors.empty?
                      'failed'
                    elsif !missing_profiles.empty?
                      'incomplete'
+                   elsif provisional
+                     'blocked'
                    else
                      'captured_pending_certification'
                    end
@@ -546,12 +807,14 @@ module T8CaptureKitBuilder
           puts "  Profiles missing:  #{missing_profiles.inspect}" unless missing_profiles.empty?
           puts "  Errors count:      #{errors.length}"
           puts "  Warnings count:    #{warnings.length}"
-          puts "  Verification status: #{status} (ready: #{ready})"
+          puts "  Verification status: #{status} (ready: #{ready}, provisional: #{provisional})"
           puts '======================================================================'
 
           {
             status: status,
             ready: ready,
+            provisional: provisional,
+            consumer_provenance: consumer_info,
             errors: errors,
             warnings: warnings,
             missing_profiles: missing_profiles,

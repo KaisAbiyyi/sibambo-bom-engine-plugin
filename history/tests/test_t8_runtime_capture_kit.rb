@@ -16,7 +16,10 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
   OPERATOR_GUIDE_PATH = File.join(KIT_DIR, 'OPERATOR_GUIDE.md')
 
   PINNED_PRODUCER_SHA = '7284982b26834f2635a839c6c7a1e687f83dca35'.freeze
+  PINNED_CONSUMER_SHA = '4c927dfc4c38dea767ff8f7a3f796230e25c45bf'.freeze
   EXPECTED_SNAPSHOT_TREE_SHA256 = '71373d0fcda67580ab9333df8de4e1628d36b9f5c8d0c03f6e97061d8634a6f4'.freeze
+  EXPECTED_LOADER_ID = 'bomc-next-v1'.freeze
+  EXPECTED_PROFILE_CONTRACT_REVISION = 2
 
   def setup
     @temp_dir = Dir.mktmpdir('t8-test-capture')
@@ -24,6 +27,46 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
 
   def teardown
     FileUtils.rm_rf(@temp_dir) if @temp_dir && File.directory?(@temp_dir)
+  end
+
+  # SYNTHETIC TEST FIXTURE BUILDER
+  # Generates valid minimal synthetic BOMC bytes containing Section 20 (Encoding Contract).
+  # Used purely for unit testing parser/verifier behavior and does not represent real SketchUp runtime certification.
+  def build_synthetic_bomc_bytes(profile)
+    buf = String.new(encoding: 'ASCII-8BIT')
+    # Header (32 bytes)
+    buf << "BOMC\r\n\x1a\n"
+    buf << [1, 2].pack('v2') # major: 1, minor: 2
+    buf << [0x01020304].pack('V') # endian
+    buf << [0].pack('V') # flags: standard directory
+    buf << [1].pack('V') # section_count: 1
+    buf << [32].pack('Q<') # directory_offset: 32
+
+    # Directory entry at offset 32 (40 bytes standard)
+    buf << [20].pack('v') # type: 20 (SECTION_ENCODING_CONTRACT)
+    buf << [0].pack('C') # codec: 0 (STORE)
+    buf << [0].pack('C') # flags: 0
+    buf << [80].pack('Q<') # offset: 80
+    buf << [76].pack('Q<') # stored_size: 76
+    buf << [76].pack('Q<') # raw_size: 76
+    buf << [1].pack('V') # count: 1
+    buf << [0].pack('V') # crc32: 0
+    buf << [0].pack('V') # reserved: 0
+    # 32 + 40 = 72 bytes so far. Need 8 bytes of padding to reach offset 80:
+    buf << ("\x00" * 8)
+
+    # Section 20 data at offset 80 (76 bytes)
+    prof_id = case profile.to_s.downcase
+              when 'exact' then 1
+              when 'research' then 2
+              when 'visual' then 3
+              else 0
+              end
+    buf << [1].pack('v') # schema_version: 1
+    buf << [prof_id].pack('C') # profile_id
+    buf << [1].pack('C') # texture_policy: pixel_lossless
+    buf << ("\x00" * 72) # padding to 76 bytes
+    buf
   end
 
   def test_manifest_metadata_and_provenance
@@ -34,8 +77,9 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
     assert_equal 'next-from-8082541', manifest['release_id']
     assert_equal PINNED_PRODUCER_SHA, manifest['producer_sha']
     assert_equal '8082541d852cd68b9874231e41c6b9c967c74d26', manifest['base_producer_sha']
-    assert_equal 'bomc-next-v1', manifest['loader_id']
-    assert_equal 2, manifest['profile_contract_revision']
+    assert_equal PINNED_CONSUMER_SHA, manifest['consumer_sha']
+    assert_equal EXPECTED_LOADER_ID, manifest['loader_id']
+    assert_equal EXPECTED_PROFILE_CONTRACT_REVISION, manifest['profile_contract_revision']
     assert_equal %w[visual research exact], manifest['supported_profiles']
     assert_equal '1.0', manifest['builder_revision']
     assert_equal '1.0', manifest['transformer_revision']
@@ -59,6 +103,8 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
     assert guide_content.include?('SibamboCaptureKit.export_profile(:exact)')
     assert guide_content.include?('Install Extension')
     assert guide_content.include?('Uninstall')
+    assert guide_content.include?('captured_pending_certification')
+    assert guide_content.include?('ready: false')
   end
 
   def test_capture_script_syntax_and_structure
@@ -74,14 +120,15 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
     assert script_src.include?('def self.export_profile')
     assert script_src.include?('def self.export_all')
     assert script_src.include?('t8-runtime-capture-v1')
+    assert script_src.include?('read_bomc_encoding_contract_profile')
+    assert script_src.include?('EXPECTED_EXPORT_STAGES')
   end
 
   def test_verifier_marks_empty_results_as_incomplete
     assert File.file?(VERIFIER_PATH)
     require VERIFIER_PATH
 
-    # Running verify against empty directory must return incomplete and ready: false
-    res = T8CaptureVerifier.verify(@temp_dir)
+    res = T8CaptureVerifier.verify(@temp_dir, skip_consumer_inspection: true)
     assert_equal 'incomplete', res[:status]
     assert_equal false, res[:ready]
     assert_equal %w[visual research exact], res[:missing_profiles]
@@ -93,28 +140,38 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
 
     manifest = JSON.parse(File.read(MANIFEST_PATH))
     pkg_sha = manifest['package_sha256']
+    consumer_sha = manifest['consumer_sha']
+    source_model_sha = 'a' * 64
 
-    # Generate mock captures for all 3 profiles with genuine dummy BOMC files
+    # Generate synthetic captures for all 3 profiles with valid Section 20 BOMC fixtures
     %w[visual research exact].each do |prof|
       bomc_file = File.join(@temp_dir, "TestModel__E4__#{prof.upcase}.bomc")
-      File.write(bomc_file, "BOMC_TEST_PAYLOAD_#{prof}_" + ('x' * 200))
+      bomc_bytes = build_synthetic_bomc_bytes(prof)
+      File.binwrite(bomc_file, bomc_bytes)
       bomc_sha = Digest::SHA256.file(bomc_file).hexdigest
 
       record = {
         'schema_version' => 't8-runtime-capture-v1',
         'release_id' => 'next-from-8082541',
         'producer_sha' => PINNED_PRODUCER_SHA,
+        'consumer_sha' => consumer_sha,
+        'loader_id' => EXPECTED_LOADER_ID,
+        'profile_contract_revision' => EXPECTED_PROFILE_CONTRACT_REVISION,
+        'package_sha256' => pkg_sha,
+        'snapshot_tree_sha256' => EXPECTED_SNAPSHOT_TREE_SHA256,
         'profile' => prof,
+        'actual_bomc_profile' => prof,
         'timestamp' => Time.now.utc.iso8601,
         'source_model_path' => 'C:/Models/TestHouse.skp',
         'source_model_bytes' => 1234567,
-        'output_bomc_path' => bomc_file,
+        'source_model_sha256' => source_model_sha,
+        'output_bomc_path' => "TestModel__E4__#{prof.upcase}.bomc",
         'bomc_sha256' => bomc_sha,
-        'bomc_bytes' => File.size(bomc_file),
-        'package_sha256' => pkg_sha,
+        'bomc_bytes' => bomc_bytes.bytesize,
         'sketchup_version' => '26.0.483',
         'ruby_version' => 'ruby 3.2.2 (2023-03-30 revision e51014f9c0) [x64-mingw-ucrt]',
         'real_runtime_evidence' => true,
+        'export_status' => 'success',
         'export_errors' => [],
         'timings' => {
           'total_wall_clock_ms' => 1250.5,
@@ -130,7 +187,7 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
       File.write(File.join(@temp_dir, "capture_#{prof}.json"), JSON.pretty_generate(record))
     end
 
-    res = T8CaptureVerifier.verify(@temp_dir)
+    res = T8CaptureVerifier.verify(@temp_dir, skip_consumer_inspection: true)
     assert_equal 'captured_pending_certification', res[:status]
     assert_equal false, res[:ready], 'Even complete capture set must NOT mark release ready (fail-closed)'
     assert res[:errors].empty?, "Expected zero errors, got: #{res[:errors].inspect}"
@@ -142,33 +199,226 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
 
     manifest = JSON.parse(File.read(MANIFEST_PATH))
     pkg_sha = manifest['package_sha256']
-
-    bomc_file = File.join(@temp_dir, "Corrupt__E4__VISUAL.bomc")
-    File.write(bomc_file, "BOMC_CORRUPT_CONTENT")
+    bomc_file = File.join(@temp_dir, 'Corrupt__E4__VISUAL.bomc')
+    File.binwrite(bomc_file, build_synthetic_bomc_bytes('visual'))
 
     # Record fake hash that doesn't match actual file
     record = {
       'schema_version' => 't8-runtime-capture-v1',
       'release_id' => 'next-from-8082541',
       'producer_sha' => PINNED_PRODUCER_SHA,
+      'consumer_sha' => manifest['consumer_sha'],
+      'loader_id' => EXPECTED_LOADER_ID,
+      'profile_contract_revision' => EXPECTED_PROFILE_CONTRACT_REVISION,
+      'package_sha256' => pkg_sha,
+      'snapshot_tree_sha256' => EXPECTED_SNAPSHOT_TREE_SHA256,
       'profile' => 'visual',
+      'actual_bomc_profile' => 'visual',
       'timestamp' => Time.now.utc.iso8601,
       'source_model_path' => 'C:/Models/TestHouse.skp',
-      'output_bomc_path' => bomc_file,
+      'source_model_bytes' => 1234567,
+      'source_model_sha256' => 'a' * 64,
+      'output_bomc_path' => 'Corrupt__E4__VISUAL.bomc',
       'bomc_sha256' => '0' * 64, # Mismatch!
-      'package_sha256' => pkg_sha,
+      'bomc_bytes' => 156,
       'sketchup_version' => '26.0.483',
       'ruby_version' => 'ruby 3.2.2',
       'real_runtime_evidence' => true,
+      'export_status' => 'failed',
       'export_errors' => ['Simulated internal failure'],
       'timings' => { 'total_wall_clock_ms' => 500.0, 'stage_timing_evidence' => 'incomplete' }
     }
-    File.write(File.join(@temp_dir, "capture_visual.json"), JSON.pretty_generate(record))
+    File.write(File.join(@temp_dir, 'capture_visual.json'), JSON.pretty_generate(record))
 
-    res = T8CaptureVerifier.verify(@temp_dir)
+    res = T8CaptureVerifier.verify(@temp_dir, skip_consumer_inspection: true)
     assert_equal 'failed', res[:status]
     assert_equal false, res[:ready]
     assert res[:errors].any? { |e| e.include?('BOMC SHA256 mismatch') }
     assert res[:errors].any? { |e| e.include?('Export errors recorded') }
+  end
+
+  def test_verifier_rejects_section20_profile_mismatch
+    require VERIFIER_PATH
+
+    manifest = JSON.parse(File.read(MANIFEST_PATH))
+    bomc_file = File.join(@temp_dir, 'Mismatch__E4__VISUAL.bomc')
+    # Build BOMC encoded as EXACT (prof_id 1) but claimed as VISUAL:
+    bomc_bytes = build_synthetic_bomc_bytes('exact')
+    File.binwrite(bomc_file, bomc_bytes)
+    bomc_sha = Digest::SHA256.file(bomc_file).hexdigest
+
+    record = {
+      'schema_version' => 't8-runtime-capture-v1',
+      'release_id' => 'next-from-8082541',
+      'producer_sha' => PINNED_PRODUCER_SHA,
+      'consumer_sha' => manifest['consumer_sha'],
+      'loader_id' => EXPECTED_LOADER_ID,
+      'profile_contract_revision' => EXPECTED_PROFILE_CONTRACT_REVISION,
+      'package_sha256' => manifest['package_sha256'],
+      'snapshot_tree_sha256' => EXPECTED_SNAPSHOT_TREE_SHA256,
+      'profile' => 'visual',
+      'actual_bomc_profile' => 'exact',
+      'timestamp' => Time.now.utc.iso8601,
+      'source_model_path' => 'C:/Models/TestHouse.skp',
+      'source_model_bytes' => 1234567,
+      'source_model_sha256' => 'a' * 64,
+      'output_bomc_path' => 'Mismatch__E4__VISUAL.bomc',
+      'bomc_sha256' => bomc_sha,
+      'bomc_bytes' => bomc_bytes.bytesize,
+      'sketchup_version' => '26.0.483',
+      'ruby_version' => 'ruby 3.2.2',
+      'real_runtime_evidence' => true,
+      'export_status' => 'success',
+      'export_errors' => [],
+      'timings' => { 'total_wall_clock_ms' => 500.0 }
+    }
+    File.write(File.join(@temp_dir, 'capture_visual.json'), JSON.pretty_generate(record))
+
+    res = T8CaptureVerifier.verify(@temp_dir, skip_consumer_inspection: true)
+    assert_equal 'failed', res[:status]
+    assert res[:errors].any? { |e| e.include?('Profile mismatch with BOMC encoding contract') }
+  end
+
+  def test_verifier_rejects_path_traversal_escape
+    require VERIFIER_PATH
+
+    manifest = JSON.parse(File.read(MANIFEST_PATH))
+    record = {
+      'schema_version' => 't8-runtime-capture-v1',
+      'release_id' => 'next-from-8082541',
+      'producer_sha' => PINNED_PRODUCER_SHA,
+      'consumer_sha' => manifest['consumer_sha'],
+      'loader_id' => EXPECTED_LOADER_ID,
+      'profile_contract_revision' => EXPECTED_PROFILE_CONTRACT_REVISION,
+      'package_sha256' => manifest['package_sha256'],
+      'snapshot_tree_sha256' => EXPECTED_SNAPSHOT_TREE_SHA256,
+      'profile' => 'visual',
+      'timestamp' => Time.now.utc.iso8601,
+      'source_model_path' => 'C:/Models/TestHouse.skp',
+      'source_model_bytes' => 1234567,
+      'source_model_sha256' => 'a' * 64,
+      'output_bomc_path' => '../../../../etc/shadow.bomc',
+      'bomc_sha256' => 'a' * 64,
+      'bomc_bytes' => 100,
+      'sketchup_version' => '26.0.483',
+      'ruby_version' => 'ruby 3.2.2',
+      'real_runtime_evidence' => true,
+      'export_status' => 'success',
+      'export_errors' => [],
+      'timings' => { 'total_wall_clock_ms' => 500.0 }
+    }
+    File.write(File.join(@temp_dir, 'capture_visual.json'), JSON.pretty_generate(record))
+
+    res = T8CaptureVerifier.verify(@temp_dir, skip_consumer_inspection: true)
+    assert_equal 'failed', res[:status]
+    assert res[:errors].any? { |e| e.include?('escapes results directory') }
+  end
+
+  def test_verifier_rejects_inconsistent_source_model_across_profiles
+    require VERIFIER_PATH
+
+    manifest = JSON.parse(File.read(MANIFEST_PATH))
+    [
+      ['visual', 'a' * 64],
+      ['research', 'b' * 64]
+    ].each do |prof, model_sha|
+      bomc_file = File.join(@temp_dir, "House__E4__#{prof.upcase}.bomc")
+      bomc_bytes = build_synthetic_bomc_bytes(prof)
+      File.binwrite(bomc_file, bomc_bytes)
+      bomc_sha = Digest::SHA256.file(bomc_file).hexdigest
+
+      record = {
+        'schema_version' => 't8-runtime-capture-v1',
+        'release_id' => 'next-from-8082541',
+        'producer_sha' => PINNED_PRODUCER_SHA,
+        'consumer_sha' => manifest['consumer_sha'],
+        'loader_id' => EXPECTED_LOADER_ID,
+        'profile_contract_revision' => EXPECTED_PROFILE_CONTRACT_REVISION,
+        'package_sha256' => manifest['package_sha256'],
+        'snapshot_tree_sha256' => EXPECTED_SNAPSHOT_TREE_SHA256,
+        'profile' => prof,
+        'actual_bomc_profile' => prof,
+        'timestamp' => Time.now.utc.iso8601,
+        'source_model_path' => "C:/Models/House_#{prof}.skp",
+        'source_model_bytes' => 1048576,
+        'source_model_sha256' => model_sha,
+        'output_bomc_path' => "House__E4__#{prof.upcase}.bomc",
+        'bomc_sha256' => bomc_sha,
+        'bomc_bytes' => bomc_bytes.bytesize,
+        'sketchup_version' => '26.0.483',
+        'ruby_version' => 'ruby 3.2.2',
+        'real_runtime_evidence' => true,
+        'export_status' => 'success',
+        'export_errors' => [],
+        'timings' => { 'total_wall_clock_ms' => 500.0 }
+      }
+      File.write(File.join(@temp_dir, "capture_#{prof}.json"), JSON.pretty_generate(record))
+    end
+
+    res = T8CaptureVerifier.verify(@temp_dir, skip_consumer_inspection: true)
+    assert_equal 'failed', res[:status]
+    assert res[:errors].any? { |e| e.include?('Inconsistent source model across profiles') }
+  end
+
+  def test_verifier_rejects_manifest_tuple_mismatches_and_malformed_fields
+    require VERIFIER_PATH
+
+    dummy_bomc = File.join(@temp_dir, 'House__E4__VISUAL.bomc')
+    bomc_bytes = build_synthetic_bomc_bytes('visual')
+    File.binwrite(dummy_bomc, bomc_bytes)
+    bomc_sha = Digest::SHA256.file(dummy_bomc).hexdigest
+
+    record = {
+      'schema_version' => 't8-runtime-capture-v1',
+      'release_id' => 'wrong-release-id',
+      'producer_sha' => '0' * 40,
+      'consumer_sha' => '1' * 40,
+      'loader_id' => 'wrong-loader',
+      'profile_contract_revision' => 99,
+      'package_sha256' => '2' * 64,
+      'snapshot_tree_sha256' => '3' * 64,
+      'profile' => 'visual',
+      'actual_bomc_profile' => 'visual',
+      'timestamp' => 'not-a-valid-date',
+      'source_model_path' => '',
+      'source_model_bytes' => -5,
+      'source_model_sha256' => 'not-hex',
+      'output_bomc_path' => 'House__E4__VISUAL.bomc',
+      'bomc_sha256' => bomc_sha,
+      'bomc_bytes' => bomc_bytes.bytesize,
+      'sketchup_version' => '',
+      'ruby_version' => '',
+      'real_runtime_evidence' => false,
+      'export_status' => 'failed',
+      'export_errors' => ['Fatal export crash'],
+      'timings' => { 'total_wall_clock_ms' => -1 }
+    }
+    File.write(File.join(@temp_dir, 'capture_visual.json'), JSON.pretty_generate(record))
+
+    res = T8CaptureVerifier.verify(@temp_dir, skip_consumer_inspection: true)
+    assert_equal 'failed', res[:status]
+    assert res[:errors].any? { |e| e.include?('Release ID mismatch') }
+    assert res[:errors].any? { |e| e.include?('Producer SHA mismatch') }
+    assert res[:errors].any? { |e| e.include?('Consumer SHA mismatch') }
+    assert res[:errors].any? { |e| e.include?('Loader ID mismatch') }
+    assert res[:errors].any? { |e| e.include?('Profile contract revision mismatch') }
+    assert res[:errors].any? { |e| e.include?('Package SHA256 mismatch') }
+    assert res[:errors].any? { |e| e.include?('Snapshot tree digest mismatch') }
+    assert res[:errors].any? { |e| e.include?('source_model_bytes must be a positive integer') }
+    assert res[:errors].any? { |e| e.include?('source_model_sha256 missing or not a 64-char hex string') }
+    assert res[:errors].any? { |e| e.include?('real_runtime_evidence must be true') }
+    assert res[:errors].any? { |e| e.include?('Export errors recorded in visual') }
+  end
+
+  def test_verifier_inspects_consumer_provenance
+    require VERIFIER_PATH
+
+    res = T8CaptureVerifier.inspect_consumer_provenance
+    assert res[:available], 'Consumer provenance should be available'
+    assert_match(/\A[0-9a-f]{40}\z/, res[:head_sha])
+    assert [true, false].include?(res[:is_dirty])
+    if res[:is_dirty]
+      assert res[:requirement].include?('Consumer checkout is dirty')
+    end
   end
 end
