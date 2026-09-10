@@ -315,7 +315,10 @@ module BOMEngine
       end
 
       texture_materials.each do |_tex_key, mat_names|
-        all_classes = mat_names.flat_map { |m| material_usages[m] }
+        all_classes = []
+        mat_names.each do |material_name|
+          material_usages.fetch(material_name, []).each { |klass| all_classes << klass }
+        end
         strictest = BOMCTexturePolicy.strictest_semantic_class(all_classes)
         mat_names.each { |m| result[m] = strictest }
       end
@@ -373,7 +376,10 @@ module BOMEngine
       end
 
       texture_materials.each do |_tex_key, mat_names|
-        all_classes = mat_names.flat_map { |m| material_usages[m] }
+        all_classes = []
+        mat_names.each do |material_name|
+          material_usages.fetch(material_name, []).each { |klass| all_classes << klass }
+        end
         strictest = BOMCTexturePolicy.strictest_semantic_class(all_classes)
         mat_names.each { |m| result[m] = strictest }
       end

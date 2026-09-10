@@ -119,6 +119,15 @@ class TestProfilePublication < Test::Unit::TestCase
     assert_equal({}, BOMEngine::BOMCExtension.compute_material_classes(model))
   end
 
+  def test_material_class_merge_does_not_require_flat_map
+    graph = {
+      materials: [{ id: 'mat', name: 'Material', texture: { filename: 'shared.png' } }],
+      meshes: [{ faces: [{ front_material: 0, semantic_role: 'exterior_wall' }] }],
+      nodes: []
+    }
+    assert_equal :class_a, BOMEngine::BOMCExtension.compute_material_classes_from_graph(graph)['Material']
+  end
+
   def test_shared_texture_strictest_semantic_class
     graph = {
       materials: [
