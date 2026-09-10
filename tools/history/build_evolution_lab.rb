@@ -98,8 +98,8 @@ module EvolutionLabBuilder
       return pkg
     end
 
-    targets = EvolutionActiveCatalog.packagable(records)
-    puts "Packagable active releases: #{targets.map { |r| r['id'] }.join(', ')} (#{targets.length} of 4 ready)"
+    targets = EvolutionActiveCatalog.buildable(records)
+    puts "Packaged active releases: #{targets.map { |r| r['id'] }.join(', ')} (#{targets.length} of 4 active engines)"
 
     target_standalone_dir = File.join(target_dist_dir, 'standalone')
     FileUtils.mkdir_p(target_standalone_dir)
@@ -570,14 +570,17 @@ module EvolutionLabBuilder
       chdir: ROOT_DIR
     )
     if status.success?
-      if Gem.win_platform?
-        command = [
-          'powershell', '-NoProfile', '-Command',
-          "Expand-Archive -Path '#{temp_zip}' -DestinationPath '#{raw_dir}' -Force"
-        ]
-        _stdout, stderr, status = Open3.capture3(*command)
-      else
-        _stdout, stderr, status = Open3.capture3('unzip', '-q', '-o', temp_zip, '-d', raw_dir)
+      _stdout, stderr, status = Open3.capture3('tar', '-xf', temp_zip, '-C', raw_dir)
+      unless status.success?
+        if Gem.win_platform?
+          command = [
+            'powershell', '-NoProfile', '-Command',
+            "Expand-Archive -Path '#{temp_zip}' -DestinationPath '#{raw_dir}' -Force"
+          ]
+          _stdout, stderr, status = Open3.capture3(*command)
+        else
+          _stdout, stderr, status = Open3.capture3('unzip', '-q', '-o', temp_zip, '-d', raw_dir)
+        end
       end
       unless status.success?
         raise "Failed to unzip archive for #{sha}: #{stderr}"
@@ -601,13 +604,27 @@ module EvolutionLabBuilder
     raise "Failed to ls-tree #{sha}: #{stderr}" unless status.success?
 
     files = stdout.lines.map(&:strip).reject { |f| f == 'nul' || f.empty? }
-    files.each do |rel_path|
-      next unless rel_path =~ /\Abom_engine/ || rel_path =~ /\Aclean_analysis/ || rel_path =~ /\.rb\z/ || rel_path =~ /\Aui\z/ || rel_path =~ /\Aschema\z/
-      target_file = File.join(raw_dir, rel_path)
-      FileUtils.mkdir_p(File.dirname(target_file))
-      content, err, st = Open3.capture3('git', 'show', "#{sha}:#{rel_path}", chdir: ROOT_DIR)
-      raise "Failed to git show #{sha}:#{rel_path}: #{err}" unless st.success?
-      File.binwrite(target_file, content)
+    target_files = files.select do |rel_path|
+      next false if rel_path =~ /\A(history\/generated|dist|scratch|docs)/
+      rel_path =~ /\Abom_engine/ || rel_path =~ /\Aclean_analysis/ || rel_path =~ /\.rb\z/ || rel_path =~ /\Aui\z/ || rel_path =~ /\Aschema\z/
+    end
+
+    Open3.popen2('git', 'cat-file', '--batch', chdir: ROOT_DIR) do |stdin, cat_out, _wait_thr|
+      stdin.binmode
+      cat_out.binmode
+      target_files.each do |rel_path|
+        stdin.write("#{sha}:#{rel_path}\n")
+        stdin.flush
+        header = cat_out.gets
+        if header && header =~ /blob (\d+)/
+          size = $1.to_i
+          content = cat_out.read(size)
+          cat_out.getc # newline
+          target_file = File.join(raw_dir, rel_path)
+          FileUtils.mkdir_p(File.dirname(target_file))
+          File.binwrite(target_file, content)
+        end
+      end
     end
   end
 

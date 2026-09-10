@@ -36,8 +36,8 @@ class TestActiveReleaseCatalog < Test::Unit::TestCase
 
     # Buildable candidates (releases with producerSha) can still be built
     buildable = EvolutionActiveCatalog.buildable(records)
-    assert_equal 3, buildable.length
-    assert_equal ['scene-resilient-a158b75', 'scene-fidelity-a138fe6', 'baseline-8082541'], buildable.map { |r| r['id'] }
+    assert_equal 4, buildable.length
+    assert_equal ['scene-resilient-a158b75', 'scene-fidelity-a138fe6', 'baseline-8082541', 'next-from-8082541'], buildable.map { |r| r['id'] }
   end
 
   def test_rejects_non_four_slots
@@ -258,7 +258,12 @@ class TestActiveReleaseCatalog < Test::Unit::TestCase
     assert_not_nil candidate
     assert_equal 'scene-resilient-a158b75', candidate['id']
 
-    unbuilt_cand = EvolutionActiveCatalog.find_candidate(records, 'next-from-8082541')
-    assert_nil unbuilt_cand # unbuilt candidate with nil producerSha cannot be selected
+    e4_cand = EvolutionActiveCatalog.find_candidate(records, 'next-from-8082541')
+    assert_not_nil e4_cand
+    assert_equal 'next-from-8082541', e4_cand['id']
+    assert_equal '7284982b26834f2635a839c6c7a1e687f83dca35', e4_cand['producerSha']
+
+    unbuilt_cand = EvolutionActiveCatalog.find_candidate(records, 'nonexistent-slot')
+    assert_nil unbuilt_cand # nonexistent candidate cannot be selected
   end
 end

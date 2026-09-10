@@ -12,11 +12,35 @@
       "consumerSha": null,
       "loaderId": "scene-resilient-v1",
       "profileContractRevision": null,
-      "profiles": ["visual"],
+      "profiles": [
+        "visual"
+      ],
       "allowsLegacyProfile": true,
       "entryKind": "legacy-scene",
-      "containerVersions": ["1.1"],
-      "requiredSections": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+      "containerVersions": [
+        "1.1"
+      ],
+      "requiredSections": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
       "packageSha256": null,
       "snapshotTreeSha256": null,
       "certificationId": null
@@ -31,11 +55,36 @@
       "consumerSha": null,
       "loaderId": "scene-fidelity-v1",
       "profileContractRevision": null,
-      "profiles": ["visual"],
+      "profiles": [
+        "visual"
+      ],
       "allowsLegacyProfile": true,
       "entryKind": "legacy-scene",
-      "containerVersions": ["1.1", "1.2"],
-      "requiredSections": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+      "containerVersions": [
+        "1.1",
+        "1.2"
+      ],
+      "requiredSections": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
       "packageSha256": null,
       "snapshotTreeSha256": null,
       "certificationId": null
@@ -50,11 +99,38 @@
       "consumerSha": "d49270130502ce676c0ba5a9a7bb13f1e913c1c8",
       "loaderId": "bomc-8082541-v1",
       "profileContractRevision": 1,
-      "profiles": ["visual", "research", "exact"],
+      "profiles": [
+        "visual",
+        "research",
+        "exact"
+      ],
       "allowsLegacyProfile": false,
       "entryKind": "bomc-three-profile",
-      "containerVersions": ["1.2"],
-      "requiredSections": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+      "containerVersions": [
+        "1.2"
+      ],
+      "requiredSections": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
       "packageSha256": "9a9fbe162f021c6dfdd7cbfc0cd53946436bae2835d0b18de01f6f327a1060ef",
       "snapshotTreeSha256": "27c34e72125dd14d18723c34eeefb02540b686300407fcf8f0d57e51ca221976",
       "certificationId": null
@@ -65,17 +141,44 @@
       "order": 4,
       "state": "development",
       "baseProducerSha": "8082541d852cd68b9874231e41c6b9c967c74d26",
-      "producerSha": null,
-      "consumerSha": null,
+      "producerSha": "7284982b26834f2635a839c6c7a1e687f83dca35",
+      "consumerSha": "d2f71f98e1376172cf5204f042d3b5e448aab71f",
       "loaderId": "bomc-next-v1",
       "profileContractRevision": 2,
-      "profiles": ["visual", "research", "exact"],
+      "profiles": [
+        "visual",
+        "research",
+        "exact"
+      ],
       "allowsLegacyProfile": false,
       "entryKind": "bomc-three-profile",
-      "containerVersions": ["1.2"],
-      "requiredSections": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
-      "packageSha256": null,
-      "snapshotTreeSha256": null,
+      "containerVersions": [
+        "1.2"
+      ],
+      "requiredSections": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "packageSha256": "1e929b7b552c48cd6e8552f10150c0fc56eab0d99b4b95503ba43b9dafc4fc21",
+      "snapshotTreeSha256": "71373d0fcda67580ab9333df8de4e1628d36b9f5c8d0c03f6e97061d8634a6f4",
       "certificationId": null
     }
   ]
