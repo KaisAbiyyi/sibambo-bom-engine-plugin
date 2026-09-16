@@ -159,6 +159,51 @@ class TestProfilePublication < Test::Unit::TestCase
     assert_equal :class_a, strictest, 'Strictest semantic class for Class A and Class C must be Class A'
   end
 
+  # A frequently reused texture previously duplicated every usage for every
+  # face, constructing an N*N array. Restrict reduction to the 3 unique classes.
+  def with_bounded_class_reduction
+    policy = BOMEngine::BOMCTexturePolicy
+    original = policy.method(:strictest_semantic_class)
+    policy.define_singleton_method(:strictest_semantic_class) do |classes|
+      raise "Unbounded class reduction: #{classes.length} entries" if classes.length > 3
+      original.call(classes)
+    end
+    yield
+  ensure
+    policy.define_singleton_method(:strictest_semantic_class, original) if original
+  end
+
+  def test_repeated_live_material_usage_has_bounded_reduction
+    texture = Struct.new(:filename).new('shared.png')
+    material_type = Struct.new(:name, :texture)
+    wall = material_type.new('Wall', texture)
+    chair = material_type.new('Chair', texture)
+    face_type = Struct.new(:material, :back_material, :semantic_role)
+    entities = Array.new(20_000) { face_type.new(chair, chair, :furniture) }
+    entities << face_type.new(wall, nil, :wall)
+    with_bounded_class_reduction do
+      resolved = BOMEngine::BOMCExtension.compute_material_classes(FakeModel.new([wall, chair], entities, nil))
+      assert_equal :class_a, resolved['Wall']
+      assert_equal :class_a, resolved['Chair']
+    end
+  end
+
+  def test_repeated_graph_material_usage_has_bounded_reduction
+    graph = {
+      materials: [
+        { id: 'wall', name: 'Wall', texture: { filename: 'shared.png' } },
+        { id: 'chair', name: 'Chair', texture: { filename: 'shared.png' } }
+      ],
+      meshes: [{ faces: Array.new(20_000) { { front_material: 1, semantic_role: :furniture } } +
+        [{ front_material: 0, semantic_role: :wall }] }], nodes: []
+    }
+    with_bounded_class_reduction do
+      resolved = BOMEngine::BOMCExtension.compute_material_classes_from_graph(graph)
+      assert_equal :class_a, resolved['Wall']
+      assert_equal :class_a, resolved['Chair']
+    end
+  end
+
   # Test 3: 39 dB opaque non-native candidate is rejected by Research, accepted by Visual Class B/C
   def test_research_rejects_39db_and_visual_accepts
     ref = make_image_rep([

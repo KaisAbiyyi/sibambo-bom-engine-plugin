@@ -262,8 +262,10 @@ module BOMEngine
       end
       return compute_material_classes_from_graph(model) if model.is_a?(Hash)
 
-      material_usages = Hash.new { |h, k| h[k] = [] }
-      texture_materials = Hash.new { |h, k| h[k] = [] }
+      # Hash-backed sets keep at most A/B/C per material and one membership
+      # per texture/material pair, regardless of the number of faces using it.
+      material_usages = Hash.new { |h, k| h[k] = {} }
+      texture_materials = Hash.new { |h, k| h[k] = {} }
       visited_definitions = {}
 
       classify_entity = lambda do |entity, parent_role = nil|
@@ -284,11 +286,11 @@ module BOMEngine
             next unless entity.respond_to?(accessor)
             mat = entity.public_send(accessor)
             next unless mat
-            material_usages[mat.name] << klass if mat.respond_to?(:name)
-            material_usages[mat.object_id.to_s] << klass
+            material_usages[mat.name][klass] = true if mat.respond_to?(:name)
+            material_usages[mat.object_id.to_s][klass] = true
             if mat.respond_to?(:texture) && mat.texture
               tex_key = mat.texture.respond_to?(:filename) ? mat.texture.filename : mat.texture.to_s
-              texture_materials[tex_key] << (mat.respond_to?(:name) ? mat.name : mat.to_s)
+              texture_materials[tex_key][mat.respond_to?(:name) ? mat.name : mat.to_s] = true
             end
           end
 
@@ -311,24 +313,24 @@ module BOMEngine
 
       result = {}
       material_usages.each do |mat_key, classes|
-        result[mat_key] = BOMCTexturePolicy.strictest_semantic_class(classes)
+        result[mat_key] = BOMCTexturePolicy.strictest_semantic_class(classes.keys)
       end
 
       texture_materials.each do |_tex_key, mat_names|
-        all_classes = []
-        mat_names.each do |material_name|
-          material_usages.fetch(material_name, []).each { |klass| all_classes << klass }
+        all_classes = {}
+        mat_names.each_key do |material_name|
+          material_usages.fetch(material_name, {}).each_key { |klass| all_classes[klass] = true }
         end
-        strictest = BOMCTexturePolicy.strictest_semantic_class(all_classes)
-        mat_names.each { |m| result[m] = strictest }
+        strictest = BOMCTexturePolicy.strictest_semantic_class(all_classes.keys)
+        mat_names.each_key { |m| result[m] = strictest }
       end
 
       result
     end
 
     def compute_material_classes_from_graph(graph)
-      material_usages = Hash.new { |h, k| h[k] = [] }
-      texture_materials = Hash.new { |h, k| h[k] = [] }
+      material_usages = Hash.new { |h, k| h[k] = {} }
+      texture_materials = Hash.new { |h, k| h[k] = {} }
 
       materials = Array(graph[:materials])
       mat_by_id = {}
@@ -337,7 +339,7 @@ module BOMEngine
         mat_by_id[mat[:name].to_s] = mat
         if mat[:texture]
           tex_key = mat[:texture][:filename] || mat[:texture][:source_path] || mat[:texture][:name]
-          texture_materials[tex_key] << mat[:name].to_s if tex_key
+          texture_materials[tex_key][mat[:name].to_s] = true if tex_key
         end
       end
 
@@ -349,8 +351,8 @@ module BOMEngine
             mat = m_ref.is_a?(Integer) ? materials[m_ref] : (mat_by_id[m_ref.to_s] || { name: m_ref.to_s })
             if mat
               name = mat[:name].to_s
-              material_usages[name] << klass
-              material_usages[mat[:id].to_s] << klass if mat[:id]
+              material_usages[name][klass] = true
+              material_usages[mat[:id].to_s][klass] = true if mat[:id]
             end
           end
         end
@@ -364,24 +366,24 @@ module BOMEngine
           mat = m_ref.is_a?(Integer) ? materials[m_ref] : (mat_by_id[m_ref.to_s] || { name: m_ref.to_s })
           if mat
             name = mat[:name].to_s
-            material_usages[name] << klass
-            material_usages[mat[:id].to_s] << klass if mat[:id]
+            material_usages[name][klass] = true
+            material_usages[mat[:id].to_s][klass] = true if mat[:id]
           end
         end
       end
 
       result = {}
       material_usages.each do |mat_key, classes|
-        result[mat_key] = BOMCTexturePolicy.strictest_semantic_class(classes)
+        result[mat_key] = BOMCTexturePolicy.strictest_semantic_class(classes.keys)
       end
 
       texture_materials.each do |_tex_key, mat_names|
-        all_classes = []
-        mat_names.each do |material_name|
-          material_usages.fetch(material_name, []).each { |klass| all_classes << klass }
+        all_classes = {}
+        mat_names.each_key do |material_name|
+          material_usages.fetch(material_name, {}).each_key { |klass| all_classes[klass] = true }
         end
-        strictest = BOMCTexturePolicy.strictest_semantic_class(all_classes)
-        mat_names.each { |m| result[m] = strictest }
+        strictest = BOMCTexturePolicy.strictest_semantic_class(all_classes.keys)
+        mat_names.each_key { |m| result[m] = strictest }
       end
 
       result
