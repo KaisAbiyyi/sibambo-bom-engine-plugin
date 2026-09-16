@@ -60,7 +60,9 @@ module BOMEngine
           {
             stable_id: definition[:id].to_s,
             name: definition[:name].to_s,
-            kind: definition[:kind].to_s,
+            # CanonicalGraphBuilder names the model definition 'root'; BOMC's
+            # definition enum uses 'model_definition' (instances still use root).
+            kind: definition[:kind].to_s == 'root' ? 'model_definition' : definition[:kind].to_s,
             mesh: optional_reference(mesh_index, definition[:mesh_id]),
             nodes: Array(definition[:node_ids]).map { |id| node_index[id] }.compact
           }
