@@ -309,6 +309,7 @@ module BOMEngine
       positions_passed = true
       normals_passed = true
       uv_passed = true
+      source_area_metadata_errors = []
 
       normalized[:meshes].each_with_index do |source_mesh, mesh_index|
         decoded_mesh = decoded[:meshes][mesh_index]
@@ -352,6 +353,7 @@ module BOMEngine
           ang_err = angular_error(source_face[:normal], decoded_face[:normal])
           normal_errors << ang_err
           normals_passed &&= (ang_err <= face_norm_tol + 1.0e-12)
+          normals_passed &&= source_face[:normal] == decoded_face[:normal] if prof == :exact
 
           source_uv = flatten_uv(source_face[:uv])
           decoded_uv = flatten_uv(decoded_face[:uv])
@@ -364,7 +366,15 @@ module BOMEngine
             uv_passed = false
           end
 
-          area_errors << (source_face[:area_m2].to_f - decoded_face[:area_m2].to_f).abs
+          # BOMC stores positions/topology, not SketchUp's separately measured
+          # area scalar. Exact must compare the geometry before/after encoding;
+          # rounding/quantization already present in the input is not codec loss.
+          reference_area = source_face[:area_m2].to_f
+          if prof == :exact
+            reference_area = geometry_face_area(source_mesh[:positions], source_face)
+            source_area_metadata_errors << (source_face[:area_m2].to_f - reference_area).abs
+          end
+          area_errors << (reference_area - decoded_face[:area_m2].to_f).abs
         end
 
         source_edges = source_mesh[:edges].map { |edge| [edge[:vertices], edge[:tag], edge[:hidden], edge[:soft], edge[:smooth]] }
@@ -589,7 +599,10 @@ module BOMEngine
           areas: {
             max_error_m2: area_summary[:max],
             passed: areas_passed,
-            tolerance: maximum_area_tolerance
+            tolerance: maximum_area_tolerance,
+            basis: prof == :exact ? 'source_geometry' : 'source_area_metadata',
+            source_metadata_max_delta_m2: summarize(source_area_metadata_errors)[:max],
+            source_metadata_mismatch_count: source_area_metadata_errors.count { |error| error > area_limit_abs + 1.0e-12 }
           },
           scenes: { exact: scenes_exact },
           clip_planes: { exact: clip_planes_exact },
@@ -714,6 +727,13 @@ module BOMEngine
     private_class_method :pair_errors
 
     def self.angular_error(left, right)
+      return Float::INFINITY unless [left, right].all? do |vector|
+        vector.is_a?(Array) && vector.length == 3 && vector.all? { |value| value.is_a?(Numeric) && value.finite? }
+      end
+      # acos(dot(n,n)) can invent a ~1e-6 degree error from roundoff even
+      # when FLOAT64 preserved all three components without any change.
+      return 0.0 if left == right
+
       left_length = Math.sqrt(left.map { |value| value.to_f * value.to_f }.inject(0.0, :+))
       right_length = Math.sqrt(right.map { |value| value.to_f * value.to_f }.inject(0.0, :+))
       return 0.0 if left_length.zero? && right_length.zero?
@@ -722,6 +742,37 @@ module BOMEngine
       Math.acos([[dot, -1.0].max, 1.0].min) * 180.0 / Math::PI
     end
     private_class_method :angular_error
+
+    # Independent area reference from the input geometry; do not call the
+    # decoder or copy its computed output into the expected value.
+    def self.geometry_face_area(positions, face)
+      triangles = Array(face[:triangles])
+      if triangles.length >= 3
+        return triangles.each_slice(3).inject(0.0) do |total, indices|
+          a, b, c = indices.map { |index| positions[index * 3, 3] }
+          u = 3.times.map { |axis| b[axis] - a[axis] }
+          v = 3.times.map { |axis| c[axis] - a[axis] }
+          cross = [u[1]*v[2] - u[2]*v[1], u[2]*v[0] - u[0]*v[2], u[0]*v[1] - u[1]*v[0]]
+          total + 0.5 * Math.sqrt(cross.inject(0.0) { |sum, value| sum + value * value })
+        end
+      end
+      loop_area = lambda do |indices|
+        return 0.0 if indices.length < 3
+        vector = [0.0, 0.0, 0.0]
+        indices.each_with_index do |index, cursor|
+          a = positions[index * 3, 3]
+          b = positions[indices[(cursor + 1) % indices.length] * 3, 3]
+          3.times do |axis|
+            j, k = (axis + 1) % 3, (axis + 2) % 3
+            vector[axis] += (a[j] - b[j]) * (a[k] + b[k])
+          end
+        end
+        0.5 * Math.sqrt(vector.inject(0.0) { |sum, value| sum + value * value })
+      end
+      holes_area = Array(face[:holes]).inject(0.0) { |sum, hole| sum + loop_area.call(hole) }
+      [loop_area.call(face[:outer]) - holes_area, 0.0].max
+    end
+    private_class_method :geometry_face_area
 
     def self.flatten_uv(uv)
       return [] unless uv.is_a?(Hash)
