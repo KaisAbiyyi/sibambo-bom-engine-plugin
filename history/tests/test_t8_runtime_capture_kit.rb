@@ -14,15 +14,136 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
   CAPTURE_SCRIPT_PATH = File.join(KIT_DIR, 'capture_e4.rb')
   VERIFIER_PATH = File.join(KIT_DIR, 'verify_capture.rb')
   OPERATOR_GUIDE_PATH = File.join(KIT_DIR, 'OPERATOR_GUIDE.md')
+  MENU_LAUNCHER_PATH = File.join(KIT_DIR, 'sibambo_t7_capture_launcher.rb')
 
-  PINNED_PRODUCER_SHA = '7284982b26834f2635a839c6c7a1e687f83dca35'.freeze
+  PINNED_PRODUCER_SHA = 'bd6782691ef8ba98f9d3baab698bc1cd961ce393'.freeze
   PINNED_CONSUMER_SHA = '4c927dfc4c38dea767ff8f7a3f796230e25c45bf'.freeze
-  EXPECTED_SNAPSHOT_TREE_SHA256 = '71373d0fcda67580ab9333df8de4e1628d36b9f5c8d0c03f6e97061d8634a6f4'.freeze
+  EXPECTED_SNAPSHOT_TREE_SHA256 = '703e65a95b459b852409abab50d53f7044c35f83a40a8ba48496c465786c0e6d'.freeze
   EXPECTED_LOADER_ID = 'bomc-next-v1'.freeze
-  EXPECTED_PROFILE_CONTRACT_REVISION = 2
+  EXPECTED_PROFILE_CONTRACT_REVISION = 1
 
   def setup
     @temp_dir = Dir.mktmpdir('t8-test-capture')
+  end
+
+  # Runtime doubles exercise the runner, not just generated-source strings.
+  # These tests never count as real SketchUp evidence.
+  def with_capture_runtime(modified: false, model_name: 'Fixture.skp')
+    require CAPTURE_SCRIPT_PATH
+    source = File.join(@temp_dir, model_name)
+    File.write(source, 'synthetic source')
+    model = Struct.new(:path, :modified?).new(source, modified)
+    sketchup = Module.new
+    sketchup.define_singleton_method(:active_model) { model }
+    sketchup.define_singleton_method(:version) { '26.0.test' }
+    Object.const_set(:Sketchup, sketchup)
+    exporter = Module.new
+    bytes = build_synthetic_bomc_bytes('exact')
+    exporter.define_singleton_method(:export) { |_model, output_path:, **_| File.binwrite(output_path, bytes) }
+    engine = Module.new
+    engine.const_set(:BOMCExtension, exporter)
+    original = SibamboCaptureKit.method(:ensure_extension_loaded!)
+    SibamboCaptureKit.define_singleton_method(:ensure_extension_loaded!) { engine }
+    yield exporter, engine, model
+  ensure
+    SibamboCaptureKit.define_singleton_method(:ensure_extension_loaded!, original) if original
+    Object.send(:remove_const, :Sketchup) if sketchup && Object.const_defined?(:Sketchup)
+  end
+
+  def test_runner_rejects_unsaved_edits
+    with_capture_runtime(modified: true) do
+      error = assert_raise(RuntimeError) { SibamboCaptureKit.export_profile(:visual, output_dir: @temp_dir) }
+      assert_match(/Save the model/, error.message)
+    end
+  end
+
+  def test_runner_preserves_existing_output
+    with_capture_runtime do
+      path = File.join(@temp_dir, 'Fixture__E4__VISUAL.bomc')
+      File.write(path, 'old evidence')
+      assert_raise(RuntimeError) { SibamboCaptureKit.export_profile(:visual, output_dir: @temp_dir) }
+      assert_equal 'old evidence', File.read(path)
+    end
+  end
+
+  def test_runner_does_not_claim_wrong_profile_as_success
+    with_capture_runtime do
+      record = SibamboCaptureKit.export_profile(:visual, output_dir: @temp_dir)
+      assert_equal false, record['real_runtime_evidence']
+      assert_equal 'failed', record['export_status']
+      assert_match(/profile/, record['export_errors'].join)
+    end
+  end
+
+  def test_runner_forwards_progress_to_cooperative_checkpoint
+    with_capture_runtime do |exporter|
+      bytes = build_synthetic_bomc_bytes('visual')
+      exporter.define_singleton_method(:export) do |_model, output_path:, progress:, **_|
+        progress.call(stage: :INITIALIZE, processed: 0, total: 20)
+        progress.call(stage: :DONE, processed: 20, total: 20)
+        File.binwrite(output_path, bytes)
+      end
+      events = []
+      record = SibamboCaptureKit.export_profile(:visual, output_dir: @temp_dir, checkpoint: ->(event) { events << event })
+      assert_equal 'success', record['export_status']
+      assert_equal ['VISUAL: INITIALIZE', 'VISUAL: DONE'], events.map { |event| event[:stage] }
+    end
+  end
+
+  def test_cancel_propagates_without_writing_false_capture_record
+    with_capture_runtime do |exporter, engine|
+      cancelled = Class.new(StandardError)
+      conversion_job = Class.new
+      conversion_job.const_set(:Cancelled, cancelled)
+      engine.const_set(:ConversionJob, conversion_job)
+      exporter.define_singleton_method(:export) do |_model, progress:, **_|
+        progress.call(stage: :INITIALIZE, processed: 0, total: 20)
+      end
+      assert_raise(cancelled) do
+        SibamboCaptureKit.export_profile(:visual, output_dir: @temp_dir, checkpoint: ->(_event) { raise cancelled })
+      end
+      assert_false File.exist?(File.join(@temp_dir, 'capture_visual.json'))
+    end
+  end
+
+  def test_one_click_launcher_schedules_work_without_synchronous_export
+    with_capture_runtime(model_name: 'RUMAH L.skp') do |exporter, engine|
+      exporter.define_singleton_method(:export) { |_model, **_| raise 'export must not run on menu click' }
+      job_class = Class.new do
+        attr_reader :work
+        def self.active
+          nil
+        end
+        def self.start(title:, output_path:, batch_size:, &work)
+          new(work)
+        end
+        def initialize(work)
+          @work = work
+        end
+        def running?
+          true
+        end
+      end
+      engine.const_set(:ConversionJob, job_class)
+      ui = Module.new
+      ui.define_singleton_method(:start_timer) { |_interval, _repeat, &_block| 1 }
+      Object.const_set(:UI, ui)
+      begin
+        job = SibamboCaptureKit.start_interactive
+        assert_kind_of job_class, job
+        assert_not_nil job.work
+      ensure
+        Object.send(:remove_const, :UI)
+      end
+    end
+  end
+
+  def test_loaded_candidate_commit_must_match
+    require CAPTURE_SCRIPT_PATH
+    engine = Module.new
+    engine.const_set(:COMMIT_SHA, '0' * 40)
+    error = assert_raise(RuntimeError) { SibamboCaptureKit.verify_engine_identity!(engine) }
+    assert_match(/Loaded E4 commit differs/, error.message)
   end
 
   def teardown
@@ -65,7 +186,8 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
     buf << [1].pack('v') # schema_version: 1
     buf << [prof_id].pack('C') # profile_id
     buf << [1].pack('C') # texture_policy: pixel_lossless
-    buf << ("\x00" * 72) # padding to 76 bytes
+    buf << ("\x00" * 68)
+    buf << [EXPECTED_PROFILE_CONTRACT_REVISION].pack('V') # encoder revision at Section 20 offset 72
     buf
   end
 
@@ -90,6 +212,15 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
     assert_equal actual_pkg_sha, manifest['package_sha256']
   end
 
+  def test_one_click_menu_launcher_is_available_without_ruby_console
+    assert File.file?(MENU_LAUNCHER_PATH)
+    assert_nothing_raised { RubyVM::InstructionSequence.compile_file(MENU_LAUNCHER_PATH) }
+    source = File.read(MENU_LAUNCHER_PATH)
+    assert_include source, 'Sibambo E4 — Capture RUMAH L (3 profiles)'
+    assert_include source, 'SibamboCaptureKit.start_interactive'
+    assert_include File.read(OPERATOR_GUIDE_PATH), 'Ruby Console is not required'
+  end
+
   def test_package_structure_and_isolation
     assert File.file?(PACKAGE_PATH)
     assert File.size(PACKAGE_PATH) > 500_000, 'Package should be around 1MB'
@@ -98,9 +229,7 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
     assert File.file?(OPERATOR_GUIDE_PATH)
     guide_content = File.read(OPERATOR_GUIDE_PATH)
     assert guide_content.include?('next-from-8082541')
-    assert guide_content.include?('SibamboCaptureKit.export_profile(:visual)')
-    assert guide_content.include?('SibamboCaptureKit.export_profile(:research)')
-    assert guide_content.include?('SibamboCaptureKit.export_profile(:exact)')
+    assert guide_content.include?('SibamboCaptureKit.start_interactive')
     assert guide_content.include?('Install Extension')
     assert guide_content.include?('Uninstall')
     assert guide_content.include?('captured_pending_certification')
@@ -119,6 +248,7 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
     assert script_src.include?('PROFILES = %i[visual research exact]')
     assert script_src.include?('def self.export_profile')
     assert script_src.include?('def self.export_all')
+    assert script_src.include?('def self.start_interactive')
     assert script_src.include?('t8-runtime-capture-v1')
     assert script_src.include?('read_bomc_encoding_contract_profile')
     assert script_src.include?('EXPECTED_EXPORT_STAGES')
@@ -237,13 +367,14 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
     assert res[:errors].any? { |e| e.include?('Export errors recorded') }
   end
 
-  def test_verifier_rejects_section20_profile_mismatch
+  def test_verifier_rejects_section20_profile_and_revision_mismatch
     require VERIFIER_PATH
 
     manifest = JSON.parse(File.read(MANIFEST_PATH))
     bomc_file = File.join(@temp_dir, 'Mismatch__E4__VISUAL.bomc')
     # Build BOMC encoded as EXACT (prof_id 1) but claimed as VISUAL:
     bomc_bytes = build_synthetic_bomc_bytes('exact')
+    bomc_bytes[-4, 4] = [99].pack('V') # forged encoder revision; metadata still claims pinned revision
     File.binwrite(bomc_file, bomc_bytes)
     bomc_sha = Digest::SHA256.file(bomc_file).hexdigest
 
@@ -277,6 +408,7 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
     res = T8CaptureVerifier.verify(@temp_dir, skip_consumer_inspection: true)
     assert_equal 'failed', res[:status]
     assert res[:errors].any? { |e| e.include?('Profile mismatch with BOMC encoding contract') }
+    assert res[:errors].any? { |e| e.include?('Profile contract revision mismatch in BOMC') }
   end
 
   def test_verifier_rejects_path_traversal_escape

@@ -496,6 +496,23 @@ module BOMEngine
       end
 
       evidence_list.compact.each_with_index do |ev, ev_i|
+        ev = ev[:staging] if ev.dig(:staging, :policy_revision)
+        if ev[:policy_revision]
+          quality = ev[:quality] || {}
+          mse = quality[:mean_squared_error]
+          max_error = quality[:max_channel_error]
+          psnr = quality[:psnr_db]
+          lossless = mse == 0.0 && max_error == 0
+          measured = quality[:compatible] == true && quality[:alpha_preserved] == true &&
+            ev[:alpha_preserved] == true && mse.is_a?(Numeric) && mse.finite? && mse >= 0 &&
+            max_error.is_a?(Numeric) && max_error.finite? && max_error >= 0
+          floor = BOMCTexturePolicy.min_psnr(profile: prof, semantic_class: ev[:semantic_class] || :class_b, native_jpeg: !!ev[:native_jpeg])
+          passing_quality = lossless || (prof != :exact && psnr.is_a?(Numeric) && psnr.finite? && psnr >= floor)
+          unless measured && passing_quality && ev[:profile].to_s == prof.to_s
+            textures_passed = false
+            texture_failures << "texture #{ev_i} invalid adaptive quality evidence"
+          end
+        end
         if ev[:reference] && ev[:candidate]
           comp = BOMCTextureOptimizer.compare(ev[:reference], ev[:candidate])
           if !comp[:compatible]
@@ -547,10 +564,40 @@ module BOMEngine
 
       if prof == :exact
         Array(decoded[:textures]).each_with_index do |tex, t_i|
-          is_jpeg = tex[:media_type] == 'image/jpeg' || (tex[:filename] && tex[:filename].downcase.end_with?('.jpg', '.jpeg'))
+          if tex[:media_type] == :jpeg_color_map
+            map = BOMCJpegColorMap.parse(tex[:bytes])
+            verified = evidence_list.compact.any? do |outer|
+              ev = outer.dig(:staging, :policy_revision) ? outer[:staging] : outer
+              q = ev[:quality] || {}
+              ev[:policy_revision] == 'exact-jcm-1' && ev[:selected] == :jpeg_color_map_candidate &&
+                ev[:profile].to_s == 'exact' && ev[:required_loader] == 'bomc-next-jcm-v1' &&
+                ev[:selected_sha256] == tex[:sha256] &&
+                ev[:base_pixel_sha256] == map[:base_hash].unpack1('H*') &&
+                ev[:output_pixel_sha256] == map[:output_hash].unpack1('H*') &&
+                ev[:normalized_jpeg_sha256] == Digest::SHA256.hexdigest(map[:jpeg]) &&
+                ev[:alpha_preserved] == true && q[:compatible] == true && q[:alpha_preserved] == true &&
+                q[:mean_squared_error] == 0.0 && q[:max_channel_error] == 0
+            end
+            unless verified
+              textures_passed = false
+              texture_failures << "decoded texture #{t_i} has no digest-bound color-map pixel evidence"
+            end
+          end
+          is_jpeg = [:jpeg, 'jpeg', 'image/jpeg'].include?(tex[:media_type]) || (tex[:filename] && tex[:filename].downcase.end_with?('.jpg', '.jpeg'))
           if is_jpeg
-            ev = evidence_list.find { |e| e[:filename] == tex[:filename] || e[:name] == tex[:name] }
-            unless ev && ev[:native_jpeg]
+            # Decoded texture identity is its digest, not an optional filename.
+            # Never let a different material's JPEG evidence certify this blob.
+            verified = evidence_list.compact.any? do |outer|
+              ev = outer.dig(:staging, :policy_revision) ? outer[:staging] : outer
+              q = ev[:quality] || {}
+              ev[:policy_revision] && ev[:selected] == :native_jpeg_candidate &&
+                ev[:profile].to_s == 'exact' && ev[:native_jpeg] == true &&
+                ev[:selected_sha256].is_a?(String) && ev[:selected_sha256].match?(/\A[0-9a-f]{64}\z/) &&
+                ev[:selected_sha256] == tex[:sha256] && ev[:alpha_preserved] == true &&
+                q[:compatible] == true && q[:alpha_preserved] == true &&
+                q[:mean_squared_error] == 0.0 && q[:max_channel_error] == 0
+            end
+            unless verified
               textures_passed = false
               texture_failures << "decoded texture #{t_i} is JPEG without native JPEG provenance"
             end

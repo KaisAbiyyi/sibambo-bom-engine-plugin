@@ -30,6 +30,49 @@ class TestBOMCTextureEncoder < Test::Unit::TestCase
     assert_nil caps[:binary_path]
   end
 
+  def test_version_probe_does_not_depend_on_embedded_host_pipes
+    omit('bundled Windows codec') unless Gem.win_platform?
+    original = Open3.method(:capture2)
+    # Model the host boundary: successful child but no captured pipe output.
+    Open3.define_singleton_method(:capture2) { |*| ['', Struct.new(:success?).new(true)] }
+    begin
+      caps = BOMEngine::BOMCTextureEncoder.capabilities(force_refresh: true, require_verified: true)
+      assert_equal true, caps[:available], 'A trusted working codec must survive unavailable host pipes'
+      assert_match(/1\.6\.0/, caps[:version])
+    ensure
+      Open3.define_singleton_method(:capture2, original)
+    end
+  end
+
+  def test_codec_preflight_runs_encode_and_decode_without_a_model
+    omit('bundled Windows codec') unless Gem.win_platform?
+    assert_respond_to BOMEngine::BOMCTextureEncoder, :preflight
+    result = BOMEngine::BOMCTextureEncoder.preflight
+    assert_equal true, result[:success], result.inspect
+    assert_equal true, result[:capabilities][:verified]
+    assert_operator result[:encoded_bytes], :>, 12
+    assert_equal 'png', result[:decoded_format]
+  end
+
+  def test_codec_preflight_rejects_missing_encoder
+    BOMEngine::BOMCTextureEncoder.configured_binary_path = '/absent/cwebp'
+    assert_respond_to BOMEngine::BOMCTextureEncoder, :preflight
+    result = BOMEngine::BOMCTextureEncoder.preflight
+    assert_equal false, result[:success]
+    assert_equal :binary_not_found, result[:capabilities][:status]
+  end
+
+  def test_bundled_codec_roundtrip_does_not_use_embedded_ruby_spawn
+    omit('Windows embedded host boundary') unless Gem.win_platform?
+    original = Process.method(:spawn)
+    Process.define_singleton_method(:spawn) { |*| raise 'SketchUp CRT spawn is broken' }
+    result = BOMEngine::BOMCTextureEncoder.preflight
+    assert_equal true, result[:success], result.inspect
+    assert_equal :windows_native, result[:capabilities][:probe][:process_backend]
+  ensure
+    Process.define_singleton_method(:spawn, original) if original
+  end
+
   def test_missing_binary_graceful_encode_failure
     BOMEngine::BOMCTextureEncoder.configured_binary_path = '/nonexistent/path/to/cwebp'
     res = BOMEngine::BOMCTextureEncoder.encode_webp(
@@ -136,6 +179,28 @@ class TestBOMCTextureEncoder < Test::Unit::TestCase
     end
   end
 
+  def test_lossless_roundtrip_preserves_rgb_under_fully_transparent_pixels
+    omit('bundled codecs are Windows-only') unless Gem.win_platform?
+    Dir.mktmpdir('webp-hidden-rgb') do |dir|
+      source = File.join(dir, 'source.png')
+      webp = File.join(dir, 'candidate.webp')
+      decoded = File.join(dir, 'decoded.png')
+      pam = File.join(dir, 'decoded.pam')
+      pixels = [255, 0, 0, 255, 23, 45, 67, 0]
+      write_rgba_png(source, pixels)
+      assert BOMEngine::BOMCTextureEncoder.encode_webp(source_path: source, output_path: webp, lossless: true)[:success]
+      decoder = File.join(File.dirname(BOMEngine::BOMCTextureEncoder.bundled_binary_path), 'dwebp.exe')
+      assert system(decoder, webp, '-pam', '-o', pam, out: File::NULL, err: File::NULL)
+      payload = File.binread(pam).split("ENDHDR\n", 2).last
+      assert_equal pixels, payload.bytes, 'lossless must preserve invisible RGB as well as alpha'
+      assert_respond_to BOMEngine::BOMCTextureEncoder, :decode_webp
+      result = BOMEngine::BOMCTextureEncoder.decode_webp(source_path: webp, output_path: decoded)
+      assert_equal true, result[:success]
+      assert_equal "\x89PNG\r\n\x1a\n".b, File.binread(decoded, 8)
+      assert Dir.glob(File.join(dir, '*.part')).empty?
+    end
+  end
+
   def test_mock_cancellation_cleans_up
     Dir.mktmpdir('mock-cancel') do |dir|
       mock_script = File.join(dir, 'mock_slow.rb')
@@ -212,6 +277,25 @@ class TestBOMCTextureEncoder < Test::Unit::TestCase
       assert_equal :external_trust_verification_failed, caps[:status]
 
       BOMEngine::BOMCTextureEncoder.trusted_external_sha256 = nil
+    end
+  end
+
+  def test_strict_capability_check_does_not_execute_an_untrusted_binary
+    Dir.mktmpdir('untrusted-codec') do |dir|
+      script = File.join(dir, 'codec.rb')
+      marker = File.join(dir, 'executed.txt')
+      File.write(script, "File.write(#{marker.inspect}, 'executed'); puts '1.6.0'\n")
+      BOMEngine::BOMCTextureEncoder.configured_binary_path = create_mock_executable(dir, 'codec', script)
+      old_trust = BOMEngine::BOMCTextureEncoder.trusted_external_sha256
+      BOMEngine::BOMCTextureEncoder.trusted_external_sha256 = nil
+      begin
+        caps = nil
+        assert_nothing_raised { caps = BOMEngine::BOMCTextureEncoder.capabilities(require_verified: true) }
+        assert_equal false, caps[:available]
+        assert !File.exist?(marker), 'untrusted version probe must not execute'
+      ensure
+        BOMEngine::BOMCTextureEncoder.trusted_external_sha256 = old_trust
+      end
     end
   end
 

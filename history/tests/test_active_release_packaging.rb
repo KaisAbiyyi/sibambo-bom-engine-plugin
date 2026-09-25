@@ -50,7 +50,7 @@ Dir.mktmpdir('active_packaging_test_') do |temp_root|
   raise "MANIFEST.md missing scene-resilient-a158b75" unless manifest_content.include?('scene-resilient-a158b75')
   raise "MANIFEST.md missing scene-fidelity-a138fe6" unless manifest_content.include?('scene-fidelity-a138fe6')
 
-  puts "  PASS: Checksums and Manifest are valid and deterministic"
+  puts "  PASS: Checksums and Manifest are internally consistent (byte reproducibility not tested)"
 
   # 3. Inspect Master RBZ archive entries
   stdout, stderr, status = Open3.capture3('tar', '-tf', master_rbz_path)
@@ -173,6 +173,7 @@ Dir.mktmpdir('active_packaging_test_') do |temp_root|
   raise "Missing RELEASE_ID in E4 entry" unless e4_entry_src.include?('RELEASE_ID = "next-from-8082541"')
   raise "Missing ENTRY_KIND in E4 entry" unless e4_entry_src.include?('ENTRY_KIND = :bomc_three_profile')
   raise "Missing PROFILES in E4 entry" unless e4_entry_src.include?('PROFILES = ["visual", "research", "exact"]')
+  raise "E4 must route its menu to the BOMC dialog" unless e4_entry_src.include?('BOMCExtension.export_interactive')
 
   puts "  PASS: Entry point contract verified for baseline and candidate E4"
 end

@@ -117,6 +117,11 @@ module EvolutionActiveCatalog
     end
 
     tuple = cert['tuple'] || {}
+    %w[producerSha consumerSha packageSha256].each do |key|
+      unless tuple.is_a?(Hash) && tuple[key].is_a?(String) && !tuple[key].empty?
+        raise "ready release #{record['id']} certification tuple missing #{key}"
+      end
+    end
     if tuple['producerSha'] && tuple['producerSha'] != record['producerSha']
       raise "ready release #{record['id']} producerSha mismatch: catalog #{record['producerSha']}, cert #{tuple['producerSha']}"
     end

@@ -1,0 +1,78 @@
+:root {
+  color-scheme: light;
+  --cream: #f8f3ee;
+  --paper: #fffdfb;
+  --paper-soft: #fcf8f5;
+  --maroon: #761a2a;
+  --maroon-dark: #58121f;
+  --maroon-wash: #f7e9e9;
+  --ink: #292226;
+  --muted: #686169;
+  --border: #ded2cd;
+  --border-strong: #c9b9b3;
+  --danger: #a3404a;
+  --shadow: 0 12px 36px rgba(67, 30, 33, .08);
+  font-family: "Segoe UI", Arial, sans-serif;
+  font-size: 14px;
+}
+
+* { box-sizing: border-box; }
+html, body { min-height: 100%; margin: 0; }
+body { background: var(--cream); color: var(--ink); line-height: 1.45; }
+button, input, select { font: inherit; }
+button { cursor: pointer; }
+button:focus-visible, input:focus-visible, select:focus-visible, .choice:focus-within {
+  outline: 2px solid var(--maroon); outline-offset: 2px;
+}
+button:disabled { opacity: .55; cursor: wait; }
+.shell { max-width: 860px; margin: 0 auto; padding: 24px 26px 26px; }
+.brand { align-items: center; display: flex; gap: 10px; }
+.brand svg { width: 28px; height: 28px; color: var(--maroon); flex: none; }
+.brand-name { font-size: 16px; font-weight: 750; letter-spacing: -.025em; }
+.build { color: var(--muted); font-size: 11px; margin-left: auto; font-family: Consolas, monospace; }
+h1 { color: var(--maroon-dark); font-size: 25px; letter-spacing: -.035em; line-height: 1.16; margin: 21px 0 6px; }
+h2 { font-size: 14px; margin: 0; }
+p { margin: 0; }
+.intro, .hint { color: var(--muted); }
+.intro { font-size: 13px; line-height: 1.5; }
+.section { border-top: 1px solid var(--border); margin-top: 18px; padding-top: 17px; }
+.section-head { align-items: baseline; display: flex; gap: 8px; justify-content: space-between; margin-bottom: 9px; }
+.hint { font-size: 12px; line-height: 1.45; }
+.field-label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 8px; }
+.path-row { display: flex; gap: 8px; }
+.text-input, .select { border: 1px solid var(--border-strong); border-radius: 8px; background: var(--paper); color: var(--ink); min-width: 0; padding: 10px 11px; }
+.text-input { flex: 1; width: 100%; }
+.path-note { color: var(--muted); font: 11px/1.4 Consolas, monospace; margin-top: 7px; overflow-wrap: anywhere; }
+.button { background: var(--paper); border: 1px solid var(--border-strong); border-radius: 8px; color: var(--ink); font-weight: 650; padding: 10px 16px; white-space: nowrap; }
+.button:hover { border-color: var(--maroon); }
+.button-primary { background: var(--maroon); border-color: var(--maroon); color: white; }
+.button-primary:hover { background: var(--maroon-dark); border-color: var(--maroon-dark); }
+.actions { align-items: center; display: flex; gap: 9px; justify-content: flex-end; margin-top: 21px; }
+.note { background: var(--paper-soft); border: 1px solid var(--border); border-radius: 9px; color: var(--muted); font-size: 12px; line-height: 1.5; padding: 11px 13px; }
+.choice { background: var(--paper); border: 1px solid var(--border); border-radius: 9px; cursor: pointer; display: block; }
+.choice:has(input:checked) { background: #fff8f7; border-color: var(--maroon); box-shadow: inset 0 0 0 1px var(--maroon); }
+.choice input { accent-color: var(--maroon); margin: 1px 0 0; }
+.choice strong { display: block; font-size: 14px; }
+.choice small { color: var(--muted); display: block; font-size: 11px; line-height: 1.4; margin-top: 4px; }
+.choice:has(input:checked) strong { color: var(--maroon-dark); }
+.profile-grid { display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.profile-grid .choice { min-height: 98px; padding: 12px; }
+.choice-title { display: flex; align-items: flex-start; gap: 8px; }
+.batch-modes { display: flex; gap: 18px; margin: 7px 0 10px; }
+.batch-modes label { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-weight: 650; font-size: 13px; }
+.batch-modes input { accent-color: var(--maroon); }
+.batch-controls { align-items: center; display: flex; gap: 11px; justify-content: space-between; }
+.batch-controls .select { width: 170px; }
+.batch-controls .select:disabled { background: #efe9e5; color: var(--muted); }
+.footer-note { color: var(--muted); font-size: 11px; margin-right: auto; }
+@media (max-width: 580px) {
+  .shell { padding: 18px 17px 20px; }
+  h1 { font-size: 22px; }
+  .profile-grid { grid-template-columns: 1fr; }
+  .profile-grid .choice { min-height: auto; }
+  .build { font-size: 10px; }
+  .section-head { display: block; }
+  .batch-controls { align-items: stretch; flex-direction: column; }
+  .batch-controls .select { width: 100%; }
+  .actions { flex-wrap: wrap; }
+}

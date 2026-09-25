@@ -16,15 +16,16 @@ module BOMEngine
     ].freeze
 
     class TargetNotMet < StandardError
-      attr_reader :source_bytes, :best_candidate_bytes, :delta_bytes, :attempts, :dominant_sections, :hard_budget_bytes
+      attr_reader :source_bytes, :best_candidate_bytes, :delta_bytes, :attempts, :dominant_sections, :hard_budget_bytes, :texture_diagnostics
 
-      def initialize(source_bytes:, best_candidate_bytes:, attempts:, dominant_sections:, hard_budget_bytes: nil)
+      def initialize(source_bytes:, best_candidate_bytes:, attempts:, dominant_sections:, hard_budget_bytes: nil, texture_diagnostics: [])
         @source_bytes = source_bytes
         @best_candidate_bytes = best_candidate_bytes
         @hard_budget_bytes = hard_budget_bytes || source_bytes
         @delta_bytes = best_candidate_bytes - @hard_budget_bytes
         @attempts = attempts
         @dominant_sections = dominant_sections
+        @texture_diagnostics = texture_diagnostics
         labels = dominant_sections.map { |section| "#{section[:name]}=#{section[:stored_bytes]}" }.join(', ')
         super("BOMC target not met: source=#{source_bytes}, hard_budget=#{@hard_budget_bytes}, best=#{best_candidate_bytes}, delta=+#{@delta_bytes}; dominant sections: #{labels}")
       end
@@ -224,7 +225,12 @@ module BOMEngine
         hard_budget_bytes: hard_target,
         best_candidate_bytes: best[:candidate_bytes],
         attempts: attempts,
-        dominant_sections: dominant_sections(best[:metrics])
+        dominant_sections: dominant_sections(best[:metrics]),
+        texture_diagnostics: Array(graph[:materials]).map do |material|
+          decision = material.dig(:texture, :encoding_evidence, :staging)
+          next unless decision && decision[:policy_revision]
+          { material: material[:name], decision: decision }
+        end.compact
       )
     ensure
       best = nil

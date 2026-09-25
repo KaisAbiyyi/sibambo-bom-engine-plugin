@@ -1,4 +1,10 @@
-# Sibambo BOM Engine Semantic Plugin
+# Sibambo BOM Engine Plugin
+
+Repo producer aktif untuk dua jalur paket SketchUp: **BOMC 1.2 individual** dan **Evolution E1–E4**. Kandidat terbaru, SHA, dan statusnya ada di [indeks output workspace](../outputs/README.md); perjalanan E4 ada di [milestone](MILESTONE_EVOLUTION_LINEUP_2026-09-25.md). Keduanya belum tersertifikasi lintas-model.
+
+Paket individual dibangun dari runtime repo ini dengan [`tools/build_individual_candidate.ps1`](tools/build_individual_candidate.ps1); paket Evolution dibangun dari [`tools/history/build_evolution_lineup.rb`](tools/history/build_evolution_lineup.rb). Script lama `package.ps1` masih memakai SHA **commit** pada worktree yang bisa dirty dan menulis RBZ ke root workspace; jangan pakai itu untuk menyatakan identitas kandidat saat ini.
+
+Bagian JSON di bawah mendokumentasikan jalur historis yang masih dipertahankan di repo, **bukan** petunjuk paket E4 terkini.
 
 SketchUp Ruby extension. Exports a SketchUp model or active selection into Sibambo BOM JSON for downstream visualization and building analysis.
 
@@ -21,9 +27,9 @@ Plugin writes geometry, hierarchy, transforms, material information, holes/openi
 
 Exports default to gzip. A source name such as `house_bom.json` becomes `house_bom_visual.json.gz`, `house_bom_standard.json.gz`, or `house_bom_full.json.gz`.
 
-## Install in SketchUp
+## Legacy JSON installation notes
 
-1. Build an `.rbz` package with `./package.sh` (Git Bash/WSL) or `./package.ps1` (PowerShell).
+1. Pilih paket yang sesuai dari [output bertanggal](../outputs/README.md). Untuk membangun ulang kandidat individual, jalankan `tools/build_individual_candidate.ps1`; untuk Evolution, pakai builder lineup dan periksa manifest/SHA hasilnya. Langkah `package.sh`/`package.ps1` di dokumen lama bukan jalur kandidat saat ini.
 2. In SketchUp Desktop, open **Extension Manager → Install Extension**.
 3. Select generated `.rbz`, restart SketchUp if requested.
 4. Use **Extensions → BOM Engine Exporter** or toolbar button.

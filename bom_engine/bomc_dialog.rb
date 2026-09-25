@@ -12,10 +12,10 @@ module BOMEngine
         dialog_title: "#{Branding::EXTENSION_NAME} #{Branding::EXTENSION_VERSION} — Export BOMC #{Branding::BOMC_FORMAT_VERSION}",
         scrollable: true,
         resizable: true,
-        width: 520,
-        height: 640,
-        min_width: 420,
-        min_height: 520,
+        width: 680,
+        height: 800,
+        min_width: 440,
+        min_height: 540,
         style: UI::HtmlDialog::STYLE_DIALOG
       )
       dialog.set_file(File.join(__dir__, 'ui', 'bomc_export_dialog.html'))
@@ -43,6 +43,7 @@ module BOMEngine
       end
 
       dialog.add_action_callback('cancel') { |_context| dialog.close }
+      dialog.center
       dialog.show
       dialog
     end

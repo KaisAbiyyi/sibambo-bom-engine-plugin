@@ -968,7 +968,13 @@ module BOMEngine
       end
 
       def build_texture_table_section
-        bytes = [1, 0, 0, 0, @textures.length].pack('CCCCV')
+        mapped_pixels = @textures.sum do |texture|
+          texture[:media_type] == :jpeg_color_map ? texture[:image_width_px] * texture[:image_height_px] : 0
+        end
+        # Match the experimental consumer limit. @textures is already deduplicated.
+        raise 'BOMC color-map aggregate pixel budget exceeded' if mapped_pixels > 64_000_000
+        version = @textures.any? { |texture| texture[:media_type] == :jpeg_color_map } ? 2 : 1
+        bytes = [version, 0, 0, 0, @textures.length].pack('CCCCV')
         bytes << @textures.map { |texture| BOMC::TEXTURE_MEDIA.fetch(texture[:media_type], 0) }.pack('C*')
         bytes << @textures.map { |texture| texture[:image_width_px] }.pack('V*')
         bytes << @textures.map { |texture| texture[:image_height_px] }.pack('V*')

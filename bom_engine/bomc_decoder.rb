@@ -2,6 +2,7 @@
 
 require 'digest'
 require_relative 'bomc_format'
+require_relative 'bomc_jpeg_color_map'
 require_relative 'decode_budget'
 require_relative 'bomc_codecs'
 require_relative 'bomc_encoding_contract'
@@ -19,8 +20,8 @@ module BOMEngine
       decode(File.binread(path))
     end
 
-    def self.decode(bytes)
-      Decoder.new(bytes).decode
+    def self.decode(bytes, allow_jpeg_color_map: false)
+      Decoder.new(bytes, allow_jpeg_color_map: allow_jpeg_color_map).decode
     end
 
     def self.profile(bytes)
@@ -41,7 +42,8 @@ module BOMEngine
     end
 
     class Decoder
-      def initialize(bytes)
+      def initialize(bytes, allow_jpeg_color_map: false)
+        @allow_jpeg_color_map = allow_jpeg_color_map == true
         @container = BOMC::Container.parse(bytes)
         @sections = {}
         @container[:sections].each do |section|
@@ -405,7 +407,7 @@ module BOMEngine
           min_bytes_per_normal = codec == 1 ? 12 : (codec == 2 ? 4 : 24)
           DecodeBudget.checked_table_bytes(count, 3, 8, payload_length, min_wire: min_bytes_per_normal / 3.0)
         elsif codec_module == BOMC::TransformCodec
-          min_bytes_per_matrix = codec == 0 ? 0 : (codec == 5 ? 1 : (codec == 4 ? 24 : (codec == 3 ? 40 : (codec == 2 ? 48 : 96))))
+          min_bytes_per_matrix = codec == 0 ? 0 : (codec == 5 ? 1 : (codec == 6 ? 128 : (codec == 4 ? 24 : (codec == 3 ? 40 : (codec == 2 ? 48 : 96)))))
           DecodeBudget.checked_table_bytes(count, 16, 8, payload_length, min_wire: min_bytes_per_matrix / 16.0)
         end
         codec_module.decode(codec: codec, count: count, bytes: bytes.byteslice(12, payload_length))
@@ -561,7 +563,8 @@ module BOMEngine
       def decode_textures(table_bytes, blob_bytes)
         cursor = Cursor.new(table_bytes)
         version, reserved_a, reserved_b, reserved_c = cursor.read(4).unpack('CCCC')
-        raise 'BOMC invalid: texture table header.' unless version == 1 && [reserved_a, reserved_b, reserved_c].all?(&:zero?)
+        raise 'BOMC requires experimental color-map loader.' if version == 2 && !@allow_jpeg_color_map
+        raise 'BOMC invalid: texture table header.' unless [1,2].include?(version) && [reserved_a, reserved_b, reserved_c].all?(&:zero?)
         count = cursor.read_u32
         media = cursor.read(count).unpack('C*')
         widths = cursor.read(count * 4).unpack('V*')
@@ -576,6 +579,11 @@ module BOMEngine
           raise "BOMC invalid: texture #{index} outside blob section." if offset + length > blob_bytes.bytesize
           content = blob_bytes.byteslice(offset, length).b
           raise "BOMC invalid: texture #{index} hash mismatch." unless Digest::SHA256.hexdigest(content) == hashes[index]
+          raise 'BOMC invalid: texture media.' unless (0..(version == 2 ? 6 : 5)).cover?(media[index])
+          if media[index] == 6
+            map = BOMCJpegColorMap.parse(content)
+            raise 'BOMC invalid: color-map dimensions.' unless map[:width] == widths[index] && map[:height] == heights[index]
+          end
           {
             media_type: BOMC::TEXTURE_MEDIA_NAMES.fetch(media[index], :binary),
             image_width_px: widths[index], image_height_px: heights[index],

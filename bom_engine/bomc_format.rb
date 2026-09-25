@@ -81,7 +81,7 @@ module BOMEngine
       18 => 'equipment', 19 => 'foundation', 20 => 'structure', 21 => 'room_boundary',
       22 => 'exterior_wall', 23 => 'interior_wall'
     }.freeze
-    TEXTURE_MEDIA = { binary: 0, png: 1, jpeg: 2, webp: 3, avif: 4, ktx2: 5 }.freeze
+    TEXTURE_MEDIA = { binary: 0, png: 1, jpeg: 2, webp: 3, avif: 4, ktx2: 5, jpeg_color_map: 6 }.freeze
     TEXTURE_MEDIA_NAMES = TEXTURE_MEDIA.each_with_object({}) { |(name, value), result| result[value] = name }.freeze
 
     HEADER_PACK = 'a8vvVVVQ<'.freeze

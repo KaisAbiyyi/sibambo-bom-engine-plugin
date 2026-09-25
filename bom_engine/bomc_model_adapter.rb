@@ -1,5 +1,6 @@
 require 'digest'
 require_relative 'numeric_shape'
+require_relative 'bomc_jpeg_color_map'
 require_relative 'scene_clip_program'
 
 module BOMEngine
@@ -437,6 +438,12 @@ module BOMEngine
         return nil if bytes.nil?
 
         content = bytes.b
+        if content.start_with?(BOMCJpegColorMap::MAGIC)
+          map = BOMCJpegColorMap.parse(content)
+          unless map[:width] == texture[:image_width_px] && map[:height] == texture[:image_height_px]
+            raise ArgumentError, 'Exact color-map texture dimensions mismatch'
+          end
+        end
         {
           bytes: content,
           sha256: Digest::SHA256.hexdigest(content),
@@ -451,6 +458,7 @@ module BOMEngine
       private_class_method :normalize_texture
 
       def texture_media_type(texture, bytes)
+        return :jpeg_color_map if bytes.start_with?(BOMCJpegColorMap::MAGIC)
         filename = (texture[:filename] || texture[:source_path]).to_s.downcase
         return :png if bytes.start_with?("\x89PNG\r\n\x1a\n".b) || filename.end_with?('.png')
         return :jpeg if bytes.start_with?("\xff\xd8".b) || filename.end_with?('.jpg', '.jpeg')

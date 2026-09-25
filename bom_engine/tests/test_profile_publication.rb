@@ -79,6 +79,55 @@ class TestProfilePublication < Test::Unit::TestCase
     Marshal.load(Marshal.dump(obj))
   end
 
+  def test_adaptive_nested_texture_evidence_is_validated
+    candidate = BOMEngine::BOMCSizeGate.compile_candidate(@graph, profile: :exact)
+    decoded = BOMEngine::BOMCDecoder.decode(candidate.fetch(:bytes))
+    evidence = { selected: :staged, staging: {
+      policy_revision: 'adaptive-texture-1', profile: :research,
+      selected: :webp_candidate, alpha_preserved: true, native_jpeg: false,
+      semantic_class: :class_b, quality: { compatible: true, alpha_preserved: true,
+        psnr_db: 48.0, mean_squared_error: 1.0, max_channel_error: 1 }
+    } }
+    assert_nothing_raised do
+      BOMEngine::BOMCValidator.validate_profile!(source: @graph, decoded: decoded, profile: :research, texture_evidence: [evidence])
+    end
+    [
+      { psnr_db: 20.0 }, { psnr_db: Float::NAN }, { alpha_preserved: false },
+      { psnr_db: nil, mean_squared_error: 2.0 }, { compatible: false }
+    ].each do |mutation|
+      bad = deep_dup(evidence)
+      bad[:staging][:quality].merge!(mutation)
+      assert_raise(BOMEngine::BOMCValidator::ProfileValidationError, mutation.inspect) do
+        BOMEngine::BOMCValidator.validate_profile!(source: @graph, decoded: decoded, profile: :research, texture_evidence: [bad])
+      end
+    end
+  end
+
+  def test_exact_decoded_jpeg_requires_matching_lossless_digest_evidence
+    decoded = BOMEngine::BOMCDecoder.decode(BOMEngine::BOMCWriter.pack(@graph, profile: :exact)[:bytes])
+    digest = Digest::SHA256.hexdigest('jpeg-payload')
+    # The real decoder emits :jpeg and a SHA, not image/jpeg or a filename.
+    decoded[:textures] = [{ media_type: :jpeg, sha256: digest, bytes: 'jpeg-payload' }]
+    assert_raise(BOMEngine::BOMCValidator::ProfileValidationError) do
+      BOMEngine::BOMCValidator.validate_profile!(source: @graph, decoded: decoded, profile: :exact)
+    end
+    evidence = { staging: {
+      policy_revision: 'adaptive-texture-3', profile: :exact, native_jpeg: true,
+      selected: :native_jpeg_candidate, selected_sha256: digest, alpha_preserved: true,
+      quality: { compatible: true, alpha_preserved: true, mean_squared_error: 0.0, max_channel_error: 0 }
+    } }
+    assert_nothing_raised do
+      BOMEngine::BOMCValidator.validate_profile!(source: @graph, decoded: decoded,
+        profile: :exact, texture_evidence: [evidence])
+    end
+    bad = deep_dup(evidence)
+    bad[:staging][:selected_sha256] = Digest::SHA256.hexdigest('other-texture')
+    assert_raise(BOMEngine::BOMCValidator::ProfileValidationError) do
+      BOMEngine::BOMCValidator.validate_profile!(source: @graph, decoded: decoded,
+        profile: :exact, texture_evidence: [bad])
+    end
+  end
+
   # Test 1: Spy test that :exact, :research, :visual reach snapshot_model and BOMCTextureOptimizer.stage
   def test_profile_propagation_spy
     [:exact, :research, :visual].each do |target_profile|
@@ -106,6 +155,55 @@ class TestProfilePublication < Test::Unit::TestCase
       assert_equal target_profile, seen_optimizer_profile,
                    "Profile #{target_profile} must reach BOMCTextureOptimizer.stage"
     end
+  end
+
+  def test_snapshot_passes_scoped_candidate_cache_to_texture_optimizer
+    seen_cache = nil
+    optimizer = BOMEngine::BOMCTextureOptimizer
+    original = optimizer.method(:stage)
+    optimizer.define_singleton_method(:stage) do |**kwargs, &block|
+      seen_cache = kwargs[:candidate_cache]
+      original.call(**kwargs, &block)
+    end
+    ref = make_image_rep([[10, 20, 30], [40, 50, 60], [70, 80, 90], [100, 110, 120]])
+    material = FakeMaterial.new(101, 'Wood', 'Wood', FakeColor.new(200, 150, 100, 255),
+      1.0, 1, FakeTexture.new('textures/wood.png', ref))
+    model = FakeModel.new([material], [], nil)
+    Dir.mktmpdir('snapshot-cache') do |root|
+      cache_dir = File.join(root, 'cache')
+      Dir.mkdir(cache_dir)
+      cache = { directory: cache_dir, entries: {}, hits: 0 }
+      error = nil
+      begin
+        BOMEngine::BOMCExtension.send(:snapshot_model, model, File.join(root, 'textures'),
+          ->(**_) {}, profile: :visual, candidate_cache: cache)
+      rescue ArgumentError => caught
+        error = caught
+      end
+      assert_nil error
+      assert_same cache, seen_cache
+    end
+  ensure
+    optimizer.define_singleton_method(:stage, original) if original
+  end
+
+  def test_experimental_opt_in_and_shared_pixel_budget_reach_texture_staging
+    seen=[]
+    original=BOMEngine::BOMCTextureOptimizer.method(:stage)
+    BOMEngine::BOMCTextureOptimizer.define_singleton_method(:stage) do |**kwargs,&block|
+      seen << kwargs.slice(:allow_jpeg_color_map,:color_map_budget)
+      original.call(**kwargs,&block)
+    end
+    ref=make_image_rep([[10,20,30],[40,50,60],[70,80,90],[100,110,120]])
+    mats=2.times.map { |i| FakeMaterial.new(i,"M#{i}","M#{i}",FakeColor.new(255,255,255,255),1.0,1,FakeTexture.new('embedded.png',ref)) }
+    Dir.mktmpdir do |dir|
+      assert_nothing_raised { BOMEngine::BOMCExtension.send(:snapshot_model,FakeModel.new(mats,[],nil),dir,->(**_) {},profile: :exact,allow_jpeg_color_map:true) }
+    end
+    assert_equal [true,true],seen.map { |item| item[:allow_jpeg_color_map] }
+    assert_same seen[0][:color_map_budget],seen[1][:color_map_budget]
+    assert_equal 64_000_000,seen[0][:color_map_budget][:remaining_pixels]
+  ensure
+    BOMEngine::BOMCTextureOptimizer.define_singleton_method(:stage,original) if original
   end
 
   # Test 2: Shared texture Class A/C resolves to strictest Class A

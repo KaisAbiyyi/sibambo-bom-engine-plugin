@@ -10,7 +10,7 @@ module UI
       attr_reader :last
     end
 
-    attr_reader :callbacks, :options, :scripts, :file
+    attr_reader :callbacks, :options, :scripts, :file, :centered
 
     def initialize(**options)
       @options = options
@@ -23,6 +23,7 @@ module UI
     def add_action_callback(name, &callback); @callbacks[name] = callback; end
     def execute_script(script); @scripts << script; end
     def close; @closed = true; end
+    def center; @centered = true; end
     def show; self; end
   end
 
@@ -45,6 +46,7 @@ BOMEngine::BOMCDialog.show(
 dialog = UI::HtmlDialog.last
 raise 'Dialog title missing product version.' unless dialog.options[:dialog_title] == 'Sibambo BOMC Engine 1.2.0 — Export BOMC 1.2'
 raise 'BOMC dialog HTML was not loaded.' unless File.basename(dialog.file) == 'bomc_export_dialog.html'
+raise 'BOMC dialog was not centered relative to SketchUp.' unless dialog.centered
 
 dialog.callbacks.fetch('onReady').call(nil)
 raise 'Default output path was not sent to dialog.' unless dialog.scripts.last.include?('House__SIBAMBO-BOMC-v1.2.0.bomc')

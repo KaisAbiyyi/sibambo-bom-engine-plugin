@@ -141,10 +141,10 @@
       "order": 4,
       "state": "development",
       "baseProducerSha": "8082541d852cd68b9874231e41c6b9c967c74d26",
-      "producerSha": "7284982b26834f2635a839c6c7a1e687f83dca35",
-      "consumerSha": "d2f71f98e1376172cf5204f042d3b5e448aab71f",
+      "producerSha": "bd6782691ef8ba98f9d3baab698bc1cd961ce393",
+      "consumerSha": "10aaf55a8042281c5a518a0b5cedc577d2a2ce1d",
       "loaderId": "bomc-next-v1",
-      "profileContractRevision": 2,
+      "profileContractRevision": 1,
       "profiles": [
         "visual",
         "research",
@@ -158,27 +158,14 @@
       "requiredSections": [
         1,
         2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-        10,
         11,
         12,
         13,
-        14,
-        15,
-        16,
         17,
-        18,
-        19,
         20
       ],
       "packageSha256": "1e929b7b552c48cd6e8552f10150c0fc56eab0d99b4b95503ba43b9dafc4fc21",
-      "snapshotTreeSha256": "71373d0fcda67580ab9333df8de4e1628d36b9f5c8d0c03f6e97061d8634a6f4",
+      "snapshotTreeSha256": "703e65a95b459b852409abab50d53f7044c35f83a40a8ba48496c465786c0e6d",
       "certificationId": null
     }
   ]

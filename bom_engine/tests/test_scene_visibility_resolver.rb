@@ -273,6 +273,20 @@ module BOMEngine
       assert_equal false, SceneVisibilityResolver.exportable_universe?(entity_hidden, scenes, scope: 'all')
     end
 
+    def test_no_page_visible_tag_does_not_resurrect_hidden_entities
+      layer = MockLayer.new('Untagged', visible: true, persistent_id: '101')
+      hidden = MockDrawingElement.new('hidden-face', layer: layer, hidden: true)
+      visible = MockDrawingElement.new('visible-face', layer: layer)
+      scene = { is_active_at_export: true,
+                visibility: { visible_tag_ids: ['tag:101'], hidden_tag_ids: [],
+                              visible_node_overrides: [], hidden_node_overrides: ['visible-face'] } }
+
+      assert_equal false, SceneVisibilityResolver.exportable_universe?(hidden, [scene], scope: 'all'),
+        'A visible tag alone must not resurrect a base-hidden face without a Page override'
+      assert_equal false, SceneVisibilityResolver.exportable_universe?(visible, [scene], scope: 'all'),
+        'A hidden node override must not be bypassed by its visible tag'
+    end
+
     def test_bomc_section_scenes_roundtrip
       layer1 = { id: 'tag:101', name: 'ARCH', visible: true }
       layer2 = { id: 'tag:102', name: 'STRUCT', visible: false }

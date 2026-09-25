@@ -15,10 +15,10 @@ module T8CaptureKitBuilder
   RESULTS_DIR = File.join(KIT_DIR, 'results')
 
   E4_RELEASE_ID = 'next-from-8082541'
-  PINNED_PRODUCER_SHA = '7284982b26834f2635a839c6c7a1e687f83dca35'
+  PINNED_PRODUCER_SHA = 'bd6782691ef8ba98f9d3baab698bc1cd961ce393'
   BASE_PRODUCER_SHA = '8082541d852cd68b9874231e41c6b9c967c74d26'
   PINNED_CONSUMER_SHA = '4c927dfc4c38dea767ff8f7a3f796230e25c45bf'
-  EXPECTED_SNAPSHOT_TREE_SHA256 = '71373d0fcda67580ab9333df8de4e1628d36b9f5c8d0c03f6e97061d8634a6f4'
+  EXPECTED_SNAPSHOT_TREE_SHA256 = '703e65a95b459b852409abab50d53f7044c35f83a40a8ba48496c465786c0e6d'
   EXPECTED_CATALOG_PACKAGE_SHA256 = '1e929b7b552c48cd6e8552f10150c0fc56eab0d99b4b95503ba43b9dafc4fc21'
 
   def self.build
@@ -80,7 +80,7 @@ module T8CaptureKitBuilder
       'base_producer_sha' => BASE_PRODUCER_SHA,
       'consumer_sha' => PINNED_CONSUMER_SHA,
       'loader_id' => e4_record['loaderId'] || 'bomc-next-v1',
-      'profile_contract_revision' => e4_record['profileContractRevision'] || 2,
+      'profile_contract_revision' => e4_record.fetch('profileContractRevision'),
       'entry_kind' => e4_record['entryKind'] || 'bomc-three-profile',
       'supported_profiles' => e4_record['profiles'] || ['visual', 'research', 'exact'],
       'builder_revision' => '1.0',
@@ -111,6 +111,9 @@ module T8CaptureKitBuilder
     # Generate the verification script
     generate_verifier_script(KIT_DIR)
 
+    # One-click SketchUp menu launcher; operator does not need Ruby Console.
+    generate_menu_launcher(KIT_DIR)
+
     puts "\n======================================================================"
     puts "  T8 CAPTURE KIT READY AT: #{KIT_DIR}"
     puts "======================================================================"
@@ -122,13 +125,9 @@ module T8CaptureKitBuilder
     code = <<~'RUBY'
       # frozen_string_literal: true
       # SIBAMBO BOM Engine — T8 E4 Runtime Capture Script for SketchUp 2026
-      # Usage in SketchUp Ruby Console:
+      # Safe usage in SketchUp Ruby Console (or the installed menu launcher):
       #   load 'D:/projects/sibambo/scratch/t8-capture-kit/capture_e4.rb'
-      #   SibamboCaptureKit.export_profile(:visual)
-      #   SibamboCaptureKit.export_profile(:research)
-      #   SibamboCaptureKit.export_profile(:exact)
-      #   # or run all three:
-      #   SibamboCaptureKit.export_all
+      #   SibamboCaptureKit.start_interactive
 
       require 'json'
       require 'time'
@@ -143,9 +142,9 @@ module T8CaptureKitBuilder
         FileUtils.mkdir_p(RESULTS_DIR)
 
         PROFILES = %i[visual research exact].freeze
-        PRODUCER_SHA = '7284982b26834f2635a839c6c7a1e687f83dca35'.freeze
+        PRODUCER_SHA = 'bd6782691ef8ba98f9d3baab698bc1cd961ce393'.freeze
         RELEASE_ID = 'next-from-8082541'.freeze
-        EXPECTED_PROFILE_CONTRACT_REVISION = 2
+        EXPECTED_PROFILE_CONTRACT_REVISION = 1
 
         EXPECTED_EXPORT_STAGES = %w[
           INITIALIZE SCAN_MODEL SNAPSHOT_MATERIALS SNAPSHOT_TEXTURES
@@ -155,7 +154,7 @@ module T8CaptureKitBuilder
           COMPRESS_SECTIONS WRITE_CONTAINER SIZE_GATE VALIDATE DONE
         ].freeze
 
-        def self.read_bomc_encoding_contract_profile(bomc_path)
+        def self.read_bomc_encoding_contract(bomc_path)
           return nil unless File.file?(bomc_path) && File.size(bomc_path) >= 32
           bytes = File.binread(bomc_path)
           return nil if bytes.bytesize < 32
@@ -181,12 +180,37 @@ module T8CaptureKitBuilder
               return nil unless sec_data && sec_data.bytesize >= 76
               c_vals = sec_data.unpack('vCCQ<EEQ<EEEECCCCV')
               prof_map = { 1 => 'exact', 2 => 'research', 3 => 'visual' }
-              return prof_map[c_vals[1]]
+              return { profile: prof_map[c_vals[1]], encoder_revision: c_vals[-1] } if c_vals[0] == 1
+              return nil
             end
           end
           nil
         rescue StandardError
           nil
+        end
+
+        def self.read_bomc_encoding_contract_profile(bomc_path)
+          read_bomc_encoding_contract(bomc_path)&.dig(:profile)
+        end
+
+        def self.verify_engine_identity!(engine)
+          manifest = JSON.parse(File.read(MANIFEST_PATH))
+          raise 'Unexpected capture manifest identity.' unless manifest['producer_sha'] == PRODUCER_SHA && manifest['release_id'] == RELEASE_ID
+          raise 'Loaded E4 commit differs from capture manifest.' unless engine::COMMIT_SHA == PRODUCER_SHA
+          root = File.dirname(engine.method(:load_engine).source_location.fetch(0)).tr('\\', '/')
+          digest = Digest::SHA256.new
+          Dir.glob(File.join(root, '**', '*')).reject { |f| File.directory?(f) || File.basename(f) == 'SNAPSHOT_METADATA.json' }.sort.each do |file|
+            digest.update(file.delete_prefix(root + '/'))
+            digest.update(Digest::SHA256.file(file).digest)
+          end
+          raise 'Loaded E4 files differ from the pinned snapshot. Restart SketchUp with the capture kit candidate.' unless digest.hexdigest == manifest['snapshot_tree_sha256']
+          package = File.join(KIT_DIR, 'sibambo_bom_engine_next_from_8082541.rbz')
+          raise 'Capture package checksum mismatch.' unless Digest::SHA256.file(package).hexdigest == manifest['package_sha256']
+          engine.load_engine
+          expected_exporter = File.expand_path(File.join(root, 'bom_engine', 'bomc_extension.rb'))
+          actual_exporter = File.expand_path(engine::BOMCExtension.method(:export).source_location.fetch(0))
+          raise 'Mixed E4 exporter detected. Restart SketchUp.' unless actual_exporter.casecmp?(expected_exporter)
+          engine
         end
 
         def self.ensure_extension_loaded!
@@ -195,8 +219,7 @@ module T8CaptureKitBuilder
           end
 
           if defined?(SibamboHistory::Next_from_8082541)
-            SibamboHistory::Next_from_8082541.load_engine
-            return SibamboHistory::Next_from_8082541
+            return verify_engine_identity!(SibamboHistory::Next_from_8082541)
           end
 
           plugins_dir = Sketchup.find_support_file('Plugins')
@@ -204,22 +227,23 @@ module T8CaptureKitBuilder
             installed_entry = File.join(plugins_dir, 'sibambo_bom_engine_next_from_8082541', 'entry_next_from_8082541.rb')
             if File.file?(installed_entry)
               require installed_entry
-              SibamboHistory::Next_from_8082541.load_engine
-              return SibamboHistory::Next_from_8082541
+              return verify_engine_identity!(SibamboHistory::Next_from_8082541)
             end
           end
 
           kit_staged_entry = File.join(KIT_DIR, 'staged', 'entry_next_from_8082541.rb')
           if File.file?(kit_staged_entry)
             require kit_staged_entry
-            SibamboHistory::Next_from_8082541.load_engine
-            return SibamboHistory::Next_from_8082541
+            return verify_engine_identity!(SibamboHistory::Next_from_8082541)
           end
 
           raise "E4 candidate extension is not installed. Please install 'sibambo_bom_engine_next_from_8082541.rbz' via SketchUp Extension Manager first."
         end
 
-        def self.export_profile(profile, output_dir: nil)
+        def self.export_profile(profile, output_dir: nil, checkpoint: nil)
+          if defined?(Sketchup) && defined?(UI) && checkpoint.nil?
+            raise 'Direct capture blocks SketchUp. Use SibamboCaptureKit.start_interactive.'
+          end
           ext_mod = ensure_extension_loaded!
           model = Sketchup.active_model
 
@@ -228,6 +252,9 @@ module T8CaptureKitBuilder
           end
           if model.path.to_s.strip.empty?
             raise 'The active model has not been saved to disk. Please save it as a .skp file first.'
+          end
+          if model.modified?
+            raise 'Save the model (Ctrl+S) before capture so the source hash matches the exported model.'
           end
 
           prof_sym = profile.to_s.downcase.to_sym
@@ -241,6 +268,9 @@ module T8CaptureKitBuilder
           model_basename = File.basename(model.path, File.extname(model.path))
           output_bomc_path = File.join(dest_dir, "#{model_basename}__E4__#{prof_sym.to_s.upcase}.bomc")
           capture_json_path = File.join(dest_dir, "capture_#{prof_sym}.json")
+          if File.exist?(output_bomc_path) || File.exist?(capture_json_path)
+            raise "Existing capture preserved in #{dest_dir}. Ask Codex to archive it before retrying."
+          end
 
           puts '======================================================================'
           puts "  SIBAMBO T8 CAPTURE: Exporting Profile '#{prof_sym.to_s.upcase}'"
@@ -255,7 +285,7 @@ module T8CaptureKitBuilder
           loader_id = manifest['loader_id'] || 'bomc-next-v1'
           contract_revision = manifest['profile_contract_revision'] || EXPECTED_PROFILE_CONTRACT_REVISION
           package_sha256 = manifest['package_sha256'] || manifest['catalog_package_sha256']
-          snapshot_tree_sha256 = manifest['snapshot_tree_sha256'] || '71373d0fcda67580ab9333df8de4e1628d36b9f5c8d0c03f6e97061d8634a6f4'
+          snapshot_tree_sha256 = manifest['snapshot_tree_sha256'] || '703e65a95b459b852409abab50d53f7044c35f83a40a8ba48496c465786c0e6d'
 
           source_model_bytes = (File.size(model.path) rescue nil)
           source_model_sha256 = (File.file?(model.path) ? Digest::SHA256.file(model.path).hexdigest : nil rescue nil)
@@ -280,6 +310,7 @@ module T8CaptureKitBuilder
               current_stage = stage
               stage_start_time = now
             end
+            checkpoint.call(event.merge(stage: "#{prof_sym.to_s.upcase}: #{stage}")) if checkpoint
           end
 
           t0 = Time.now
@@ -294,6 +325,10 @@ module T8CaptureKitBuilder
               progress: progress_cb
             )
           rescue StandardError => e
+            if checkpoint && ext_mod.const_defined?(:ConversionJob, false) &&
+               e.is_a?(ext_mod.const_get(:ConversionJob).const_get(:Cancelled))
+              raise
+            end
             export_errors << "#{e.class}: #{e.message}"
             export_errors.concat(e.backtrace.first(10)) if e.backtrace
             puts "  [ERROR] Export failed: #{e.message}"
@@ -315,7 +350,14 @@ module T8CaptureKitBuilder
 
           bomc_bytes = File.file?(output_bomc_path) ? File.size(output_bomc_path) : 0
           bomc_sha256 = (File.file?(output_bomc_path) && bomc_bytes > 0) ? Digest::SHA256.file(output_bomc_path).hexdigest : nil
-          actual_bomc_prof = read_bomc_encoding_contract_profile(output_bomc_path)
+          actual_contract = read_bomc_encoding_contract(output_bomc_path)
+          actual_bomc_prof = actual_contract&.dig(:profile)
+          actual_bomc_revision = actual_contract&.dig(:encoder_revision)
+          export_errors << 'Exported BOMC profile does not match requested profile.' unless actual_bomc_prof == prof_sym.to_s
+          export_errors << "Exported BOMC contract revision #{actual_bomc_revision.inspect} does not match manifest revision #{contract_revision}." unless actual_bomc_revision == contract_revision
+          unless !model.modified? && Digest::SHA256.file(model.path).hexdigest == source_model_sha256
+            export_errors << 'Source model changed during capture; save and capture again.'
+          end
 
           # Strict fail-closed evidence flag: only true when export succeeded, file exists, has nonzero bytes, and SHA calculated
           real_runtime_evidence = export_errors.empty? && File.file?(output_bomc_path) && bomc_bytes > 0 && !bomc_sha256.nil?
@@ -332,6 +374,7 @@ module T8CaptureKitBuilder
             'snapshot_tree_sha256' => snapshot_tree_sha256,
             'profile' => prof_sym.to_s,
             'actual_bomc_profile' => actual_bomc_prof,
+            'actual_bomc_revision' => actual_bomc_revision,
             'timestamp' => Time.now.utc.iso8601,
             'source_model_path' => model.path.to_s.gsub('\\', '/'),
             'source_model_bytes' => source_model_bytes,
@@ -368,10 +411,14 @@ module T8CaptureKitBuilder
           record
         end
 
-        def self.export_all(output_dir: nil)
+        def self.export_all(output_dir: nil, checkpoint: nil)
+          if defined?(Sketchup) && defined?(UI) && checkpoint.nil?
+            raise 'Direct capture blocks SketchUp. Use SibamboCaptureKit.start_interactive.'
+          end
           results = {}
           PROFILES.each do |prof|
-            results[prof] = export_profile(prof, output_dir: output_dir)
+            results[prof] = export_profile(prof, output_dir: output_dir, checkpoint: checkpoint)
+            break unless results[prof]['export_status'] == 'success'
           end
           session_file = File.join(output_dir || RESULTS_DIR, 't8_capture_session.json')
           File.write(session_file, JSON.pretty_generate({
@@ -379,9 +426,80 @@ module T8CaptureKitBuilder
             'completed_at' => Time.now.utc.iso8601,
             'profiles' => results
           }), encoding: 'UTF-8')
-          puts "\nAll 3 profiles exported. Session record written to: #{session_file}"
+          successful = results.values.count { |record| record['export_status'] == 'success' }
+          puts "\n#{successful}/3 profiles exported successfully. Session record written to: #{session_file}"
           results
         end
+
+        def self.start_interactive
+          engine = ensure_extension_loaded!
+          model = Sketchup.active_model
+          raise 'Open and save RUMAH L.skp before capture.' unless model && File.basename(model.path.to_s).casecmp?('RUMAH L.skp')
+          raise 'Save RUMAH L.skp before capture.' if model.modified?
+          require File.join(KIT_DIR, 'verify_capture.rb')
+          job_class = engine.const_get(:ConversionJob)
+          raise 'Another BOMC export is already running.' if job_class.active&.running?
+          job = job_class.start(
+            title: 'Sibambo E4 — RUMAH L capture (3 profiles)',
+            output_path: File.join(RESULTS_DIR, "capture-#{Time.now.utc.strftime('%Y%m%dT%H%M%S')}"),
+            batch_size: 256
+          ) do |progress|
+            records = export_all(checkpoint: progress)
+            unless records.length == PROFILES.length && records.values.all? { |record| record['export_status'] == 'success' }
+              raise 'Capture stopped after a failed profile. Existing results are preserved; inspect the capture record before retrying.'
+            end
+            {
+              path: RESULTS_DIR,
+              bytes: records.values.sum { |record| record['bomc_bytes'].to_i },
+              profile: 'visual+research+exact',
+              status: 'captured_pending_certification'
+            }
+          end
+          timer_id = nil
+          timer_id = UI.start_timer(0.5, true) do
+            next if job.running?
+            UI.stop_timer(timer_id)
+            begin
+              result = T8CaptureVerifier.verify(nil, skip_consumer_inspection: true)
+              count = result.fetch(:verified_captures, {}).length
+              UI.messagebox("RUMAH L E4 capture: #{count}/3 verified. Status: #{result[:status]}. Results: #{RESULTS_DIR}. Send this status to Codex; release remains not ready.")
+            rescue StandardError => error
+              UI.messagebox("Capture verification failed: #{error.class}: #{error.message}. Existing results preserved. Ask Codex before retrying.")
+            end
+          end
+          job
+        end
+      end
+    RUBY
+    File.write(script_path, code, encoding: 'UTF-8')
+  end
+
+  def self.generate_menu_launcher(kit_dir)
+    script_path = File.join(kit_dir, 'sibambo_t7_capture_launcher.rb')
+    code = <<~RUBY
+      # frozen_string_literal: true
+      # Place this file in SketchUp 2026's Plugins directory, then restart SketchUp.
+      # It adds one menu command; capture and verification remain pinned to the kit.
+
+      module SibamboT7CaptureLauncher
+        KIT_DIR = #{kit_dir.gsub('\\', '/').inspect}.freeze
+        CAPTURE_SCRIPT = File.join(KIT_DIR, 'capture_e4.rb').freeze
+        VERIFIER_SCRIPT = File.join(KIT_DIR, 'verify_capture.rb').freeze
+
+        def self.run
+          model = Sketchup.active_model
+          raise 'Open and save RUMAH L.skp before capture.' unless model && File.basename(model.path.to_s).casecmp?('RUMAH L.skp')
+          raise 'Capture kit missing. Ask Codex to repair it.' unless File.file?(CAPTURE_SCRIPT) && File.file?(VERIFIER_SCRIPT)
+
+          require CAPTURE_SCRIPT
+          SibamboCaptureKit.start_interactive
+        rescue StandardError => error
+          UI.messagebox("RUMAH L E4 capture failed: \#{error.class}: \#{error.message}. Existing results preserved. Ask Codex before retrying.")
+        end
+      end
+
+      if defined?(Sketchup) && defined?(UI)
+        UI.menu('Extensions').add_item('Sibambo E4 — Capture RUMAH L (3 profiles)') { SibamboT7CaptureLauncher.run }
       end
     RUBY
     File.write(script_path, code, encoding: 'UTF-8')
@@ -393,7 +511,7 @@ module T8CaptureKitBuilder
       # SIBAMBO T8 Runtime Capture Kit — Operator Instructions
 
       **Target Release**: `next-from-8082541` (Candidate E4)  
-      **Producer SHA**: `7284982b26834f2635a839c6c7a1e687f83dca35`  
+      **Producer SHA**: `bd6782691ef8ba98f9d3baab698bc1cd961ce393`
       **Consumer Pinned SHA**: `#{PINNED_CONSUMER_SHA}`  
       **Package SHA-256**: `#{package_sha256}`  
       **Kit Path**: `#{kit_dir.gsub('\\', '/')}`  
@@ -403,7 +521,13 @@ module T8CaptureKitBuilder
 
       ---
 
-      ## Step 1: Pre-Install Verification Gate
+      ## Who does what?
+
+      The user opens saved `RUMAH L.skp` in SketchUp and clicks the capture command under Extensions. Ruby Console is not required. Codex handles kit installation, verification, and consumer Git/benchmark work. A dirty consumer checkout makes captures provisional; it does not prevent SketchUp capture. Release readiness stays false until later certification.
+
+      Save with Ctrl+S immediately before capture. Do not edit the model while exporting. Existing results are preserved: ask Codex to archive them before repeating a capture.
+
+      ## Step 1: Pre-Install Verification Gate (Codex)
       Before installing the candidate package or running SketchUp, verify kit integrity from your terminal:
 
       ```powershell
@@ -418,12 +542,13 @@ module T8CaptureKitBuilder
 
       ## Step 2: Open SketchUp 2026 Pro and Open Model
       1. Launch **Trimble SketchUp Pro 2026**.
-      2. Open a real architectural `.skp` model (e.g. `RUMAH L.skp` or `RUMAH G.skp`).
+      2. Open `RUMAH L.skp`.
       3. Verify the model is saved on disk.
 
       ---
 
-      ## Step 3: Install Candidate E4 RBZ Package
+      ## Step 3: Candidate E4 Package
+      If Codex has already verified the installed candidate snapshot against this kit, do not reinstall. Otherwise:
       1. In SketchUp, open **Extensions > Extension Manager**.
       2. Click **Install Extension...** at the bottom left.
       3. Select:
@@ -432,27 +557,15 @@ module T8CaptureKitBuilder
 
       ---
 
-      ## Step 4: Run Captures via Ruby Console
-      Open **Window > Ruby Console** in SketchUp, then copy and paste the command for each profile.
+      ## Step 4: Run Captures from Extensions Menu (Recommended)
+      Codex installs `sibambo_t7_capture_launcher.rb` into SketchUp's Plugins folder. Restart SketchUp after launcher installation. Open the saved `RUMAH L.skp`, then click **Extensions > Sibambo E4 — Capture RUMAH L (3 profiles)** once. A cooperative progress dialog runs the three exports; keep it open, do not edit the model, and do not repeat the command. Cancel is supported. Existing results are preserved, not overwritten.
 
-      ### Option A: Run All 3 Profiles at Once (Recommended)
+      If the menu launcher is unavailable, Ruby Console remains a fallback. Open **Window > Ruby Console** if exposed by your SketchUp install, then use `SibamboCaptureKit.start_interactive` after loading the script. Never call `export_all` or `export_profile` directly from Ruby Console: they are synchronous internal methods and block SketchUp.
+
+      ### Safe Ruby Console fallback
       ```ruby
-      load '#{File.join(kit_dir, 'capture_e4.rb').gsub('\\', '/')}'; SibamboCaptureKit.export_all
+      load '#{File.join(kit_dir, 'capture_e4.rb').gsub('\\', '/')}'; SibamboCaptureKit.start_interactive
       ```
-
-      ### Option B: Run Profiles Individually
-      - **Visual Profile**:
-        ```ruby
-        load '#{File.join(kit_dir, 'capture_e4.rb').gsub('\\', '/')}'; SibamboCaptureKit.export_profile(:visual)
-        ```
-      - **Research Profile**:
-        ```ruby
-        load '#{File.join(kit_dir, 'capture_e4.rb').gsub('\\', '/')}'; SibamboCaptureKit.export_profile(:research)
-        ```
-      - **Exact Profile**:
-        ```ruby
-        load '#{File.join(kit_dir, 'capture_e4.rb').gsub('\\', '/')}'; SibamboCaptureKit.export_profile(:exact)
-        ```
 
       ---
 
@@ -478,7 +591,7 @@ module T8CaptureKitBuilder
       1. Open **Extensions > Extension Manager**.
       2. Find **Sibambo BOM Engine — Next Evolution (Candidate from 8082541)**.
       3. Click **Uninstall** (or toggle **Disabled**).
-      4. Alternatively, remove `sibambo_bom_engine_next_from_8082541*` from your SketchUp `Plugins` folder.
+      4. Restart SketchUp after disabling/uninstalling to clear the loaded candidate.
 
       ---
 
@@ -502,6 +615,7 @@ module T8CaptureKitBuilder
       require 'fileutils'
       require 'zlib'
       require 'open3'
+      require 'time'
 
       module T8CaptureVerifier
         KIT_DIR = File.expand_path(__dir__)
@@ -510,12 +624,12 @@ module T8CaptureKitBuilder
         CONSUMER_DEFAULT_DIR = File.expand_path('../t0-worktrees-20260907/consumer', __dir__)
 
         REQUIRED_PROFILES = %w[visual research exact].freeze
-        EXPECTED_PRODUCER_SHA = '7284982b26834f2635a839c6c7a1e687f83dca35'.freeze
+        EXPECTED_PRODUCER_SHA = 'bd6782691ef8ba98f9d3baab698bc1cd961ce393'.freeze
         EXPECTED_LOADER_ID = 'bomc-next-v1'.freeze
-        EXPECTED_SNAPSHOT_TREE_SHA256 = '71373d0fcda67580ab9333df8de4e1628d36b9f5c8d0c03f6e97061d8634a6f4'.freeze
-        EXPECTED_PROFILE_CONTRACT_REVISION = 2
+        EXPECTED_SNAPSHOT_TREE_SHA256 = '703e65a95b459b852409abab50d53f7044c35f83a40a8ba48496c465786c0e6d'.freeze
+        EXPECTED_PROFILE_CONTRACT_REVISION = 1
 
-        def self.read_bomc_encoding_contract_profile(bomc_path)
+        def self.read_bomc_encoding_contract(bomc_path)
           return nil unless File.file?(bomc_path) && File.size(bomc_path) >= 32
           bytes = File.binread(bomc_path)
           return nil if bytes.bytesize < 32
@@ -541,12 +655,17 @@ module T8CaptureKitBuilder
               return nil unless sec_data && sec_data.bytesize >= 76
               c_vals = sec_data.unpack('vCCQ<EEQ<EEEECCCCV')
               prof_map = { 1 => 'exact', 2 => 'research', 3 => 'visual' }
-              return prof_map[c_vals[1]]
+              return { profile: prof_map[c_vals[1]], encoder_revision: c_vals[-1] } if c_vals[0] == 1
+              return nil
             end
           end
           nil
         rescue StandardError
           nil
+        end
+
+        def self.read_bomc_encoding_contract_profile(bomc_path)
+          read_bomc_encoding_contract(bomc_path)&.dig(:profile)
         end
 
         def self.inspect_consumer_provenance(consumer_dir = CONSUMER_DEFAULT_DIR)
@@ -699,6 +818,7 @@ module T8CaptureKitBuilder
               clean_res_dir = File.expand_path(res_dir)
               unless resolved_bomc.start_with?(clean_res_dir + File::SEPARATOR) || resolved_bomc == clean_res_dir
                 errors << "Output BOMC path escapes results directory for #{prof}: #{bomc_path_val}"
+                next
               end
 
               unless File.file?(resolved_bomc)
@@ -717,11 +837,19 @@ module T8CaptureKitBuilder
                 end
 
                 # Section 20 encoding contract check
-                actual_bomc_prof = read_bomc_encoding_contract_profile(resolved_bomc)
+                actual_contract = read_bomc_encoding_contract(resolved_bomc)
+                actual_bomc_prof = actual_contract&.dig(:profile)
                 if actual_bomc_prof.nil?
                   errors << "Could not read Section 20 encoding contract profile from BOMC for #{prof}"
                 elsif actual_bomc_prof != prof
                   errors << "Profile mismatch with BOMC encoding contract for #{prof}: capture declared '#{prof}', BOMC Section 20 encoded '#{actual_bomc_prof}'"
+                end
+                actual_bomc_revision = actual_contract&.dig(:encoder_revision)
+                if actual_bomc_revision != manifest['profile_contract_revision']
+                  errors << "Profile contract revision mismatch in BOMC for #{prof}: manifest #{manifest['profile_contract_revision']}, BOMC Section 20 #{actual_bomc_revision.inspect}"
+                end
+                if rec.key?('actual_bomc_revision') && rec['actual_bomc_revision'] != actual_bomc_revision
+                  errors << "actual_bomc_revision mismatch in record for #{prof}: recorded #{rec['actual_bomc_revision'].inspect}, BOMC #{actual_bomc_revision.inspect}"
                 end
                 if rec['actual_bomc_profile'] && rec['actual_bomc_profile'] != prof
                   errors << "actual_bomc_profile mismatch in record for #{prof}: expected '#{prof}', got '#{rec['actual_bomc_profile']}'"

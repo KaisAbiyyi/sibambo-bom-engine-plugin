@@ -22,13 +22,21 @@ module EvolutionLabBuilder
   ACTIVE_MANIFEST_FILE = File.join(HISTORY_DIR, 'active-releases.json')
   EVOLUTION_LAB_VERSION = '1.1.22'.freeze
   TRANSFORMER_REVISION = '1.0'.freeze
+  SNAPSHOT_PIPELINE_REVISION = '4'.freeze
 
-  def self.build(catalog: 'active', candidate: nil, dist_dir: nil, generated_dir: nil)
-    mode = catalog.to_s.downcase == 'archive' ? 'archive' : 'active'
-    if mode == 'active'
+  def self.build(catalog: 'lineup', candidate: nil, dist_dir: nil, generated_dir: nil)
+    case catalog.to_s.downcase
+    when 'lineup'
+      raise ArgumentError, 'Lineup does not accept --candidate or --generated-dir' if candidate || generated_dir
+      require_relative 'build_evolution_lineup'
+      output = dist_dir || File.join(DIST_DIR, "lineup-#{Time.now.utc.strftime('%Y%m%d%H%M%S')}")
+      EvolutionLineupBuilder.build(output: output).fetch(:rbz)
+    when 'active'
       build_active(candidate: candidate, dist_dir: dist_dir, generated_dir: generated_dir)
-    else
+    when 'archive'
       build_archive(dist_dir: dist_dir, generated_dir: generated_dir)
+    else
+      raise ArgumentError, "Unknown Evolution catalog: #{catalog}"
     end
   end
 
@@ -51,6 +59,7 @@ module EvolutionLabBuilder
     return false unless meta
     return false unless meta['producer_sha'] == sha
     return false unless meta['transformer_revision'] == TRANSFORMER_REVISION
+    return false unless meta['pipeline_revision'] == SNAPSHOT_PIPELINE_REVISION
 
     actual_tree_sha = compute_tree_sha(staged_dir)
     return false unless meta['tree_sha256'] == actual_tree_sha
@@ -62,6 +71,7 @@ module EvolutionLabBuilder
     meta = {
       'producer_sha' => sha,
       'transformer_revision' => TRANSFORMER_REVISION,
+      'pipeline_revision' => SNAPSHOT_PIPELINE_REVISION,
       'tree_sha256' => compute_tree_sha(staged_dir),
       'created_at' => Time.now.utc.iso8601
     }
@@ -220,6 +230,10 @@ module EvolutionLabBuilder
     entry_file = File.join(staged_dir, "entry_#{key.downcase}.rb")
     engine_version = historical_plugin_version(staged_dir)
     export_kind = record['entryKind'] == 'bomc-three-profile' ? :bomc_three_profile : :legacy_scene
+    # Branding reads this from the isolated snapshot, never from the host repo.
+    if File.file?(File.join(staged_dir, 'bom_engine', 'branding.rb'))
+      File.write(File.join(staged_dir, 'bom_engine', 'BUILD_SHA.txt'), "#{record.fetch('producerSha')}\n", encoding: 'UTF-8')
+    end
     create_cooperative_job(staged_dir, sub_mod)
 
     code = <<~RUBY
@@ -276,6 +290,9 @@ module EvolutionLabBuilder
 
           def self.launch(model = Sketchup.active_model, profile: nil)
             load_engine
+            if defined?(BOMCExtension) && BOMCExtension.respond_to?(:export_interactive)
+              return BOMCExtension.export_interactive
+            end
             load_format_adapter
             if defined?(UIDialog) && UIDialog.respond_to?(:show)
               UIDialog.show do |settings|
@@ -670,6 +687,13 @@ module EvolutionLabBuilder
       # 2. Settings namespace isolation
       content = content.gsub(/SETTINGS_KEY\s*=\s*["']([^"']+)["']/, "SETTINGS_KEY = \"Sibambo_History_#{key}_Settings\"")
       content = content.gsub(/Sketchup\.(read|write)_default\(["']BOMEngine_LastSettings["']/, "Sketchup.\\1_default(\"Sibambo_History_#{key}_Settings\"")
+
+      # SketchUp/third-party models may expose material_classes as an indexed
+      # collection. Only a Hash is a valid precomputed semantic-class map.
+      content = content.gsub(
+        'return model.material_classes if model.respond_to?(:material_classes) && model.material_classes',
+        "if model.respond_to?(:material_classes)\n        supplied_classes = model.material_classes\n        return supplied_classes if supplied_classes.is_a?(Hash)\n      end"
+      )
 
       # 3. Output collision prevention
       # Append version tag suffix to default output paths in UI/core
@@ -1948,7 +1972,7 @@ module EvolutionLabBuilder
       module SibamboHistory
         module #{isolated_submodule}
           PLUGIN_ID = 'sibambo_bom_engine_#{key.downcase}'
-          PLUGIN_NAME = 'Sibambo BOM Engine — #{ver['label']}'
+          PLUGIN_NAME = #{"Sibambo BOM Engine — #{ver['label']} [SHA #{ver.fetch('commit_sha')[0, 12]}]".inspect}
           PLUGIN_VERSION = '1.0.0'
 
           unless file_loaded?(__FILE__)
@@ -1962,7 +1986,13 @@ module EvolutionLabBuilder
 
             UI.menu('Extensions').add_item(PLUGIN_NAME) do
               require entry_point
-              SibamboHistory::#{isolated_submodule}.launch(Sketchup.active_model)
+              target = SibamboHistory::#{isolated_submodule}
+              target.load_engine
+              if #{ver['entryKind'].inspect} == 'bomc-three-profile' && defined?(target::BOMCExtension)
+                target::BOMCExtension.export_interactive
+              else
+                target.launch(Sketchup.active_model)
+              end
             end
 
             file_loaded(__FILE__)
@@ -2041,7 +2071,7 @@ end
 if __FILE__ == $PROGRAM_NAME
   dist_arg = nil
   gen_arg = nil
-  catalog_arg = 'active'
+  catalog_arg = 'lineup'
   candidate_arg = nil
   ARGV.each_with_index do |arg, i|
     if arg == '--output-dir' || arg == '--dist-dir'

@@ -136,32 +136,17 @@ Extensions
 
 ---
 
-## 6. Active Evolution Catalog Architecture (4-Slot Bounded Set)
+## 6. User-facing Evolution lineup (four engine generations)
 
-Beginning in Track T1, Evolution Lab provides a formal dual-catalog architecture to separate historical milestone exploration from active candidate evaluation:
+"Evolution" compares **BOM Engine versions**, not SketchUp test models. The current product lineup is `history/evolution-lineup.json` and is built with `ruby tools/history/build_evolution_lineup.rb --output <new-directory>`. Its SketchUp menu has exactly four engines:
 
-1. **Archive Catalog (`history/versions.json`)**:
-   Contains all 19 historical milestones (`[01]` through `[18]` + `[EXP-01]`). Built via `--catalog archive` for long-term historical exploration, regression forensics, and format genealogy.
-2. **Active Catalog (`history/active-releases.json`)**:
-   Enforces a strict 4-slot bounded active release set (`--catalog active`, default) validated against `active-releases.schema.json`:
+| Slot | Historical source | Output | Engine-specific controls |
+| --- | --- | --- | --- |
+| E1 | `[02]` `abdc70bb` | JSON v2 | Visual / Standard / Full; edges, textures, pretty JSON |
+| E2 | `[04]` `657d8671` | Canonical JSON v3 + Gzip | Textures, pretty JSON; Gzip is fixed |
+| E3 | `[07]` `d245b687` | CleanPKG | Whole-model binary package |
+| E4 | Working-tree evolution of `bd678269` | BOMC 1.2 | Visual / Research / Exact / Export All; automatic or manual batch |
 
-```
-Active Release Catalog (4 Slots)
-  ├─ Slot 1 [E1]: scene-resilient-a158b75  (uncertified, legacy-scene)
-  ├─ Slot 2 [E2]: scene-fidelity-a138fe6   (uncertified, legacy-scene)
-  ├─ Slot 3 [E3]: baseline-8082541         (ready, bomc-three-profile)
-  └─ Slot 4 [E4]: next-from-8082541        (development, base: 8082541, unbuilt)
-```
+Every generation has an explicit batch-size control. E1–E3 use the same cream/maroon dialog shell with only applicable format options. E4 uses the current cream/maroon BOMC dialog. Its Export All choice writes three separately validated BOMC files into a new folder, stops on the first profile failure, and marks earlier files as partial rather than calling the run successful. E4 Auto starts at 256 geometry items, adjusts to measured processing time with a 24 ms cooperative time budget, and can grow beyond 2048 up to a 32768-item safety ceiling; a slow batch is reduced again. Manual batch remains 96–8192. Historical engines are namespace-isolated, receive runtime-only cooperative/batch fixes, and do not share E4's profile names. Before export, the shared historical launcher rejects non-finite transforms for E1–E3 and non-affine transforms for E3 CleanPKG (which only applies an affine point transform); this prevents known silent distortion but does not certify arbitrary models. The menu shows a short historical commit SHA for E1–E3 and a source-tree SHA for E4; the package manifest records full hashes. The selected historical engines are **distinct, useful candidates**, not proven benchmark winners. All four are uncertified pending cross-model fidelity and size evaluation.
 
-### Invariants & Operational Rules
-
-- **Strict 4-Slot Envelope**: Validated by `active-releases.schema.json` (`minItems: 4, maxItems: 4`) and `EvolutionActiveCatalog.load`.
-- **E4 Lineage Guarantee**: Slot 4 must have `baseProducerSha` set to Slot 3's `producerSha`, ensuring continuous ancestry.
-- **Fail-Closed Packaging**: Only releases with state `ready` and valid `producerSha` are packaged into the Master Evolution Lab RBZ (`sibambo_bom_engine_evolution_lab_v1.1.22.rbz`) and standalone releases. Slot 4 (`next-from-8082541`) with `producerSha: null` is strictly excluded from packaging.
-- **Candidate Evaluation Mode**: Uncertified or evaluation releases can be built in isolation via:
-  ```bash
-  ruby tools/history/build_evolution_lab.rb --catalog active --candidate scene-resilient-a158b75
-  ```
-  This creates an isolated package under `dist/history/candidate/<ID>` without modifying the master package or menu.
-- **Three-Profile Menu Dispatch**: Active releases with `entryKind: "bomc-three-profile"` provide dedicated menu actions for `:visual`, `:research`, and `:exact` profiles directly under the SketchUp Extensions menu.
-- **Tree Digest Snapshot Caching**: Staged snapshots record `SNAPSHOT_METADATA.json` with `tree_sha256`, `transformer_revision`, and `producer_sha`. Build runs verify cache validity before reuse, bypassing re-extraction when source git trees and transformers are unchanged.
+`history/versions.json` remains the full archaeological archive. `history/active-releases.json` and `tools/history/build_evolution_lab.rb --catalog active` remain the older T7/T8 certification catalog; their four late-BOMC slots are **not** the user-facing Evolution selection. The model-pinned preview/capture kits are test fixtures only and must not be presented as engine generations.

@@ -31,6 +31,7 @@ module BOMEngine
         @spatial = spatial || {}
         @texture_writer = texture_writer
         @scene_scope = (@settings[:scene_scope] || 'all').to_s
+        @preserve_hidden_geometry = @settings[:preserve_hidden_geometry] == true
         @scenes = SceneVisibilityResolver.resolve_scenes(@model)
         @definitions = []
         @definition_index = {}
@@ -159,9 +160,9 @@ module BOMEngine
               id: child_definition_id,
               name: entity.name.to_s.empty? ? '(Group)' : entity.name,
               entities: entity.entities,
-              source_identity: entity_source_identity(entity),
+              source_identity: definition_source_identity(entity.definition),
               kind: 'group_definition',
-              attributes: Traversal.extract_dicts(entity)
+              attributes: Traversal.extract_dicts(entity.definition)
             )
             node = build_instance_node(entity, id, child_definition_id, 'group_instance')
             @nodes << node
@@ -573,6 +574,9 @@ module BOMEngine
 
       def valid_exportable_entity?(entity)
         return false unless Traversal.valid_entity?(entity)
+        # Exact retains the source universe; scene visibility is carried on
+        # faces/nodes and applied by the reader, not used to drop source data.
+        return true if @preserve_hidden_geometry
         return false unless SceneVisibilityResolver.exportable_universe?(entity, @scenes, model: @model, scope: @scene_scope)
         if @scene_scope == 'active'
           return false unless Traversal.exportable_entity?(entity)
@@ -694,7 +698,10 @@ module BOMEngine
       end
 
       def group_definition_id(group)
-        "definition:group:#{source_token(safe_persistent_id(group))}"
+        definition = group.definition
+        identity = definition.guid.to_s
+        identity = safe_persistent_id(definition) if identity.empty?
+        "definition:group:#{source_token(identity)}"
       end
 
       def source_token(value)

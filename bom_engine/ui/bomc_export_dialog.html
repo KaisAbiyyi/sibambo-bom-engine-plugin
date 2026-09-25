@@ -2,144 +2,121 @@
 <html lang="id">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Sibambo BOMC Engine 1.2.0</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sibambo BOMC Engine</title>
+  <link rel="stylesheet" href="bomc_theme.css">
   <style>
-    * { box-sizing: border-box; }
-    html, body { min-height: 100%; margin: 0; overflow: auto; }
-    body { background: #10151d; color: #e7edf3; font: 13px/1.45 system-ui, "Segoe UI", sans-serif; padding: 20px; }
-    .shell { margin: 0 auto; max-width: 620px; }
-    .header { border-bottom: 1px solid #293645; margin-bottom: 18px; padding-bottom: 15px; }
-    .title-row { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
-    h1 { color: #53ffc1; font-size: 19px; margin: 0; }
-    .badge { background: #253443; border-radius: 4px; color: #9fd9ff; font-size: 10px; font-weight: 700; padding: 3px 7px; }
-    .description { color: #93a4b6; margin: 8px 0 0; }
-    label, h2 { color: #64ffd0; display: block; font-size: 11px; font-weight: 700; letter-spacing: .07em; margin: 0 0 7px; text-transform: uppercase; }
-    .path-row { display: flex; gap: 9px; }
-    input[type=text], select { background: #151c26; border: 1px solid #344456; border-radius: 6px; color: #edf5fb; min-width: 0; padding: 9px 10px; }
-    input[type=text] { flex: 1; }
-    select { min-width: 180px; }
-    button { background: #263545; border: 1px solid #3a4d60; border-radius: 6px; color: #e6eef5; cursor: pointer; padding: 9px 14px; }
-    button:hover { border-color: #5f7891; }
-    button.primary { background: #0fa572; border-color: #20d49a; color: white; font-weight: 700; }
-    .panel { background: #151c26; border: 1px solid #293746; border-radius: 9px; margin-top: 17px; padding: 14px; }
-    .profile-row, .batch-row { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
-    .modes { display: flex; gap: 20px; margin-bottom: 11px; }
-    .modes label { color: #cbd6e0; cursor: pointer; font-size: 12px; font-weight: 400; letter-spacing: 0; margin: 0; text-transform: none; }
-    .help { color: #8191a2; font-size: 11px; margin-top: 9px; }
-    .suffix { color: #9fb1c3; font-family: Consolas, monospace; margin-top: 7px; overflow-wrap: anywhere; }
-    .actions { display: flex; gap: 9px; justify-content: flex-end; margin-top: 20px; padding-bottom: 8px; }
+    .shell { padding-top: 17px; padding-bottom: 17px; }
+    h1 { margin-top: 12px; }
+    .section { margin-top: 12px; padding-top: 12px; }
+    .profile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .profile-grid .choice { min-height: 68px; padding: 9px; }
+    .profile-grid .choice small { margin-left: 22px; }
+    .actions { margin-top: 14px; }
+    #suffix { max-height: 3em; overflow: hidden; }
+    @media (max-width: 580px) { .profile-grid { grid-template-columns: 1fr; } .path-row { flex-wrap: wrap; } .path-row button { margin-left: auto; } }
   </style>
 </head>
 <body>
-  <main class="shell">
-    <header class="header">
-      <div class="title-row"><h1>Sibambo BOMC Engine</h1><span class="badge">v1.2.0 · BOMC 1.2 · build <span id="build-sha">loading</span></span></div>
-      <p class="description">Exporter web-first dengan profile fidelity dan pemrosesan kooperatif agar SketchUp tetap responsif.</p>
-    </header>
+<main class="shell">
+  <header class="brand">
+    <svg viewBox="0 0 28 28" aria-hidden="true"><path fill="currentColor" d="M14 2 26 8v12L14 26 2 20V8L14 2Zm0 3.2L5.8 9.3 14 13.4l8.2-4.1L14 5.2Zm-9 6.5v6.4l7.5 3.8v-6.4L5 11.7Zm18 0-7.5 3.8v6.4l7.5-3.8v-6.4Z"/></svg>
+    <span class="brand-name">Sibambo BOMC Engine</span>
+    <span class="build">build <span id="build-sha">memuat…</span></span>
+  </header>
+  <h1>Pengaturan ekspor</h1>
+  <p class="intro" id="intro">Pilih satu profil dan lokasi BOMC. Status ukuran dan validasi tampil setelah ekspor.</p>
 
-    <section>
-      <label for="outputPath">Output file</label>
-      <div class="path-row"><input id="outputPath" type="text"><button type="button" onclick="sketchup.browse()">Browse</button></div>
-      <div class="suffix" id="suffix">Tag versi/profile: __SIBAMBO-BOMC-v1.2.0__VISUAL.bomc</div>
-    </section>
+  <section class="section">
+    <label class="field-label" for="outputPath">Lokasi dan nama dasar keluaran</label>
+    <div class="path-row">
+      <input class="text-input" id="outputPath" type="text" autocomplete="off" spellcheck="false">
+      <button class="button" type="button" onclick="sketchup.browse()">Pilih file</button>
+    </div>
+    <p class="path-note" id="suffix">Nama file akan memuat versi dan profil.</p>
+  </section>
 
-    <section class="panel">
-      <h2>Profile Fidelity</h2>
-      <div class="profile-row">
-        <span>Target export</span>
-        <select id="profile" onchange="updateProfilePath()">
-          <option value="visual" selected>Visual — web recommended</option>
-          <option value="research">Research — reproducible</option>
-          <option value="exact">Exact — reference fidelity</option>
-        </select>
-      </div>
-      <div class="help">Visual paling kecil. Research memakai batas terukur. Exact mempertahankan data referensi.</div>
-    </section>
+  <section class="section">
+    <div class="section-head"><h2>Profil hasil</h2><span class="hint" id="profile-hint">Satu file untuk setiap ekspor</span></div>
+    <div class="profile-grid" role="radiogroup" aria-label="Profil hasil">
+      <label class="choice"><span class="choice-title"><input type="radio" id="profile-visual" name="profile-choice" value="visual" checked onchange="updateProfilePath()"><strong>Visual</strong></span><small>Ringkas; gambar bisa berubah.</small></label>
+      <label class="choice"><span class="choice-title"><input type="radio" id="profile-research" name="profile-choice" value="research" onchange="updateProfilePath()"><strong>Research</strong></span><small>Batas galat terukur.</small></label>
+      <label class="choice"><span class="choice-title"><input type="radio" id="profile-exact" name="profile-choice" value="exact" onchange="updateProfilePath()"><strong>Exact</strong></span><small>Piksel asli; tidak menjamin file kecil.</small></label>
+      <label class="choice"><span class="choice-title"><input type="radio" id="profile-all" name="profile-choice" value="all" onchange="updateProfilePath()"><strong>Export All</strong></span><small>Tiga profil berurutan, dalam folder baru.</small></label>
+    </div>
+    <select id="profile" hidden aria-hidden="true"><option value="visual">visual</option><option value="research">research</option><option value="exact">exact</option><option value="all">all</option></select>
+  </section>
 
-    <section class="panel" id="batch-options">
-      <h2>Batch Pemrosesan Model</h2>
-      <div class="modes">
-        <label><input type="radio" name="batch-mode" value="auto" checked onchange="refreshBatchMode()"> Auto</label>
-        <label><input type="radio" name="batch-mode" value="manual" onchange="refreshBatchMode()"> Manual</label>
-      </div>
-      <div class="batch-row">
-        <span>Entity per giliran</span>
-        <select id="batch-size" disabled>
-          <option value="96">96 — paling ringan</option>
-          <option value="128">128</option>
-          <option value="256">256</option>
-          <option value="512" selected>512 — seimbang</option>
-          <option value="1024">1024</option>
-          <option value="2048">2048</option>
-          <option value="4096">4096</option>
-          <option value="8192">8192 — paling cepat</option>
-        </select>
-      </div>
-      <div class="help">Nilai kecil menjaga SketchUp responsif; nilai besar lebih cepat tetapi menahan UI lebih lama.</div>
-    </section>
+  <section class="section">
+    <div class="section-head"><h2>Batch geometri</h2><span class="hint">Bukan pengatur kecepatan encoding tekstur</span></div>
+    <div class="batch-modes">
+      <label><input type="radio" name="batch-mode" value="auto" checked onchange="refreshBatchMode()">Auto</label>
+      <label><input type="radio" name="batch-mode" value="manual" onchange="refreshBatchMode()">Manual</label>
+    </div>
+    <div class="batch-controls">
+      <p class="hint" id="batch-description">Auto mulai 256 entitas/giliran; naik atau turun menurut waktu kerja, hingga batas aman 32768.</p>
+      <select class="select" id="batch-size" aria-label="Batas entitas per giliran" disabled>
+        <option value="96">96</option><option value="128">128</option><option value="256">256</option>
+        <option value="512" selected>512</option><option value="1024">1024</option>
+        <option value="2048">2048</option><option value="4096">4096</option><option value="8192">8192</option>
+      </select>
+    </div>
+    <p class="hint" style="margin-top:8px">Manual menetapkan awal dan batas atas; batas waktu 24–60 ms tetap bisa menghentikan giliran lebih cepat. Batch besar dapat membuat UI kurang responsif.</p>
+  </section>
 
-    <div class="actions"><button type="button" onclick="sketchup.cancel()">Cancel</button><button class="primary" type="button" onclick="doExport()">Export BOMC 1.2</button></div>
-  </main>
-  <script>
-    var OUTPUT_VERSION = "__SIBAMBO-BOMC-v1.2.0";
-
-    function setBuildProvenance(shortSha, fullSha) {
-      document.getElementById('build-sha').textContent = shortSha || 'development';
-      document.body.dataset.buildSha = fullSha || 'development';
-    }
-
-    function normalizeOutputPath(path, profile) {
-      path = String(path || '').trim();
-      if (!path) return path;
-      path = path.replace(/(?:_(?:bom|canonical|model-eval|runtime))?\.(?:json|bome2|cleanpkg|bomc)(?:\.gz)?$/i, '');
-      path = path.replace(/__SBE-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9A-Z]+$/i, '');
-      path = path.replace(/__SIBAMBO-BOMC-v[0-9]+\.[0-9]+\.[0-9]+(?:__(?:EXACT|RESEARCH|VISUAL))?$/i, '');
-      profile = String(profile || document.getElementById('profile').value || 'visual').toUpperCase();
-      return path + OUTPUT_VERSION + '__' + profile + '.bomc';
-    }
-
-    function setDefaultPath(path) { document.getElementById('outputPath').value = normalizeOutputPath(path, 'visual'); updateProfilePath(); }
-    function setPath(path) { document.getElementById('outputPath').value = normalizeOutputPath(path); updateProfilePath(); }
-    function updateProfilePath() {
-      var input = document.getElementById('outputPath');
-      input.value = normalizeOutputPath(input.value, document.getElementById('profile').value);
-      var match = input.value.match(/(__SIBAMBO-BOMC-v[0-9]+\\.[0-9]+\\.[0-9]+__(?:EXACT|RESEARCH|VISUAL)\\.bomc)$/i);
-      document.getElementById('suffix').textContent = 'Tag versi/profile: ' + (match ? match[1] : input.value);
-    }
-
-    function recommendedBatchSize() {
-      var cores = Number(navigator.hardwareConcurrency || 4);
-      if (cores <= 4) return 128;
-      if (cores <= 8) return 256;
-      if (cores <= 16) return 512;
-      return 1024;
-    }
-
-    function selectedBatchSize() {
-      var mode = document.querySelector('input[name="batch-mode"]:checked').value;
-      return mode === 'auto' ? recommendedBatchSize() : Number(document.getElementById('batch-size').value);
-    }
-
-    function refreshBatchMode() {
-      var manual = document.querySelector('input[name="batch-mode"]:checked').value === 'manual';
-      var select = document.getElementById('batch-size');
-      select.disabled = !manual;
-      if (!manual) select.value = String(recommendedBatchSize());
-    }
-
-    function doExport() {
-      var outputPath = normalizeOutputPath(document.getElementById('outputPath').value, document.getElementById('profile').value);
-      if (!outputPath) { alert('Pilih output file terlebih dahulu.'); return; }
-      document.getElementById('outputPath').value = outputPath;
-      sketchup.export(JSON.stringify({
-        output_path: outputPath,
-        profile: document.getElementById('profile').value,
-        batch_size: selectedBatchSize()
-      }));
-    }
-
-    window.onload = function() { refreshBatchMode(); sketchup.onReady(); };
-  </script>
+  <div class="actions"><span class="footer-note">SHA di atas mengidentifikasi build, bukan sertifikasi model.</span><button class="button" type="button" onclick="sketchup.cancel()">Batal</button><button class="button button-primary" id="export-button" type="button" onclick="doExport()">Ekspor BOMC</button></div>
+</main>
+<script>
+  var OUTPUT_VERSION = '__SIBAMBO-BOMC-v1.2.0';
+  function selectedProfile() {
+    return document.querySelector('input[name="profile-choice"]:checked').value;
+  }
+  function setBuildProvenance(shortSha, fullSha) {
+    document.getElementById('build-sha').textContent = shortSha || 'development';
+    document.body.dataset.buildSha = fullSha || 'development';
+  }
+  function normalizeOutputPath(path, profile) {
+    path = String(path || '').trim();
+    if (!path) return path;
+    path = path.replace(/(?:_(?:bom|canonical|model-eval|runtime))?\.(?:skp|json|bome2|cleanpkg|bomc)(?:\.gz)?$/i, '');
+    path = path.replace(/__SBE-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9A-Z]+$/i, '');
+    path = path.replace(/__SIBAMBO-BOMC-v[0-9]+\.[0-9]+\.[0-9]+(?:__(?:EXACT|RESEARCH|VISUAL))?$/i, '');
+    if (profile === 'all') return path;
+    profile = String(profile || selectedProfile()).toUpperCase();
+    return path + OUTPUT_VERSION + '__' + profile + '.bomc';
+  }
+  function setDefaultPath(path) { document.getElementById('outputPath').value = normalizeOutputPath(path, 'visual'); updateProfilePath(); }
+  function setPath(path) { document.getElementById('outputPath').value = normalizeOutputPath(path); updateProfilePath(); }
+  function updateProfilePath() {
+    var profile = selectedProfile();
+    document.getElementById('profile').value = profile;
+    var input = document.getElementById('outputPath');
+    input.value = normalizeOutputPath(input.value, profile);
+    var all = profile === 'all';
+    document.getElementById('suffix').textContent = input.value ?
+      (all ? 'Tiga BOMC dibuat dalam folder baru dari nama dasar: ' : 'Nama final: ') + input.value.split(/[\\/]/).pop() : 'Pilih lokasi keluaran.';
+    document.getElementById('profile-hint').textContent = all ? 'Tiga file; folder baru agar hasil lama aman' : 'Satu file untuk setiap ekspor';
+    document.getElementById('intro').textContent = all ?
+      'Export All menjalankan tiga profil berurutan. Model harus tersimpan; jika satu gagal, hasil sebelumnya tetap ada dan proses ditandai parsial.' :
+      'Pilih satu profil dan lokasi BOMC. Status ukuran dan validasi tampil setelah ekspor.';
+    document.getElementById('export-button').textContent = all ? 'Ekspor 3 profil' : 'Ekspor BOMC';
+  }
+  function refreshBatchMode() {
+    var manual = document.querySelector('input[name="batch-mode"]:checked').value === 'manual';
+    document.getElementById('batch-size').disabled = !manual;
+    document.getElementById('batch-description').textContent = manual ? 'Pilih awal/batas atas entitas per giliran.' : 'Auto mulai 256 entitas/giliran; naik atau turun menurut waktu kerja, hingga batas aman 32768.';
+  }
+  function doExport() {
+    var profile = selectedProfile();
+    var outputPath = normalizeOutputPath(document.getElementById('outputPath').value, profile);
+    if (!outputPath) { alert('Pilih file keluaran terlebih dahulu.'); return; }
+    var mode = document.querySelector('input[name="batch-mode"]:checked').value;
+    document.getElementById('outputPath').value = outputPath;
+    document.getElementById('export-button').disabled = true;
+    sketchup.export(JSON.stringify({output_path: outputPath, profile: profile,
+      batch_mode: mode, batch_size: mode === 'manual' ? Number(document.getElementById('batch-size').value) : null}));
+  }
+  window.onload = function() { refreshBatchMode(); sketchup.onReady(); };
+</script>
 </body>
 </html>

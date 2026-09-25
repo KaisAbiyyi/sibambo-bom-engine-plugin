@@ -46,6 +46,8 @@ module BOMEngine
         test_uv_codecs
         test_geometry_candidate_frontiers
         test_transform_codecs
+        test_non_affine_transform_fallback
+        test_large_finite_transform_fallback
         test_compiled_round_trip
         test_canonical_uv_ownership
         test_side_appearance_contract
@@ -249,6 +251,38 @@ module BOMEngine
         shear_encoded = BOMC::TransformCodec.encode([shear])
         assert([BOMC::TransformCodec::FLOAT64_3X4, BOMC::TransformCodec::FLOAT32_3X4, BOMC::TransformCodec::HYBRID].include?(shear_encoded[:codec]), 'shear rejects decomposed-only representation')
         assert(max_delta(shear, BOMC::TransformCodec.decode(shear_encoded)[0]) <= 1.0e-5, 'shear transform is preserved by affine fallback')
+      end
+
+      def test_non_affine_transform_fallback
+        affine = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 3.0, 4.0, 5.0, 1.0]
+        projective = affine.dup
+        projective[3] = 0.125
+        projective[15] = 2.0
+        transforms = [affine, projective]
+
+        visual = BOMC::TransformCodec.encode(transforms)
+        assert(BOMC::TransformCodec.decode(visual) == transforms, 'visual transform codec preserves all 16 projective matrix values')
+        assert(visual[:errors][:max] == 0.0, 'visual projective fallback reports measured zero error')
+
+        exact = BOMC::TransformCodec.encode(transforms, forced_codec: BOMC::TransformCodec::FLOAT64_3X4)
+        assert(BOMC::TransformCodec.decode(exact) == transforms, 'exact transform codec does not silently discard projective matrix values')
+
+        assert_raises('full matrix codec rejects trailing payload bytes', 'count mismatch') do
+          BOMC::TransformCodec.decode(codec: BOMC::TransformCodec::FLOAT64_4X4, count: 1, bytes: projective.pack('E*') + "\x00".b)
+        end
+      end
+
+      def test_large_finite_transform_fallback
+        matrix = [1.0e100, 0.0, 0.0, 0.125, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 3.0, 4.0, 5.0, 1.0]
+        encoded = BOMC::TransformCodec.encode([matrix])
+        assert(BOMC::TransformCodec.decode(encoded) == [matrix], 'finite transform outside Float32 range uses lossless candidate')
+
+        random = Random.new(712)
+        32.times do
+          varied = 16.times.map { (random.rand * 2.0 - 1.0) * 10.0**random.rand(-200..200) }
+          candidates = BOMC::TransformCodec.candidate_objects([varied])
+          assert(candidates.any?(&:pass_hard_constraints?), 'finite 4x4 matrix always retains a passing fallback')
+        end
       end
 
       def point_errors(source, decoded)

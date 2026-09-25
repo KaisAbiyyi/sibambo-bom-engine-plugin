@@ -11,11 +11,12 @@ module BOMEngine
     # @param tw          [Sketchup::TextureWriter]
     # @param texture_dir [String, nil] output directory; nil means skip texture export
     # @return            [Array<Hash>] material descriptors
-    def self.extract(model, tw, texture_dir, checkpoint: nil, optimize_textures: false, profile: :visual, semantic_class: :class_b, material_classes: nil)
+    def self.extract(model, tw, texture_dir, checkpoint: nil, optimize_textures: false, profile: :visual, semantic_class: :class_b, material_classes: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil)
       Dir.mkdir(texture_dir) if texture_dir && !Dir.exist?(texture_dir)
       written = 0
       materials = model.materials
       total = materials.length
+      color_map_budget = allow_jpeg_color_map ? { remaining_pixels: 64_000_000, hashes: {} } : nil
 
       materials.each_with_index.map do |mat, index|
         checkpoint.call(stage: :snapshot_materials, processed: index, total: total) if checkpoint
@@ -72,7 +73,11 @@ module BOMEngine
                 basename: safe_name,
                 source_path: tex.filename,
                 profile: profile,
-                semantic_class: mat_class
+                semantic_class: mat_class,
+                allow_jpeg_color_map: allow_jpeg_color_map,
+                color_map_budget: color_map_budget,
+                prepared_color_maps: prepared_color_maps,
+                candidate_cache: candidate_cache
               ) do |_processed_pixels, _total_pixels|
                 checkpoint.call(stage: :snapshot_textures, processed: index, total: total) if checkpoint
               end
@@ -86,7 +91,7 @@ module BOMEngine
             end
             checkpoint.call(stage: :snapshot_textures, processed: index + 1, total: total, force: true) if checkpoint
           rescue => e
-            raise if e.class.ancestors.any? { |ancestor| ancestor.respond_to?(:name) && ancestor.name.to_s.end_with?('Cancelled') }
+            raise if e.class.ancestors.any? { |ancestor| ancestor.respond_to?(:name) && ancestor.name.to_s.end_with?('Cancelled', 'TranscodeCancelledError') }
             Logger.warn("Could not write texture for '#{mat.name}': #{e.message}") if defined?(Logger)
           end
         end

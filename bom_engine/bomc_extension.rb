@@ -2,6 +2,9 @@
 
 require 'fileutils'
 require 'tmpdir'
+require 'securerandom'
+require 'json'
+require 'pathname'
 require_relative 'branding'
 require_relative 'bomc_dialog'
 require_relative 'bomc_decoder'
@@ -20,6 +23,15 @@ end
 
 module BOMEngine
   module BOMCExtension
+    class ExportAllError < StandardError
+      attr_reader :directory
+
+      def initialize(directory, message)
+        @directory = directory
+        super(message)
+      end
+    end
+
     DEFAULT_PROFILE = :visual
     FORMAT_EXTENSION = '.bomc'.freeze
     VERSION_SUFFIX = "__SIBAMBO-BOMC-v#{Branding::EXTENSION_VERSION}#{FORMAT_EXTENSION}".freeze
@@ -47,25 +59,31 @@ module BOMEngine
     end
 
     def normalize_output_path(path, profile: DEFAULT_PROFILE)
-      base = path.to_s.strip
-      base = base.sub(/(?:_(?:bom|canonical|model-eval|runtime))?\.(?:json|bome2|cleanpkg|bomc)(?:\.gz)?\z/i, '')
-      base = base.sub(/__SBE-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9A-Z]+\z/i, '')
-      base = base.sub(/__SIBAMBO-BOMC-v[0-9]+\.[0-9]+\.[0-9]+(?:__(?:EXACT|RESEARCH|VISUAL))?\z/i, '')
+      base = output_base_path(path)
       normalized_profile = normalize_profile(profile)
       "#{base}__SIBAMBO-BOMC-v#{Branding::EXTENSION_VERSION}__#{normalized_profile.to_s.upcase}#{FORMAT_EXTENSION}"
     end
 
+    def output_base_path(path)
+      base = path.to_s.strip
+      base = base.sub(/(?:_(?:bom|canonical|model-eval|runtime))?\.(?:skp|json|bome2|cleanpkg|bomc)(?:\.gz)?\z/i, '')
+      base = base.sub(/__SBE-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9A-Z]+\z/i, '')
+      base = base.sub(/__SIBAMBO-BOMC-v[0-9]+\.[0-9]+\.[0-9]+(?:__(?:EXACT|RESEARCH|VISUAL))?\z/i, '')
+      base
+    end
+
     def normalize_dialog_settings(payload)
       values = payload.transform_keys(&:to_sym)
-      profile = normalize_profile(values[:profile])
-      batch_size = Integer(values[:batch_size]) rescue 512
-      batch_size = 512 unless ALLOWED_BATCH_SIZES.include?(batch_size)
-      processing = BOMCProcessing.settings(
-        :custom,
-        custom: { max_items: batch_size, max_ms: 24.0, max_items_limit: 8_192 }
-      )
+      requested = values[:profile].to_s.downcase
+      raise ArgumentError, 'Pilih Visual, Research, Exact, atau Semua profil.' unless %w[visual research exact all].include?(requested)
+      profile = requested.to_sym
+      base = output_base_path(values[:output_path])
+      raise ArgumentError, 'Pilih lokasi keluaran terlebih dahulu.' if base.empty?
+      raise ArgumentError, 'Gunakan lokasi lengkap dengan nama dasar file, bukan folder.' unless Pathname.new(base).absolute? && !base.match?(/[\\\/]\z/)
+      batch_mode = values[:batch_mode] || (values.key?(:batch_size) ? 'manual' : 'auto')
+      processing = BOMCProcessing.from_ui(batch_mode: batch_mode, batch_size: values[:batch_size])
       {
-        output_path: normalize_output_path(values[:output_path], profile: profile),
+        output_path: profile == :all ? base : normalize_output_path(base, profile: profile),
         profile: profile,
         processing: processing
       }
@@ -102,9 +120,11 @@ module BOMEngine
       }
     end
 
-    def publish_graph(path, graph, profile: DEFAULT_PROFILE, base_path: nil, source_info: nil)
+    def publish_graph(path, graph, profile: DEFAULT_PROFILE, base_path: nil, source_info: nil, allow_jpeg_color_map: false)
       prof = normalize_profile(profile)
+      validate_experimental_profile!(prof, allow_jpeg_color_map)
       src_info = source_info || (graph.is_a?(Hash) ? graph[:source_info] : nil)
+      require_experimental_source!(src_info) if allow_jpeg_color_map
       if src_info.nil? && BOMCProfile.fetch(prof).requires_source_size?
         estimated = (graph.is_a?(Hash) && graph[:source_skp_bytes]) || 10_000_000
         src_info = { available: true, bytes: estimated }
@@ -115,7 +135,8 @@ module BOMEngine
         profile: prof,
         base_path: base_path
       )
-      decoded = BOMCDecoder.decode(candidate.fetch(:bytes))
+      enforce_experimental_size!(candidate, src_info) if allow_jpeg_color_map
+      decoded = BOMCDecoder.decode(candidate.fetch(:bytes), allow_jpeg_color_map: allow_jpeg_color_map)
       texture_evidence = (graph.is_a?(Hash) && graph[:materials]) ? graph[:materials].map { |m| m.dig(:texture, :encoding_evidence) }.compact : nil
       report = BOMCValidator.validate_profile!(
         source: graph,
@@ -123,21 +144,110 @@ module BOMEngine
         profile: prof,
         texture_evidence: texture_evidence
       )
-      publish_validated(candidate: candidate, report: report, output_path: path)
+      published = publish_validated(candidate: candidate, report: report, output_path: path)
+      allow_jpeg_color_map ? published.merge(required_loader: 'bomc-next-jcm-v1') : published
     end
 
-    def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil)
+    def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil)
       profile = normalize_profile(profile)
+      validate_experimental_profile!(profile, allow_jpeg_color_map)
+      if allow_jpeg_color_map && (!model.respond_to?(:modified?) || model.modified?)
+        raise ArgumentError, 'Experimental Exact export requires a saved model without unsaved changes'
+      end
       processing = settings || BOMCProcessing.settings(:balanced)
       yield_callback = progress || ->(_event) {}
-      context = export_context(output_path, yield_callback, profile: profile, diagnostics: diagnostics)
-      BOMCExportJob.run(
+      context = export_context(output_path, yield_callback, profile: profile, diagnostics: diagnostics,
+        allow_jpeg_color_map: allow_jpeg_color_map, prepared_color_maps: prepared_color_maps,
+        candidate_cache: candidate_cache)
+      result = BOMCExportJob.run(
         model: model,
         output_path: output_path,
         settings: processing,
         context: context
       ).merge(format: 'bomc', profile: profile)
+      allow_jpeg_color_map ? result.merge(required_loader: 'bomc-next-jcm-v1') : result
     end
+
+    def export_all_profiles(model, output_path:, settings:, progress:)
+      base = output_base_path(output_path)
+      raise ArgumentError, 'Export All membutuhkan lokasi lengkap dan nama dasar keluaran.' unless Pathname.new(base).absolute? && !base.match?(/[\\\/]\z/)
+      raise ArgumentError, 'Simpan model sebelum Export All agar ketiga profil memakai sumber yang sama.' if model.path.to_s.empty? || (model.respond_to?(:modified?) && model.modified?)
+
+      parent = File.dirname(base)
+      FileUtils.mkdir_p(parent)
+      directory = Dir.mktmpdir("#{File.basename(base)}__SIBAMBO-BOMC-v#{Branding::EXTENSION_VERSION}__ALL-", parent)
+      records = {}
+      active_profile = nil
+      source_info = nil
+      write_all_status(directory, 'in_progress', records)
+      begin
+        progress.call(stage: :PREPARING_ALL, processed: 0, total: 0, output_directory: directory, profile: :visual)
+        Dir.mktmpdir('bomc-candidates') do |cache_dir|
+          cache = { directory: cache_dir, entries: {}, hits: 0, jpeg_quality: {}, jpeg_quality_hits: 0 }
+          [:visual, :research, :exact].each do |profile|
+            active_profile = profile
+            assert_all_model_unchanged!(model)
+            path = normalize_output_path(File.join(directory, File.basename(base)), profile: profile)
+            report = export(model, output_path: path, profile: profile, settings: settings,
+              candidate_cache: cache, progress: lambda do |event|
+                assert_all_model_unchanged!(model)
+                progress.call(event.merge(profile: profile))
+              end)
+            records[profile] = { path: report.fetch(:path), bytes: report.fetch(:bytes) }
+            source_info ||= report[:source_info]
+            write_all_status(directory, 'in_progress', records)
+          end
+        end
+        write_all_status(directory, 'complete', records)
+        { path: directory, profiles: records, source_info: source_info, mode: settings[:mode], status: 'complete' }
+      rescue ConversionJob::Cancelled
+        write_all_status(directory, 'cancelled', records, failed_profile: active_profile)
+        raise
+      rescue StandardError => error
+        write_all_status(directory, 'partial_failed', records, failed_profile: active_profile, error: "#{error.class}: #{error.message}")
+        raise ExportAllError.new(directory, "#{active_profile || 'Persiapan'} gagal; #{records.length} profil berhasil. Hasil parsial ada di #{directory}. #{error.message}")
+      end
+    end
+
+    def assert_all_model_unchanged!(model)
+      raise 'Model aktif berubah selama Export All.' if defined?(Sketchup) && Sketchup.active_model != model
+      raise 'Model berubah selama Export All; hasil parsial belum satu sumber.' if model.respond_to?(:modified?) && model.modified?
+    end
+    private_class_method :assert_all_model_unchanged!
+
+    def write_all_status(directory, status, records, failed_profile: nil, error: nil)
+      data = { status: status, certified: false, profiles: records }
+      data[:failed_profile] = failed_profile if failed_profile
+      data[:error] = error if error
+      File.write(File.join(directory, 'export-status.json'), JSON.pretty_generate(data) + "\n", encoding: 'UTF-8')
+    end
+    private_class_method :write_all_status
+
+    def validate_experimental_profile!(profile, enabled)
+      raise ArgumentError, 'Experimental color-map capability must be Boolean' unless enabled == true || enabled == false
+      raise ArgumentError, 'Experimental color-map export is Exact-only' if enabled && profile != :exact
+    end
+    private_class_method :validate_experimental_profile!
+
+    def require_experimental_source!(source)
+      unless source && source[:available] == true && source[:bytes].is_a?(Integer) && source[:bytes] > 0
+        raise ArgumentError, 'Experimental Exact export requires actual saved source bytes'
+      end
+    end
+    private_class_method :require_experimental_source!
+
+    def enforce_experimental_size!(candidate, source)
+      require_experimental_source!(source)
+      size = candidate.fetch(:bytes).bytesize
+      return if size < source[:bytes]
+      sections = candidate.fetch(:metrics).fetch(:sections, {}).map do |name, values|
+        {name: name, stored_bytes: values[:stored_bytes], raw_bytes: values[:raw_bytes]}
+      end.sort_by { |section| -section[:stored_bytes].to_i }.first(5)
+      raise BOMCSizeGate::TargetNotMet.new(source_bytes: source[:bytes], hard_budget_bytes: source[:bytes]-1,
+        best_candidate_bytes: size, attempts: [{strategy: :experimental_exact, candidate_bytes: size, status: :fail}],
+        dominant_sections: sections)
+    end
+    private_class_method :enforce_experimental_size!
 
     def export_interactive
       model = Sketchup.active_model
@@ -154,18 +264,18 @@ module BOMEngine
       chosen = options.fetch(:output_path)
       selected_profile = options.fetch(:profile)
       settings = options.fetch(:processing)
+      all = selected_profile == :all
       ConversionJob.start(
         title: "#{Branding::EXTENSION_NAME} #{Branding::EXTENSION_VERSION} — Export BOMC #{Branding::BOMC_FORMAT_VERSION}",
         output_path: chosen,
-        batch_size: settings[:max_items]
+        batch_size: settings[:max_items],
+        kind: all ? :batch_export : :export
       ) do |progress|
-        export(
-          model,
-          output_path: chosen,
-          profile: selected_profile,
-          progress: progress,
-          settings: settings
-        )
+        if all
+          export_all_profiles(model, output_path: chosen, settings: settings, progress: progress)
+        else
+          export(model, output_path: chosen, profile: selected_profile, progress: progress, settings: settings)
+        end
       end
     rescue StandardError => error
       report_interactive_error(error)
@@ -188,29 +298,37 @@ module BOMEngine
       end
     end
 
-    def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE, diagnostics: nil)
+    def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE, diagnostics: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil)
       texture_directory = Dir.mktmpdir('bomc-textures')
       {
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
         on_yield: yield_callback,
         cancelled: -> { false },
-        source_info: ->(model) { BOMCSizeGate.source_info(model.path.to_s) },
+        source_info: lambda do |model|
+          info = BOMCSizeGate.source_info(model.path.to_s)
+          require_experimental_source!(info) if allow_jpeg_color_map
+          info
+        end,
         snapshot: lambda do |model, checkpoint|
-          graph = snapshot_model(model, texture_directory, checkpoint, profile: profile)
+          graph = snapshot_model(model, texture_directory, checkpoint, profile: profile,
+            allow_jpeg_color_map: allow_jpeg_color_map, prepared_color_maps: prepared_color_maps,
+            candidate_cache: candidate_cache)
           diagnostics[:graph] = graph if diagnostics
           graph
         end,
         compile: lambda do |graph, source, _path, checkpoint|
-          BOMCSizeGate.compile_candidate(
+          candidate = BOMCSizeGate.compile_candidate(
             graph,
             source_info: source,
             base_path: texture_directory,
             profile: profile,
             checkpoint: checkpoint
           )
+          enforce_experimental_size!(candidate, source) if allow_jpeg_color_map
+          candidate
         end,
         validate: lambda do |result, graph = nil|
-          decoded = BOMCDecoder.decode(result.fetch(:bytes))
+          decoded = BOMCDecoder.decode(result.fetch(:bytes), allow_jpeg_color_map: allow_jpeg_color_map)
           texture_evidence = graph && graph[:materials] ? graph[:materials].map { |m| m.dig(:texture, :encoding_evidence) }.compact : nil
           report = if graph
                      BOMCValidator.validate_profile!(
@@ -389,7 +507,7 @@ module BOMEngine
       result
     end
 
-    def snapshot_model(model, texture_directory, checkpoint, profile: DEFAULT_PROFILE)
+    def snapshot_model(model, texture_directory, checkpoint, profile: DEFAULT_PROFILE, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil)
       texture_writer = begin
         Sketchup.create_texture_writer
       rescue StandardError
@@ -403,7 +521,10 @@ module BOMEngine
         checkpoint: checkpoint,
         optimize_textures: true,
         profile: profile,
-        material_classes: material_classes
+        material_classes: material_classes,
+        allow_jpeg_color_map: allow_jpeg_color_map,
+        prepared_color_maps: prepared_color_maps,
+        candidate_cache: candidate_cache
       )
       entity_total = model.entities.respond_to?(:length) ? model.entities.length : 0
       graph = if defined?(CanonicalGraphBuilder)
@@ -417,6 +538,7 @@ module BOMEngine
                     export_textures: true,
                     output_format: 'bomc_v1_1',
                     scene_scope: 'all',
+                    preserve_hidden_geometry: profile.to_s == 'exact',
                     texture_directory: texture_directory
                   },
                   spatial: {},
@@ -460,10 +582,26 @@ module BOMEngine
         staged_path = File.join(texture_directory, extracted[:texture][:filename].to_s)
         source_path = extracted[:texture][:source_path].to_s
         source_supported = File.file?(source_path) && supported_texture_path?(source_path)
+        staging = extracted[:texture][:staging_evidence]
+        if staging && staging[:policy_revision]
+          unless File.file?(staged_path) && Digest::SHA256.file(staged_path).hexdigest == staging[:selected_sha256]
+            raise 'Checked staged texture changed or is missing.'
+          end
+          # The original external path can be stale or contain uncolorized pixels.
+          # It must not bypass the measured candidate from SketchUp's reference.
+          source_supported = false
+        end
         path = source_supported ? source_path : staged_path
+        quality = staging && staging[:quality]
+        verified_native_jpeg = staging && staging[:policy_revision] &&
+          staging[:selected] == :native_jpeg_candidate && staging[:native_jpeg] == true &&
+          staging[:profile].to_s == prof.to_s && staging[:alpha_preserved] == true &&
+          quality && quality[:compatible] == true && quality[:alpha_preserved] == true &&
+          quality[:mean_squared_error] == 0.0 && quality[:max_channel_error] == 0
 
-        # In Exact profile, never select a lossy staged JPEG. Only native JPEG preserved byte-identical is allowed.
-        if prof == :exact && path.downcase.end_with?('.jpg', '.jpeg') && !source_supported
+        # An extracted JPEG is eligible only after complete displayed-pixel
+        # equality and the staged-file digest check above, not filename alone.
+        if prof == :exact && path.downcase.end_with?('.jpg', '.jpeg') && !source_supported && !verified_native_jpeg
           png_fallback = File.join(texture_directory, "#{File.basename(staged_path, '.*')}.png")
           path = png_fallback if File.file?(png_fallback)
         end
@@ -473,6 +611,8 @@ module BOMEngine
         material[:texture][:source_path] = path
         material[:texture][:filename] = File.basename(path)
         material[:texture][:encoding_evidence] = {
+          filename: File.basename(path),
+          native_jpeg: !!verified_native_jpeg,
           selected: source_supported ? :source : :staged,
           source_path: source_path.empty? ? nil : source_path,
           source_bytes: File.file?(source_path) ? File.size(source_path) : nil,

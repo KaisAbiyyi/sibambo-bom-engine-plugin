@@ -16,7 +16,9 @@ module BOMEngine
 
       def run
         test_preset_contracts
+        test_ui_batch_selection
         test_dual_budget_and_adaptation
+        test_auto_can_grow_past_2048_without_losing_time_backoff
         test_cancellation
         test_scheduling_does_not_change_work
         test_scheduling_does_not_change_bomc
@@ -36,6 +38,21 @@ module BOMEngine
         custom = BOMCProcessing.settings(:custom, custom: { max_items: 99_999, max_ms: 999, min_items: -4, max_items_limit: 999_999 })
         assert(custom[:max_ms] == 100.0, 'Custom time budget is clamped to the responsiveness ceiling')
         assert(custom[:max_items] <= custom[:max_items_limit] && custom[:min_items] >= 1, 'Custom item bounds are normalized')
+      end
+
+      def test_ui_batch_selection
+        auto = BOMCProcessing.from_ui(batch_mode: 'auto', batch_size: 8192)
+        assert(auto == BOMCProcessing.settings(:balanced), 'auto uses adaptive balanced scheduling, not CPU core count')
+        manual = BOMCProcessing.from_ui(batch_mode: 'manual', batch_size: 8192)
+        assert(manual[:max_items] == 8192 && manual[:max_items_limit] == 8192,
+          'manual 8192 reaches the exporter as its adaptive item ceiling')
+        assert(manual[:max_ms] == 60.0, 'large manual batch uses the explicit 60 ms UI-slice budget')
+        begin
+          BOMCProcessing.from_ui(batch_mode: 'manual', batch_size: 3)
+          raise 'unsupported size unexpectedly accepted'
+        rescue ArgumentError
+          puts 'PASS: unsupported UI batch is rejected'
+        end
       end
 
       def test_dual_budget_and_adaptation
@@ -59,6 +76,30 @@ module BOMEngine
         assert(events[-1][:reason] == :items, 'item budget yields even when time remains')
         assert(controller.target_items <= (start_target * 1.5).ceil, 'fast slice grows the item target by at most fifty percent')
         assert(controller.target_items <= BOMCProcessing.settings(:light)[:max_items_limit], 'adaptive target remains inside preset bounds')
+      end
+
+      def test_auto_can_grow_past_2048_without_losing_time_backoff
+        now = 0.0
+        events = []
+        controller = BOMCProcessing::Controller.new(
+          settings: BOMCProcessing.from_ui(batch_mode: 'auto'),
+          clock: -> { now }, on_yield: ->(event) { events << event }, cancelled: -> { false }
+        )
+        controller.checkpoint(stage: :work, processed: 0, total: 100_000)
+        controller.checkpoint(stage: :work, processed: 0, total: 100_000, force: true)
+        assert(controller.target_items == 256, 'forced stage notification does not falsely boost Auto target')
+        processed = 0
+        12.times do
+          processed += controller.target_items
+          now += 0.001
+          controller.checkpoint(stage: :work, processed: processed, total: 100_000)
+        end
+        assert(controller.target_items > 2_048, 'quick model work lets Auto exceed the former 2048-item cap')
+        old_target = controller.target_items
+        now += 0.100
+        controller.checkpoint(stage: :work, processed: processed + 1, total: 100_000)
+        assert(events[-1][:reason] == :time && controller.target_items < old_target,
+          'slow model work forces Auto to yield and lower the next batch target')
       end
 
       def test_cancellation

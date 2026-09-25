@@ -1,6 +1,7 @@
 # Cooperative export runner for SketchUp's single UI thread.
 
 require 'json'
+require 'uri'
 
 module BOMEngine
   class ConversionJob
@@ -11,13 +12,13 @@ module BOMEngine
     class << self
       attr_reader :active
 
-      def start(title:, output_path:, batch_size: nil, &work)
+      def start(title:, output_path:, batch_size: nil, kind: :export, &work)
         if @active && @active.running?
           UI.messagebox('Proses converting lain masih berjalan.', MB_OK)
           return @active
         end
 
-        job = new(title: title, output_path: output_path, batch_size: batch_size, &work)
+        job = new(title: title, output_path: output_path, batch_size: batch_size, kind: kind, &work)
         @active = job
         job.start
       end
@@ -27,15 +28,17 @@ module BOMEngine
       end
     end
 
-    def initialize(title:, output_path:, batch_size: nil, &work)
+    def initialize(title:, output_path:, batch_size: nil, kind: :export, &work)
       @title = title
       @output_path = output_path
       @batch_size = batch_size
+      @kind = kind
       @work = work
       @cancel_requested = false
       @finished = false
       @timer_id = nil
       @started_at = nil
+      @result_path = nil
       build_dialog
     end
 
@@ -55,6 +58,7 @@ module BOMEngine
           [:finished, :error, error]
         end
       end
+      @dialog.center
       @dialog.show
       @timer_id = UI.start_timer(TIMER_INTERVAL_SECONDS, true) { tick }
       self
@@ -74,21 +78,27 @@ module BOMEngine
         dialog_title: @title,
         scrollable: true,
         resizable: true,
-        width: 440,
-        height: 330,
-        min_width: 360,
-        min_height: 280,
+        width: 620,
+        height: 380,
+        min_width: 420,
+        min_height: 320,
         style: UI::HtmlDialog::STYLE_DIALOG
       )
       @dialog.set_file(File.join(File.dirname(__FILE__), 'ui', 'conversion_dialog.html'))
       @dialog.add_action_callback('cancel') { |_ctx| cancel }
       @dialog.add_action_callback('close') { |_ctx| @dialog.close }
       @dialog.add_action_callback('openFolder') do |_ctx|
-        directory = File.dirname(@output_path)
-        UI.openURL("file:///#{directory.tr('\\', '/')}") if Dir.exist?(directory)
+        directory = if @kind == :capture
+                      @output_path
+                    elsif @kind == :batch_export
+                      @result_path || File.dirname(@output_path)
+                    else
+                      File.dirname(@output_path)
+                    end
+        UI.openURL("file:///#{URI::DEFAULT_PARSER.escape(directory.tr('\\', '/'))}") if Dir.exist?(directory)
       end
       @dialog.add_action_callback('ready') do |_ctx|
-        execute("initializeConversion(#{JSON.generate(title: @title, output_path: @output_path, batch_size: @batch_size)})")
+        execute("initializeConversion(#{JSON.generate(title: @title, output_path: @output_path, batch_size: @batch_size, capture: @kind == :capture, batch_export: @kind == :batch_export)})")
       end
       @dialog.set_on_closed { cancel unless @finished }
     end
@@ -121,8 +131,10 @@ module BOMEngine
     end
 
     def update_progress(event)
+      @result_path = event[:output_directory] || event['output_directory'] if @kind == :batch_export && (event[:output_directory] || event['output_directory'])
       data = {
         stage: event[:stage] || event['stage'] || 'Converting model',
+        profile: event[:profile] || event['profile'],
         processed: event[:processed] || event['processed'] || 0,
         total: event[:total] || event['total'] || 0,
         percent: event[:percent] || event['percent'] || 0.0,
@@ -138,11 +150,14 @@ module BOMEngine
     def complete(result)
       finish_timer
       @finished = true
+      @result_path = result[:path] if @kind == :batch_export
+      resize_result(650)
       stats = result[:validation] || {}
       data = {
         path: result[:path],
         bytes: result[:bytes],
         source_bytes: result.dig(:source_info, :bytes),
+        source_path: result.dig(:source_info, :path),
         savings_bytes: result[:savings_bytes],
         gate_status: result[:status],
         strategy: result[:strategy],
@@ -152,6 +167,9 @@ module BOMEngine
         nodes: stats[:nodes],
         triangles: stats[:triangles]
       }
+      data[:capture] = true if @kind == :capture
+      data[:batch_export] = true if @kind == :batch_export
+      data[:profiles] = result[:profiles] if result[:profiles]
       execute("completeConversion(#{JSON.generate(data)})")
       self.class.release(self)
     end
@@ -159,21 +177,26 @@ module BOMEngine
     def cancelled(_error)
       finish_timer
       @finished = true
-      execute('cancelledConversion()')
+      resize_result(450)
+      execute("cancelledConversion(#{JSON.generate(path: @result_path || @output_path, capture: @kind == :capture, batch_export: @kind == :batch_export, partial_result: @kind == :batch_export && !@result_path.nil?)})")
       self.class.release(self)
     end
 
     def failed(error)
       finish_timer
       @finished = true
+      resize_result(500)
       detail = "#{error.class}: #{error.message}\n#{Array(error.backtrace).first(20).join("\n")}"
       Logger.error("Model-Eval cooperative export failed: #{detail}")
+      @result_path = error.directory if @kind == :batch_export && error.respond_to?(:directory)
+      display_path = @result_path || @output_path
       begin
-        File.write("#{@output_path}.error.log", detail, encoding: 'UTF-8')
+        log_path = @kind == :batch_export && @result_path ? File.join(@result_path, 'export-error.log') : "#{@output_path}.error.log"
+        File.write(log_path, detail, encoding: 'UTF-8')
       rescue StandardError
         nil
       end
-      execute("failConversion(#{JSON.generate(message: "#{error.class}: #{error.message}")})")
+      execute("failConversion(#{JSON.generate(message: "#{error.class}: #{error.message}", path: display_path, capture: @kind == :capture, batch_export: @kind == :batch_export, partial_result: @kind == :batch_export && !@result_path.nil?)})")
       self.class.release(self)
     end
 
@@ -182,6 +205,11 @@ module BOMEngine
 
       UI.stop_timer(@timer_id)
       @timer_id = nil
+    end
+
+    def resize_result(height)
+      @dialog.set_size(620, height)
+      @dialog.center
     end
 
     def elapsed_seconds

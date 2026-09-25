@@ -261,9 +261,27 @@ class TestActiveReleaseCatalog < Test::Unit::TestCase
     e4_cand = EvolutionActiveCatalog.find_candidate(records, 'next-from-8082541')
     assert_not_nil e4_cand
     assert_equal 'next-from-8082541', e4_cand['id']
-    assert_equal '7284982b26834f2635a839c6c7a1e687f83dca35', e4_cand['producerSha']
+    assert_equal 'bd6782691ef8ba98f9d3baab698bc1cd961ce393', e4_cand['producerSha']
 
     unbuilt_cand = EvolutionActiveCatalog.find_candidate(records, 'nonexistent-slot')
     assert_nil unbuilt_cand # nonexistent candidate cannot be selected
+  end
+
+  def test_rejects_ready_with_missing_tuple_fields
+    record = EvolutionActiveCatalog.load(path: @catalog_path)[2].dup
+    record['state'] = 'ready'
+    record['certificationId'] = 'missing-tuple-regression'
+    record['certificationPath'] = File.join(@temp_dir, 'missing-tuple.json')
+    %w[producerSha consumerSha packageSha256].each do |missing_key|
+      tuple = record.select { |key, _value| %w[producerSha consumerSha packageSha256].include?(key) }
+      tuple.delete(missing_key)
+      File.write(record['certificationPath'], JSON.generate({
+        'schemaVersion' => 't7-evolution-certification-v1',
+        'certificationId' => record['certificationId'], 'releaseId' => record['id'],
+        'status' => 'ready', 'ready' => true, 'provisional' => false, 'tuple' => tuple
+      }))
+      err = assert_raise(RuntimeError) { EvolutionActiveCatalog.verify_certification!(record) }
+      assert_match(/certification tuple missing #{missing_key}/, err.message)
+    end
   end
 end

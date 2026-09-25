@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "sibambo-evolution-lineup-v1",
+  "selectionBasis": "Curated distinct historical engine generations; not a measured performance ranking or certification.",
+  "slots": [
+    {
+      "id": "e1-json",
+      "order": 1,
+      "title": "E1 — JSON Visual / Standard / Full",
+      "kind": "tiered_json",
+      "historyVersion": "SBE-2026.05.11-02",
+      "reason": "Most capable original-era JSON exporter with three detail levels.",
+      "state": "uncertified"
+    },
+    {
+      "id": "e2-canonical-gzip",
+      "order": 2,
+      "title": "E2 — Canonical JSON v3 + Gzip",
+      "kind": "canonical_v3",
+      "historyVersion": "SBE-2026.07.16-01",
+      "reason": "Canonical graph and compressed JSON generation.",
+      "state": "uncertified"
+    },
+    {
+      "id": "e3-cleanpkg",
+      "order": 3,
+      "title": "E3 — CleanPKG Binary Container",
+      "kind": "cleanpkg",
+      "historyVersion": "SBE-2026.08.12-01",
+      "reason": "Distinct binary package generation before BOMC.",
+      "state": "uncertified"
+    },
+    {
+      "id": "e4-bomc",
+      "order": 4,
+      "title": "E4 — BOMC 1.2 (Current Candidate)",
+      "kind": "bomc_three_profile",
+      "source": "working-tree",
+      "baseProducerSha": "bd6782691ef8ba98f9d3baab698bc1cd961ce393",
+      "reason": "Current evolved bd67826-based engine; Visual, Research and Exact profiles plus Export All.",
+      "state": "development"
+    }
+  ]
+}

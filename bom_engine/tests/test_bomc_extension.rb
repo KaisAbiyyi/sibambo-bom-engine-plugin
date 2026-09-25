@@ -49,10 +49,12 @@ module BOMEngine
           'dialog enforces current extension version tag'
         )
         assert(dialog[:profile] == :research, 'dialog profile reaches exporter')
+        assert(BOMCExtension.normalize_output_path('D:/exports/house.skp', profile: :exact).end_with?('/house__SIBAMBO-BOMC-v1.2.0__EXACT.bomc'),
+          'typed SKP source path produces a clean BOMC filename')
         assert(
           dialog.dig(:processing, :mode) == :custom &&
             dialog.dig(:processing, :max_items) == 1024 &&
-            dialog.dig(:processing, :max_items_limit) == 8192,
+            dialog.dig(:processing, :max_items_limit) == 1024,
           'dialog batch control reaches cooperative processing settings'
         )
         assert(BOMCExtension::DEFAULT_PROFILE == :visual, 'visual profile is the preferred web-first default')

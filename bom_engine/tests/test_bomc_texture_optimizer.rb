@@ -187,7 +187,8 @@ module BOMEngine
           )
           assert(lossless_result[:path].end_with?('.png'), 'pixel_lossless policy produces PNG')
           assert(lossless_result.dig(:evidence, :selected) == :staged_png, 'pixel_lossless policy selects staged PNG')
-          assert(lossless_result.dig(:evidence, :reason) == :pixel_lossless_policy, 'pixel_lossless policy records reason')
+          assert(Array(lossless_result.dig(:evidence, :attempts)).any? { |attempt| attempt[:reason] == :native_jpeg_pixel_mismatch }, 'pixel_lossless policy rejects the changed native JPEG pixels')
+          assert(lossless_result.dig(:evidence, :quality, :max_channel_error) == 0, 'PNG fallback evidence describes zero-error selected pixels')
         ensure
           FileUtils.remove_entry(lossless_dir) if lossless_dir && Dir.exist?(lossless_dir)
         end

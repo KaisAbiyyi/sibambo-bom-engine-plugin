@@ -561,30 +561,13 @@ module BOMEngine
       visible_in_any = scenes.any? do |scene|
         hidden_nodes = scene.dig(:visibility, :hidden_node_overrides) || []
         visible_nodes = scene.dig(:visibility, :visible_node_overrides) || []
-
-        if tag_id
-          hidden_tags = scene.dig(:visibility, :hidden_tag_ids) || []
-          visible_tags = scene.dig(:visibility, :visible_tag_ids) || []
-          if hidden_tags.include?(tag_id)
-            false
-          elsif visible_tags.include?(tag_id)
-            true
-          elsif visible_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
-            true
-          elsif hidden_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
-            false
-          else
-            !base_hidden
-          end
-        else
-          if visible_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
-            true
-          elsif hidden_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
-            false
-          else
-            !base_hidden
-          end
-        end
+        hidden_tags = scene.dig(:visibility, :hidden_tag_ids) || []
+        next false if tag_id && hidden_tags.include?(tag_id)
+        next true if visible_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
+        next false if hidden_nodes.any? { |id| id == pid || id == "node:pid:#{pid}" || id.end_with?(":#{pid}") }
+        # A visible tag only admits an otherwise visible entity. In a model
+        # without Pages it cannot override the entity's own Hidden flag.
+        !base_hidden
       end
 
       visible_in_any

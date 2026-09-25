@@ -753,6 +753,7 @@ module BOMEngine
       DECOMPOSED_FLOAT32 = 3
       DECOMPOSED_QUANTIZED = 4
       HYBRID = 5
+      FLOAT64_4X4 = 6
       MAX_ERROR = 1.0e-5
       AFFINE_INDICES = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14].freeze
 
@@ -764,11 +765,14 @@ module BOMEngine
 
         count = transforms.length
         if forced_codec == FLOAT64_3X4 || max_error.to_f == 0.0
-          float64_bytes = checkpoint_map(transforms, checkpoint) { |matrix| affine(matrix).pack('E*') }.join.b
+          full_matrix = transforms.any? { |matrix| !affine_matrix?(matrix) }
+          codec = full_matrix ? FLOAT64_4X4 : FLOAT64_3X4
+          name = full_matrix ? 'float64_4x4' : 'float64_3x4'
+          float64_bytes = checkpoint_map(transforms, checkpoint) { |matrix| (full_matrix ? matrix : affine(matrix)).pack('E*') }.join.b
           return [
             {
-              name: 'float64_3x4',
-              codec: FLOAT64_3X4,
+              name: name,
+              codec: codec,
               bytes: float64_bytes,
               raw_bytes: float64_bytes.bytesize,
               deflate_bytes: CodecMath.compressed_size(float64_bytes),
@@ -784,6 +788,11 @@ module BOMEngine
 
         float64_bytes = checkpoint_map(transforms, checkpoint) { |matrix| affine(matrix).pack('E*') }.join.b
         candidates << transform_candidate('float64_3x4', FLOAT64_3X4, float64_bytes, transforms, decode_mode(FLOAT64_3X4, float64_bytes, transforms.length, checkpoint), max_error, 0, checkpoint).merge(count: count)
+
+        if transforms.any? { |matrix| !affine_matrix?(matrix) }
+          full_bytes = checkpoint_map(transforms, checkpoint) { |matrix| matrix.pack('E*') }.join.b
+          candidates << transform_candidate('float64_4x4', FLOAT64_4X4, full_bytes, transforms, decode_mode(FLOAT64_4X4, full_bytes, count, checkpoint), max_error, 5, checkpoint).merge(count: count)
+        end
 
         float32_bytes = checkpoint_map(transforms, checkpoint) { |matrix| affine(matrix).pack('e*') }.join.b
         candidates << transform_candidate('float32_3x4', FLOAT32_3X4, float32_bytes, transforms, decode_mode(FLOAT32_3X4, float32_bytes, transforms.length, checkpoint), max_error, 1, checkpoint).merge(count: count)
@@ -824,6 +833,9 @@ module BOMEngine
           if matrix_error(matrix, decoded_float) <= max_error
             hybrid_bytes << FLOAT32_3X4
             hybrid_bytes << packed_float
+          elsif !affine_matrix?(matrix) && matrix_error(matrix, restore_affine(affine(matrix))) > max_error
+            hybrid_bytes << FLOAT64_4X4
+            hybrid_bytes << matrix.pack('E*')
           else
             hybrid_bytes << FLOAT64_3X4
             hybrid_bytes << affine(matrix).pack('E*')
@@ -917,6 +929,11 @@ module BOMEngine
       end
       private_class_method :affine
 
+      def affine_matrix?(matrix)
+        matrix[3] == 0.0 && matrix[7] == 0.0 && matrix[11] == 0.0 && matrix[15] == 1.0
+      end
+      private_class_method :affine_matrix?
+
       def restore_affine(values)
         matrix = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
         AFFINE_INDICES.each_with_index { |matrix_index, index| matrix[matrix_index] = values[index].to_f }
@@ -932,6 +949,13 @@ module BOMEngine
           values.each_slice(12).each_with_index.map do |affine_values, index|
             notify_checkpoint(checkpoint, index + 1, count)
             restore_affine(affine_values)
+          end
+        when FLOAT64_4X4
+          raise 'BOMC invalid: Float64 4x4 transform count mismatch.' unless bytes.bytesize == count * 128
+          values = bytes.unpack('E*')
+          values.each_slice(16).each_with_index.map do |matrix, index|
+            notify_checkpoint(checkpoint, index + 1, count)
+            matrix
           end
         when FLOAT32_3X4
           values = bytes.unpack('e*')
@@ -968,6 +992,11 @@ module BOMEngine
               raise 'BOMC invalid: truncated hybrid Float64 transform.' unless payload && payload.bytesize == 96
               cursor += 96
               decode_mode(FLOAT64_3X4, payload, 1)[0]
+            when FLOAT64_4X4
+              payload = bytes.byteslice(cursor, 128)
+              raise 'BOMC invalid: truncated hybrid Float64 4x4 transform.' unless payload && payload.bytesize == 128
+              cursor += 128
+              decode_mode(FLOAT64_4X4, payload, 1)[0]
             when FLOAT32_3X4
               payload = bytes.byteslice(cursor, 48)
               raise 'BOMC invalid: truncated hybrid Float32 transform.' unless payload && payload.bytesize == 48
@@ -1102,7 +1131,15 @@ module BOMEngine
       private_class_method :failed_transform_candidate
 
       def matrix_error(left, right)
-        left.each_with_index.map { |value, index| (value.to_f - right[index].to_f).abs }.max || 0.0
+        return Float::INFINITY unless right && right.length == left.length
+
+        max_error = 0.0
+        left.each_with_index do |value, index|
+          delta = (value.to_f - right[index].to_f).abs
+          return Float::INFINITY unless delta.finite?
+          max_error = delta if delta > max_error
+        end
+        max_error
       end
       private_class_method :matrix_error
 

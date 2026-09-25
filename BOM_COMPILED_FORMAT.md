@@ -98,7 +98,7 @@ A production reader must reject an unsupported codec on a section it needs. It m
 | 10 | UVS | Per-corner front/back UV blocks |
 | 11 | DEFINITIONS | Shared definition table |
 | 12 | INSTANCES | Instance hierarchy and transform references |
-| 13 | TRANSFORMS | Affine transform stream |
+| 13 | TRANSFORMS | Transform stream |
 | 14 | VISUAL_EDGES | Retained visual edge stream |
 | 15 | TEXTURE_TABLE | Texture metadata, hashes, and blob ranges |
 | 16 | TEXTURE_BLOBS | Concatenated source texture bytes |
@@ -365,9 +365,10 @@ The generic codec-section prefix is followed by one of:
 | 2 | Float32 affine 3x4, 48 bytes/transform |
 | 3 | Float32 translation XYZ + quaternion XYZW + scale XYZ, 40 bytes/transform |
 | 4 | Float32 translation + Int16 normalized quaternion + Float32 signed scale, 32 bytes/transform |
-| 5 | Hybrid: subtype byte per transform; subtype 0 identity has no payload, otherwise subtype 1/2/4 payload |
+| 5 | Hybrid: subtype byte per transform; subtype 0 identity has no payload, otherwise subtype 1/2/4/6 payload |
+| 6 | Float64 complete 4x4, 128 bytes/transform, column-major matrix order |
 
-The omitted 4x4 elements are restored to affine values: indices 3, 7, 11 are zero and index 15 is one. Signed X scale preserves mirror transforms. Decomposition is rejected for zero-scale, shear, or non-orthogonal bases. The selected section candidate must keep maximum matrix-element error at or below `1e-5` and supports translation, rotation, uniform/non-uniform scale, mirror, and affine fallback.
+For affine codecs 1–4, omitted 4x4 elements are restored as indices 3, 7, 11 equal to zero and index 15 equal to one. Codec 6 retains all 16 values and is the lossless fallback for non-affine/projective matrices; hybrid subtype 6 retains only the affected transform as a complete matrix. Signed X scale preserves mirror transforms. Decomposition is rejected for zero-scale, shear, or non-orthogonal bases. The selected section candidate must keep maximum matrix-element error at or below `1e-5` and supports translation, rotation, uniform/non-uniform scale, mirror, and complete-matrix fallback.
 
 ## 17. Visual edges (section 14)
 

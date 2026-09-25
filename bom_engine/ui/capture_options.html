@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sibambo Preview — capture</title>
+  <link rel="stylesheet" href="bomc_theme.css">
+  <style>
+    .shell { max-width: 650px; }
+    .source-name { color: var(--maroon-dark); font-weight: 700; overflow-wrap: anywhere; }
+    .profile-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .profile-item { background: var(--paper); border: 1px solid var(--border); border-radius: 9px; padding: 10px 11px; }
+    .profile-item strong { display: block; }
+    .profile-item small { color: var(--muted); display: block; font-size: 11px; line-height: 1.4; margin-top: 4px; }
+    @media (max-width: 580px) { .profile-list { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<main class="shell">
+  <header class="brand">
+    <svg viewBox="0 0 28 28" aria-hidden="true"><path fill="currentColor" d="M14 2 26 8v12L14 26 2 20V8L14 2Zm0 3.2L5.8 9.3 14 13.4l8.2-4.1L14 5.2Zm-9 6.5v6.4l7.5 3.8v-6.4L5 11.7Zm18 0-7.5 3.8v6.4l7.5-3.8v-6.4Z"/></svg>
+    <span class="brand-name">Sibambo Adaptive Preview</span><span class="build">tree <span id="build-sha">memuat…</span></span>
+  </header>
+  <h1>Capture tiga profil</h1>
+  <p class="intro">Model: <span class="source-name" id="source-name">memuat…</span></p>
+  <p class="hint" style="margin-top:6px">Hasil ini untuk audit kandidat; belum tersertifikasi dan belum siap rilis.</p>
+
+  <section class="section">
+    <div class="section-head"><h2>File yang akan dibuat</h2><span class="hint">Tidak ada profil yang dilewati</span></div>
+    <div class="profile-list">
+      <div class="profile-item"><strong>Visual</strong><small>Lebih ringkas; batas kualitas visual.</small></div>
+      <div class="profile-item"><strong>Research</strong><small>Batas galat geometri/tekstur terukur.</small></div>
+      <div class="profile-item"><strong>Exact</strong><small>Piksel referensi dipertahankan; ukuran tidak dijamin lebih kecil.</small></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>Batch geometri</h2><span class="hint">Tidak mempercepat encoding tekstur</span></div>
+    <div class="batch-modes">
+      <label><input type="radio" name="batch-mode" value="auto" checked onchange="refreshBatchMode()">Auto</label>
+      <label><input type="radio" name="batch-mode" value="manual" onchange="refreshBatchMode()">Manual</label>
+    </div>
+    <div class="batch-controls">
+      <p class="hint" id="batch-description">Auto: mulai 256, adaptif sampai 2048 entitas/giliran.</p>
+      <select class="select" id="batch-size" aria-label="Batas entitas per giliran" disabled>
+        <option value="96">96</option><option value="128">128</option><option value="256">256</option>
+        <option value="512" selected>512</option><option value="1024">1024</option><option value="2048">2048</option>
+        <option value="4096">4096</option><option value="8192">8192</option>
+      </select>
+    </div>
+    <p class="hint" style="margin-top:8px">Manual: nilai awal sekaligus batas atas. Giliran tetap dibatasi 24–60 ms; angka besar dapat mengurangi respons SketchUp.</p>
+  </section>
+
+  <div class="actions"><span class="footer-note">Model harus tersimpan dan tidak berubah selama capture.</span><button class="button" type="button" onclick="sketchup.cancel()">Batal</button><button class="button button-primary" id="start-button" type="button" onclick="startCapture()">Mulai capture</button></div>
+</main>
+<script>
+  function initializeCaptureOptions(data) {
+    document.getElementById('source-name').textContent = data.source_name || 'model tidak diketahui';
+    document.getElementById('build-sha').textContent = data.build_sha || 'development';
+  }
+  function refreshBatchMode() {
+    var manual = document.querySelector('input[name="batch-mode"]:checked').value === 'manual';
+    document.getElementById('batch-size').disabled = !manual;
+    document.getElementById('batch-description').textContent = manual ?
+      'Pilih nilai awal dan batas atas entitas/giliran.' : 'Auto: mulai 256, adaptif sampai 2048 entitas/giliran.';
+  }
+  function startCapture() {
+    var mode = document.querySelector('input[name="batch-mode"]:checked').value;
+    document.getElementById('start-button').disabled = true;
+    sketchup.start(JSON.stringify({batch_mode: mode,
+      batch_size: mode === 'manual' ? Number(document.getElementById('batch-size').value) : null}));
+  }
+  window.onload = function() { refreshBatchMode(); sketchup.ready(); };
+</script>
+</body>
+</html>
