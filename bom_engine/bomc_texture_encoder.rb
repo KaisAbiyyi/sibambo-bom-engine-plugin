@@ -170,7 +170,29 @@ module BOMEngine
       capabilities[:available]
     end
 
-    def encode_webp(source_path:, output_path:, quality: 80, lossless: false, timeout_sec: DEFAULT_TIMEOUT_SEC, checkpoint: nil)
+    def webp_options(quality:, lossless:, lossless_method: nil, lossless_quality: nil, multithreaded: false)
+      raise ArgumentError, 'WebP quality must be an integer from 0 to 100' unless quality.is_a?(Integer) && quality.between?(0, 100)
+      raise ArgumentError, 'WebP multithreaded must be Boolean' unless multithreaded == true || multithreaded == false
+      if lossless
+        args = ['-lossless', '-exact']
+        unless lossless_method.nil?
+          raise ArgumentError, 'Lossless WebP method must be an integer from 0 to 6' unless lossless_method.is_a?(Integer) && lossless_method.between?(0, 6)
+          args.concat(['-m', lossless_method.to_s])
+        end
+        unless lossless_quality.nil?
+          raise ArgumentError, 'Lossless WebP effort must be an integer from 0 to 100' unless lossless_quality.is_a?(Integer) && lossless_quality.between?(0, 100)
+          args.concat(['-q', lossless_quality.to_s])
+        end
+        args << '-mt' if multithreaded
+        args
+      else
+        raise ArgumentError, 'Lossless WebP options require lossless mode' if lossless_method || lossless_quality || multithreaded
+        ['-q', quality.to_s]
+      end
+    end
+
+    def encode_webp(source_path:, output_path:, quality: 80, lossless: false, lossless_method: nil,
+      lossless_quality: nil, multithreaded: false, timeout_sec: DEFAULT_TIMEOUT_SEC, checkpoint: nil)
       caps = capabilities
       unless caps[:available]
         return {
@@ -187,11 +209,8 @@ module BOMEngine
       FileUtils.mkdir_p(File.dirname(temp_output))
 
       args = [caps[:binary_path]]
-      if lossless
-        args.concat(['-lossless', '-exact'])
-      else
-        args.concat(['-q', [[quality.to_i, 0].max, 100].min.to_s])
-      end
+      args.concat(webp_options(quality: quality.to_i.clamp(0, 100), lossless: lossless,
+        lossless_method: lossless_method, lossless_quality: lossless_quality, multithreaded: multithreaded))
       args.concat(['-quiet', source_path, '-o', temp_output])
 
       begin
@@ -213,7 +232,12 @@ module BOMEngine
           bytes: File.size(output_path),
           format: :webp,
           quality: quality,
-          lossless: lossless
+          lossless: lossless,
+          lossless_method: lossless_method,
+          lossless_quality: lossless_quality,
+          multithreaded: multithreaded,
+          exact: lossless,
+          encoder_sha256: caps[:sha256]
         }
       rescue TranscodeCancelledError
         File.delete(temp_output) if File.file?(temp_output)

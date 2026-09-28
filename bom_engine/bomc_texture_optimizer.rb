@@ -19,7 +19,8 @@ module BOMEngine
     CHECKPOINT_PIXELS = 32_768
     WEBP_QUALITIES = [80, 90, 95, 100].freeze
     MAX_ADAPTIVE_PIXELS = 32_000_000
-    POLICY_REVISION = 'adaptive-texture-3'.freeze
+    POLICY_REVISION = 'adaptive-texture-4'.freeze
+    LOSSLESS_SEARCH_REVISION = 'exact-webp-m4q75-m6q100mt-1'.freeze
 
     module_function
 
@@ -258,7 +259,8 @@ module BOMEngine
         end
         evidence = measure_phase(timings, :webp_search) do
           adaptive_webp(png_path, reference, evidence, loader, profile,
-            semantic_class, native_jpeg, pixel_lossless: true, candidate_cache: candidate_cache, &checkpoint)
+            semantic_class, native_jpeg, pixel_lossless: true,
+            expanded_lossless_search: allow_jpeg_color_map == true, candidate_cache: candidate_cache, &checkpoint)
         end
         if allow_jpeg_color_map == true && profile.to_s == 'exact' && native_jpeg
           evidence = measure_phase(timings, :color_map_evaluation) do
@@ -432,7 +434,8 @@ module BOMEngine
     # Bounded search over codecs/quality, independent of model names. Every
     # candidate is encoded from the original PNG, never from another candidate.
     # Choose the smallest measured candidate satisfying the unchanged contract.
-    def adaptive_webp(png_path, reference, baseline, loader, profile, semantic_class, native_jpeg, pixel_lossless: false, candidate_cache: nil, &checkpoint)
+    def adaptive_webp(png_path, reference, baseline, loader, profile, semantic_class, native_jpeg,
+      pixel_lossless: false, expanded_lossless_search: false, candidate_cache: nil, &checkpoint)
       attempts = [baseline.reject { |key, _| key == :path }]
       best = if baseline[:path] == png_path
                baseline.merge(quality: { compatible: true, mean_squared_error: 0.0,
@@ -454,19 +457,31 @@ module BOMEngine
         attempts << { reason: :adaptive_pixel_limit }
       else
         # Lossless competes with PNG; lossy is restricted to opaque textures.
-        variants = [[:lossless, nil]]
-        variants += WEBP_QUALITIES.map { |q| [:lossy, q] } if !pixel_lossless && opaque?(reference, &checkpoint)
+        variants = [{ mode: :lossless, quality: 75, label: 'm4-q75',
+          options: { lossless_method: 4, lossless_quality: 75, multithreaded: false } }]
+        if pixel_lossless && expanded_lossless_search
+          variants << { mode: :lossless, quality: 100, label: 'm6-q100-mt',
+            options: { lossless_method: 6, lossless_quality: 100, multithreaded: true } }
+        end
+        variants += WEBP_QUALITIES.map { |q| { mode: :lossy, quality: q, label: "q#{q}", options: {} } } if !pixel_lossless && opaque?(reference, &checkpoint)
         threshold = BOMCTexturePolicy.min_psnr(profile: profile, semantic_class: semantic_class, native_jpeg: native_jpeg)
-        variants.each do |mode, quality_level|
-          candidate_path = png_path.sub(/\.png\z/i, ".#{mode}-#{quality_level || 'exact'}.webp")
+        variants.each do |variant|
+          mode = variant[:mode]
+          quality_level = variant[:quality]
+          encoder_options = variant[:options]
+          candidate_path = png_path.sub(/\.png\z/i, ".#{mode}-#{variant[:label]}.webp")
           decoded_path = "#{candidate_path}.decoded.png"
-          attempt = { codec: :webp, mode: mode, quality_level: quality_level, timings_ms: {} }
+          attempt = { codec: :webp, mode: mode, quality_level: quality_level, variant: variant[:label],
+            encoder_options: encoder_options.merge(exact: mode == :lossless), encoder_sha256: caps[:sha256],
+            policy_revision: LOSSLESS_SEARCH_REVISION, timings_ms: {} }
           attempt_started = monotonic_ms
           callback = checkpoint && lambda { |**_event| checkpoint.call(0, reference.width * reference.height) }
           begin
             cache_key, cache_hit = measure_phase(attempt[:timings_ms], :cache_lookup) do
               key = candidate_cache && Digest::SHA256.hexdigest(
-                [source_sha256, caps[:sha256].to_s, mode, quality_level || 100].join("\0"))
+                [source_sha256, caps[:sha256].to_s, mode, quality_level, encoder_options[:lossless_method],
+                  encoder_options[:lossless_quality], encoder_options[:multithreaded], mode == :lossless,
+                  POLICY_REVISION, LOSSLESS_SEARCH_REVISION].join("\0"))
               [key, key && fetch_cached_webp(candidate_cache, key, candidate_path)]
             end
             attempt[:cache_hit] = !!cache_hit
@@ -475,7 +490,10 @@ module BOMEngine
                       else
                         measure_phase(attempt[:timings_ms], :encode) do
                           BOMCTextureEncoder.encode_webp(source_path: png_path, output_path: candidate_path,
-                            quality: quality_level || 100, lossless: mode == :lossless, checkpoint: callback)
+                            quality: quality_level, lossless: mode == :lossless,
+                            lossless_method: encoder_options[:lossless_method],
+                            lossless_quality: encoder_options[:lossless_quality],
+                            multithreaded: encoder_options[:multithreaded], checkpoint: callback)
                         end
                       end
             unless encoded[:success]
@@ -545,6 +563,7 @@ module BOMEngine
         end
       end
       json_safe_evidence(best.merge(attempts: attempts, policy_revision: POLICY_REVISION,
+        lossless_search_revision: LOSSLESS_SEARCH_REVISION,
         semantic_class: semantic_class, profile: profile, encoder_sha256: caps[:sha256],
         source_sha256: source_sha256, webp_setup_timings_ms: search_timings,
         selected_sha256: Digest::SHA256.file(best[:path]).hexdigest))

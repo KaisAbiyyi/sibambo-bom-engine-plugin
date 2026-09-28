@@ -167,8 +167,10 @@ class PreparedColorMapsTest < Minitest::Test
         }
         BOMEngine::BOMCExtension.send(:attach_staged_textures, graph, extracted, dir, profile: :exact)
         output = File.join(dir, 'candidate.bomc')
+        source_path = File.join(dir, 'source.skp')
+        File.binwrite(source_path, 'S' * 1_000_000)
         result = BOMEngine::BOMCExtension.publish_graph(output, graph, profile: :exact,
-          source_info: {available: true, bytes: 1_000_000}, allow_jpeg_color_map: true)
+          source_info: BOMEngine::BOMCSizeGate.source_info(source_path), allow_jpeg_color_map: true)
         assert_equal true, result[:published]
         assert_equal 'bomc-next-jcm-v1', result[:required_loader]
         FileUtils.mkdir_p(File.join(dir, 'snapshot'))

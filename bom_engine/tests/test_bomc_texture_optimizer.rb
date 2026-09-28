@@ -101,6 +101,8 @@ module BOMEngine
         quality = BOMCTextureOptimizer.compare(reference, close_candidate)
         assert(quality[:compatible] && quality[:psnr_db] > 40.0, 'pixel comparison ignores row padding and accepts a high-quality decoded candidate')
 
+        verify_opt_in_lossless_effort_search(reference)
+
         transparent = image_rep([
           [10, 20, 30], [40, 50, 60],
           [70, 80, 90], [100, 110, 120]
@@ -213,6 +215,50 @@ module BOMEngine
         warn "BOMC Texture Optimizer Tests: FAILED\n#{error.class}: #{error.message}"
         warn Array(error.backtrace).first(8)
         false
+      end
+
+      def verify_opt_in_lossless_effort_search(reference)
+        encoder = BOMCTextureEncoder
+        original_capabilities = encoder.method(:capabilities)
+        original_encode = encoder.method(:encode_webp)
+        original_decode = encoder.method(:decode_webp)
+        calls = []
+        encoder.define_singleton_method(:capabilities) do |**_options|
+          { available: true, verified: true, sha256: 'a' * 64, binary_path: 'bundled-cwebp' }
+        end
+        encoder.define_singleton_method(:encode_webp) do |source_path:, output_path:, quality:, lossless:, **options|
+          calls << { quality: quality, lossless: lossless, options: options }
+          size = options[:lossless_method] == 6 ? 800 : 900
+          File.binwrite(output_path, 'w' * size)
+          { success: true, path: output_path, bytes: size }
+        end
+        encoder.define_singleton_method(:decode_webp) do |source_path:, output_path:, **_options|
+          File.binwrite(output_path, 'decoded png')
+          { success: true, path: output_path }
+        end
+
+        directory = Dir.mktmpdir('exact-lossless-effort-test')
+        begin
+          png = File.join(directory, 'source.png')
+          File.binwrite(png, 'p' * 10_000)
+          texture = FakeTexture.new('source.png', reference)
+          result = BOMCTextureOptimizer.stage(
+            texture: texture, directory: directory, basename: 'source', source_path: 'source.png',
+            profile: :exact, policy: :pixel_lossless, allow_jpeg_color_map: true,
+            image_rep_loader: ->(_path) { reference }
+          )
+          assert(calls.length == 2, 'the size candidate opt-in tries both bounded lossless settings')
+          assert(calls[0][:options][:lossless_method] == 4 && calls[0][:options][:lossless_quality] == 75 &&
+            calls[0][:options][:multithreaded] == false, 'the default exact lossless trial records explicit m4/q75 settings')
+          assert(calls[1][:options][:lossless_method] == 6 && calls[1][:options][:lossless_quality] == 100 &&
+            calls[1][:options][:multithreaded] == true, 'the opt-in higher-effort lossless trial uses m6/q100/multithreaded')
+          assert(result[:path].include?('lossless-m6-q100-mt.webp'), 'the smaller measured high-effort candidate wins by bytes')
+        ensure
+          FileUtils.remove_entry(directory) if directory && Dir.exist?(directory)
+          encoder.define_singleton_method(:capabilities, original_capabilities)
+          encoder.define_singleton_method(:encode_webp, original_encode)
+          encoder.define_singleton_method(:decode_webp, original_decode)
+        end
       end
     end
   end

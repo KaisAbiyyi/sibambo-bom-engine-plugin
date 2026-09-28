@@ -4,6 +4,7 @@ require 'fileutils'
 require 'tmpdir'
 require 'securerandom'
 require 'json'
+require 'digest'
 require 'pathname'
 require_relative 'branding'
 require_relative 'bomc_dialog'
@@ -89,13 +90,24 @@ module BOMEngine
       }
     end
 
-    def publish_validated(candidate:, report:, output_path:)
+    def publish_validated(candidate:, report:, output_path:, source_info: nil)
       unless report && (report[:passed] == true || report['passed'] == true)
         raise BOMCValidator::ProfileValidationError.new('Cannot publish: validation report did not pass.', report: report)
       end
 
       bytes = candidate.is_a?(Hash) ? (candidate[:bytes] || candidate['bytes']) : candidate
       raise ArgumentError, 'Candidate bytes must be a binary String' unless bytes.is_a?(String)
+
+      if source_info
+        require_experimental_source!(source_info)
+        if File.expand_path(output_path) == File.expand_path(source_info.fetch(:path))
+          raise ArgumentError, 'Experimental Exact output path must differ from its saved SKP source.'
+        end
+        assert_source_identity!(source_info)
+        if bytes.bytesize >= source_info.fetch(:bytes)
+          raise_target_not_met!(candidate, source_info, bytes.bytesize)
+        end
+      end
 
       directory = File.dirname(output_path)
       FileUtils.mkdir_p(directory) unless Dir.exist?(directory)
@@ -107,6 +119,12 @@ module BOMEngine
           file.flush
           file.fsync rescue nil
         end
+        written_bytes = File.size(part_path)
+        raise IOError, 'Staged BOMC byte count does not match the validated candidate.' unless written_bytes == bytes.bytesize
+        if source_info
+          assert_source_identity!(source_info)
+          raise_target_not_met!(candidate, source_info, written_bytes) unless written_bytes < source_info.fetch(:bytes)
+        end
         FileUtils.mv(part_path, output_path, force: true)
       ensure
         File.delete(part_path) if File.file?(part_path)
@@ -116,7 +134,10 @@ module BOMEngine
         path: output_path,
         bytes: File.size(output_path),
         published: true,
-        report: report
+        report: report,
+        source_skp_bytes: source_info && source_info[:bytes],
+        source_skp_sha256: source_info && source_info[:sha256],
+        size_target: source_info ? :under_source : nil
       }
     end
 
@@ -144,7 +165,8 @@ module BOMEngine
         profile: prof,
         texture_evidence: texture_evidence
       )
-      published = publish_validated(candidate: candidate, report: report, output_path: path)
+      published = publish_validated(candidate: candidate, report: report, output_path: path,
+        source_info: allow_jpeg_color_map ? src_info : nil)
       allow_jpeg_color_map ? published.merge(required_loader: 'bomc-next-jcm-v1') : published
     end
 
@@ -165,7 +187,13 @@ module BOMEngine
         settings: processing,
         context: context
       ).merge(format: 'bomc', profile: profile)
-      allow_jpeg_color_map ? result.merge(required_loader: 'bomc-next-jcm-v1') : result
+      if allow_jpeg_color_map
+        published = result[:published] || {}
+        result.merge(required_loader: 'bomc-next-jcm-v1', bytes: published[:bytes] || result[:candidate_bytes],
+          source_skp_sha256: published[:source_skp_sha256], size_target: published[:size_target])
+      else
+        result
+      end
     end
 
     def export_all_profiles(model, output_path:, settings:, progress:)
@@ -230,8 +258,9 @@ module BOMEngine
     private_class_method :validate_experimental_profile!
 
     def require_experimental_source!(source)
-      unless source && source[:available] == true && source[:bytes].is_a?(Integer) && source[:bytes] > 0
-        raise ArgumentError, 'Experimental Exact export requires actual saved source bytes'
+      unless source && source[:available] == true && source[:bytes].is_a?(Integer) && source[:bytes] > 0 &&
+          source[:path].is_a?(String) && !source[:path].empty? && source[:sha256].to_s.match?(/\A[0-9a-f]{64}\z/i)
+        raise ArgumentError, 'Experimental Exact export requires a saved source path, byte count, and SHA-256 identity'
       end
     end
     private_class_method :require_experimental_source!
@@ -249,6 +278,26 @@ module BOMEngine
     end
     private_class_method :enforce_experimental_size!
 
+    def assert_source_identity!(source)
+      path = source.fetch(:path)
+      unless File.file?(path) && File.size(path) == source[:bytes] && Digest::SHA256.file(path).hexdigest == source[:sha256]
+        raise ArgumentError, 'Saved SKP source changed since the Exact size candidate was measured.'
+      end
+      true
+    end
+    private_class_method :assert_source_identity!
+
+    def raise_target_not_met!(candidate, source, actual_bytes)
+      sections = candidate.is_a?(Hash) ? candidate.dig(:metrics, :sections) : nil
+      dominant = (sections || {}).map do |name, values|
+        { name: name, stored_bytes: values[:stored_bytes], raw_bytes: values[:raw_bytes] }
+      end.sort_by { |section| -section[:stored_bytes].to_i }.first(5)
+      raise BOMCSizeGate::TargetNotMet.new(source_bytes: source[:bytes], hard_budget_bytes: source[:bytes] - 1,
+        best_candidate_bytes: actual_bytes, attempts: [{ strategy: :experimental_exact, candidate_bytes: actual_bytes, status: :fail }],
+        dominant_sections: dominant)
+    end
+    private_class_method :raise_target_not_met!
+
     def export_interactive
       model = Sketchup.active_model
       return UI.messagebox('Model SketchUp tidak tersedia.', MB_OK) if model.nil?
@@ -259,6 +308,32 @@ module BOMEngine
     rescue StandardError => error
       report_interactive_error(error)
     end
+
+    def export_compact_exact_interactive
+      model = Sketchup.active_model
+      return UI.messagebox('Model SketchUp tidak tersedia.', MB_OK) if model.nil?
+      if model.path.to_s.empty? || (model.respond_to?(:modified?) && model.modified?)
+        return UI.messagebox('Simpan model SketchUp dan tutup perubahan yang belum disimpan sebelum membuat kandidat Exact ukuran.', MB_OK)
+      end
+
+      default = output_path_for_profile(model, profile: :exact)
+      chosen = UI.savepanel('Save experimental Exact size candidate (requires JCM-capable model-eval)', File.dirname(default), File.basename(default))
+      return unless chosen
+      output = normalize_output_path(chosen, profile: :exact)
+      settings = BOMCProcessing.settings(:balanced)
+      ConversionJob.start(
+        title: "#{Branding::EXTENSION_NAME} — Experimental Exact size candidate (not certified)",
+        output_path: output,
+        batch_size: settings[:max_items],
+        kind: :export
+      ) do |progress|
+        export(model, output_path: output, profile: :exact, progress: progress, settings: settings,
+          allow_jpeg_color_map: true)
+      end
+    rescue StandardError => error
+      report_interactive_error(error)
+    end
+    private_class_method :export_compact_exact_interactive
 
     def start_dialog_export(model, options)
       chosen = options.fetch(:output_path)
@@ -293,6 +368,9 @@ module BOMEngine
       menu.add_item('Sibambo BOMC Engine: Export BOMC 1.2...') do
         export_interactive
       end
+      menu.add_item('Sibambo BOMC Engine: Experimental Exact size candidate (JCM)...') do
+        export_compact_exact_interactive
+      end
       menu.add_item('About Sibambo BOMC Engine') do
         Core.show_about
       end
@@ -324,7 +402,10 @@ module BOMEngine
             profile: profile,
             checkpoint: checkpoint
           )
-          enforce_experimental_size!(candidate, source) if allow_jpeg_color_map
+          if allow_jpeg_color_map
+            enforce_experimental_size!(candidate, source)
+            candidate = candidate.merge(experimental_size_source_info: source.dup)
+          end
           candidate
         end,
         validate: lambda do |result, graph = nil|
@@ -350,12 +431,13 @@ module BOMEngine
             report: report
           }
         end,
-        publish: lambda do |candidate, validation, path|
-          publish_validated(
-            candidate: candidate,
-            report: validation[:report],
-            output_path: path
-          )
+          publish: lambda do |candidate, validation, path|
+            publish_validated(
+              candidate: candidate,
+              report: validation[:report],
+              output_path: path,
+              source_info: candidate[:experimental_size_source_info]
+            )
         end,
         cleanup: lambda do
           FileUtils.remove_entry(texture_directory) if Dir.exist?(texture_directory)

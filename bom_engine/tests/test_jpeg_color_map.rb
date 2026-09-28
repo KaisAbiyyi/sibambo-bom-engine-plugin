@@ -102,6 +102,22 @@ class JpegColorMapTest < Minitest::Test
     assert_equal :jpeg_color_map, decoded[:textures][0][:media_type]
     assert_equal TARGET, codec.reconstruct(decoded[:textures][0][:bytes],BASE)
   end
+  def test_writer_deflates_bounded_jcm_blob_section_when_it_saves_bytes
+    width=100;height=10
+    jpeg=JPEG.dup;jpeg[7,4]=[height,width].pack('n2')
+    base=Array.new(width*height) { |index| [index >> 8,(index >> 4) & 255,index & 15,255] }.flatten.pack('C*')
+    target=Array.new(width*height) { [200,100,50,255] }.flatten.pack('C*')
+    texture=codec.encode(jpeg:jpeg,base_rgba:base,target_rgba:target,width:width,height:height)
+    graph={materials:[{id:'m',texture:{bytes:texture,filename:'mapped.jcm',image_width_px:width,image_height_px:height}}],
+      definitions:[{id:'d',kind:'root',node_ids:[]}],nodes:[{id:'root',kind:'root',definition_id:'d',transform_id:0}],
+      transforms:[BOMEngine::BOMC::ModelAdapter::IDENTITY],meshes:[],tags:[]}
+
+    packed=BOMEngine::BOMCWriter.pack(graph,profile: :exact)
+    blob=packed.dig(:metrics,:sections,:textures)
+    assert_equal 1,blob[:codec], 'the measured smaller DEFLATE blob is selected for a bounded JCM payload'
+    decoded=BOMEngine::BOMCDecoder.decode(packed[:bytes],allow_jpeg_color_map:true)
+    assert_equal texture,decoded[:textures][0][:bytes], 'blob decompression retains the exact JCM payload bytes'
+  end
   def test_exact_publication_requires_digest_bound_color_map_pixel_evidence
     texture=encode
     graph={materials:[{id:'m',texture:{bytes:texture,filename:'sample.jcm',image_width_px:2,image_height_px:1}}],definitions:[{id:'d',kind:'root',node_ids:[]}],nodes:[{id:'root',kind:'root',definition_id:'d',transform_id:0}],transforms:[BOMEngine::BOMC::ModelAdapter::IDENTITY],meshes:[],tags:[]}

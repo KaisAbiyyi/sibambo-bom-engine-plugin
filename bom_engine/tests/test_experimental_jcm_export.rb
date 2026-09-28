@@ -13,14 +13,22 @@ class ExperimentalJcmExportTest < Minitest::Test
       required_loader:'bomc-next-jcm-v1',quality:{compatible:true,mean_squared_error:0.0,max_channel_error:0,alpha_preserved:true}}
     {materials:[{id:'m',texture:{bytes:bytes,filename:'texture.jcm',image_width_px:2,image_height_px:1,encoding_evidence:evidence}}],definitions:[{id:'d',kind:'root',node_ids:[]}],nodes:[{id:'root',kind:'root',definition_id:'d',transform_id:0}],transforms:[BOMEngine::BOMC::ModelAdapter::IDENTITY],meshes:[],tags:[]}
   end
+  def source_info_for(output_path, bytes)
+    path=File.join(File.dirname(output_path),"source-#{bytes}.skp")
+    File.binwrite(path,'S'*bytes)
+    BOMEngine::BOMCSizeGate.source_info(path)
+  end
   def publish(path,source_bytes:1_000_000,profile: :exact)
-    BOMEngine::BOMCExtension.publish_graph(path,graph,profile:profile,source_info:{available:true,bytes:source_bytes},allow_jpeg_color_map:true)
+    BOMEngine::BOMCExtension.publish_graph(path,graph,profile:profile,source_info:source_info_for(path,source_bytes),allow_jpeg_color_map:true)
   end
   def test_explicit_exact_opt_in_validates_and_publishes_smaller_candidate
     Dir.mktmpdir do |dir|
       file=File.join(dir,'candidate.bomc')
       result=begin publish(file);rescue ArgumentError=>e;flunk "Experimental export entry missing: #{e.message}";end
       assert_equal true,result[:published]
+      assert_equal File.size(file),result[:bytes]
+      assert_equal Digest::SHA256.file(File.join(dir,'source-1000000.skp')).hexdigest,result[:source_skp_sha256]
+      assert_equal :under_source,result[:size_target]
       assert_equal 'bomc-next-jcm-v1',result[:required_loader]
       assert BOMEngine::BOMCDecoder.decode(File.binread(file),allow_jpeg_color_map:true)[:textures].any?
       assert_raises(RuntimeError) { BOMEngine::BOMCDecoder.decode(File.binread(file)) }
@@ -40,10 +48,30 @@ class ExperimentalJcmExportTest < Minitest::Test
       assert_raises(BOMEngine::BOMCSizeGate::TargetNotMet) { publish(file,source_bytes:1) }
       bad=graph;bad[:materials][0][:texture][:encoding_evidence][:selected_sha256]='0'*64
       assert_raises(BOMEngine::BOMCValidator::ProfileValidationError) do
-        BOMEngine::BOMCExtension.publish_graph(file,bad,profile: :exact,source_info:{available:true,bytes:1_000_000},allow_jpeg_color_map:true)
+        BOMEngine::BOMCExtension.publish_graph(file,bad,profile: :exact,source_info:source_info_for(file,1_000_000),allow_jpeg_color_map:true)
       end
       assert_equal 'keep',File.binread(file)
       assert_empty Dir.glob(File.join(dir,'*.part'))
+    end
+  end
+
+  def test_publication_rechecks_source_hash_and_size_before_atomic_replace
+    Dir.mktmpdir do |dir|
+      source = File.join(dir, 'source.skp')
+      output = File.join(dir, 'candidate.bomc')
+      File.binwrite(source, 'saved source bytes')
+      source_info = BOMEngine::BOMCSizeGate.source_info(source)
+      File.binwrite(output, 'keep')
+      File.binwrite(source, 'changed after candidate was compiled')
+
+      error = assert_raises(ArgumentError) do
+        BOMEngine::BOMCExtension.publish_validated(
+          candidate: 'valid-looking bytes', report: { passed: true }, output_path: output, source_info: source_info
+        )
+      end
+      assert_match(/source changed/i, error.message)
+      assert_equal 'keep', File.binread(output)
+      assert_empty Dir.glob(File.join(dir, '*.part'))
     end
   end
   def test_experimental_export_requires_real_source_size_and_saved_runtime_model

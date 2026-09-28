@@ -17,6 +17,7 @@ module BOMEngine
   module BOMCWriter
     FORMAT_NAME = 'BOMC'.freeze
     FORMAT_VERSION = '1.2'.freeze
+    MAX_JCM_BLOB_DEFLATE_BYTES = 8 * 1024 * 1024
 
     SECTION_NAMES = {
       BOMC::SECTION_MODEL => :model,
@@ -197,7 +198,9 @@ module BOMEngine
           section(BOMC::SECTION_TRANSFORMS, @model[:transforms].length, pack_codec_section(geometry[:transform_block]), true),
           section(BOMC::SECTION_VISUAL_EDGES, geometry[:edges].length, build_edges_section(geometry[:edges]), true),
           section(BOMC::SECTION_TEXTURE_TABLE, @textures.length, build_texture_table_section, true),
-          section(BOMC::SECTION_TEXTURE_BLOBS, @textures.length, @texture_blob_bytes, false),
+          section(BOMC::SECTION_TEXTURE_BLOBS, @textures.length, @texture_blob_bytes,
+            @texture_blob_bytes.bytesize <= MAX_JCM_BLOB_DEFLATE_BYTES &&
+              @textures.any? { |texture| texture[:media_type] == :jpeg_color_map }),
           section(BOMC::SECTION_COVERAGE, 1, build_coverage_section, true),
           section(BOMC::SECTION_FALLBACK, fallback_records.length, build_fallback_section, true),
           section(BOMC::SECTION_ENCODING_CONTRACT, 1, BOMCEncodingContract.encode(@profile_contract, source_skp_bytes: @source_skp_bytes, target_bytes: @target_bytes), true)

@@ -83,6 +83,18 @@ class TestBOMCTextureEncoder < Test::Unit::TestCase
     assert_equal :encoder_unavailable, res[:reason]
   end
 
+  def test_explicit_lossless_effort_options_are_passed_through_encoder_entrypoint
+    args = BOMEngine::BOMCTextureEncoder.webp_options(
+      quality: 100, lossless: true, lossless_method: 6, lossless_quality: 100, multithreaded: true
+    )
+    assert_equal ['-lossless', '-exact', '-m', '6', '-q', '100', '-mt'], args
+    assert_raise(ArgumentError) do
+      BOMEngine::BOMCTextureEncoder.webp_options(
+        quality: 100, lossless: true, lossless_method: 7, lossless_quality: 100, multithreaded: true
+      )
+    end
+  end
+
   def test_valid_webp_header_check
     Dir.mktmpdir('webp-test') do |dir|
       valid_webp = File.join(dir, 'valid.webp')

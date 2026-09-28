@@ -88,8 +88,8 @@ module BOMEngine
         menu = FakeMenu.new
         BOMCExtension.register_menu(menu)
         assert(
-          menu.labels == ['Sibambo BOMC Engine: Export BOMC 1.2...', 'About Sibambo BOMC Engine'],
-          'product menu exposes only BOMC export and version information'
+          menu.labels == ['Sibambo BOMC Engine: Export BOMC 1.2...', 'Sibambo BOMC Engine: Experimental Exact size candidate (JCM)...', 'About Sibambo BOMC Engine'],
+          'experimental Exact size targeting requires a separately labeled explicit menu action'
         )
 
         texture_dir = Dir.mktmpdir('bomc-texture-choice')

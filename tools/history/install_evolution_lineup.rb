@@ -12,6 +12,7 @@ module EvolutionLineupInstaller
   FOLDER = 'evolution_lineup'.freeze
   LOADER = 'sibambo_evolution_lineup_loader.rb'.freeze
   RETIRED_LOADERS = %w[sibambo_evolution_lab_loader.rb sibambo_e4_jcm_8b5d7b07a2ea6094.rb].freeze
+  ENGINE_IDS = %w[e1-json e2-canonical-gzip e3-cleanpkg e4-bomc].freeze
 
   def self.install(package_dir:, plugins_dir:)
     package = File.realpath(package_dir)
@@ -31,8 +32,8 @@ module EvolutionLineupInstaller
     destination_loader = File.expand_path(File.join(plugins, LOADER))
     [destination_folder, destination_loader].each do |path|
       raise "Unsafe install target: #{path}" unless File.dirname(path) == plugins
-      raise "Install target already exists: #{path}" if File.exist?(path)
     end
+    existing_install = owned_installation?(destination_folder, destination_loader)
     RETIRED_LOADERS.each do |name|
       old = File.join(plugins, name)
       raise "Cannot disable old loader: #{old}.disabled already exists" if File.file?(old) && File.exist?("#{old}.disabled")
@@ -45,28 +46,94 @@ module EvolutionLineupInstaller
       source_loader = File.join(unpacked, LOADER)
       raise 'Package is incomplete' unless File.directory?(source_folder) && File.file?(source_loader)
       engines = JSON.parse(File.read(File.join(source_folder, 'engines.json')))
-      raise 'Expected four engine generations' unless engines.map { |engine| engine.fetch('id') } == %w[e1-json e2-canonical-gzip e3-cleanpkg e4-bomc]
+      raise 'Expected four engine generations' unless engines.map { |engine| engine.fetch('id') } == ENGINE_IDS
       raise 'E4 source identity mismatch' unless engines.last.fetch('sha') == manifest.fetch('e4SourceTreeSha256')
+      e4_build_sha_path = File.join(source_folder, 'engine_e4_bomc', 'bom_engine', 'BUILD_SHA.txt')
+      raise 'Packaged E4 build identity is missing or mismatched' unless File.file?(e4_build_sha_path) && File.read(e4_build_sha_path).strip == manifest.fetch('e4SourceTreeSha256')
 
-      FileUtils.cp_r(source_folder, destination_folder)
-      source_tree = EvolutionLabBuilder.compute_tree_sha(source_folder)
-      installed_tree = EvolutionLabBuilder.compute_tree_sha(destination_folder)
-      raise 'Installed Evolution folder differs from verified package' unless installed_tree == source_tree
-      FileUtils.cp(source_loader, destination_loader)
-      raise 'Installed loader differs from verified package' unless Digest::SHA256.file(source_loader) == Digest::SHA256.file(destination_loader)
-
+      backup = nil
+      moved_folder = false
+      moved_loader = false
+      installed_new_folder = false
+      installed_new_loader = false
       retired = []
-      RETIRED_LOADERS.each do |name|
-        old = File.join(plugins, name)
-        disabled = "#{old}.disabled"
-        next unless File.file?(old)
-        FileUtils.mv(old, disabled)
-        retired << disabled
+      begin
+        if existing_install
+          previous_sha = existing_install.fetch(:e4_sha)[0, 12]
+          stamp = Time.now.strftime('%Y%m%d-%H%M%S')
+          base_name = "evolution_lineup_backup_#{stamp}_#{previous_sha}"
+          backup = File.join(plugins, base_name)
+          suffix = 1
+          while File.exist?(backup)
+            backup = File.join(plugins, "#{base_name}_#{suffix}")
+            suffix += 1
+          end
+          raise "Unsafe backup target: #{backup}" unless File.dirname(backup) == plugins
+          FileUtils.mkdir_p(backup)
+          FileUtils.mv(destination_folder, File.join(backup, FOLDER))
+          moved_folder = true
+          FileUtils.mv(destination_loader, File.join(backup, LOADER))
+          moved_loader = true
+        end
+
+        FileUtils.cp_r(source_folder, destination_folder)
+        installed_new_folder = true
+        source_tree = EvolutionLabBuilder.compute_tree_sha(source_folder)
+        installed_tree = EvolutionLabBuilder.compute_tree_sha(destination_folder)
+        raise 'Installed Evolution folder differs from verified package' unless installed_tree == source_tree
+        FileUtils.cp(source_loader, destination_loader)
+        installed_new_loader = true
+        raise 'Installed loader differs from verified package' unless Digest::SHA256.file(source_loader) == Digest::SHA256.file(destination_loader)
+
+        RETIRED_LOADERS.each do |name|
+          old = File.join(plugins, name)
+          disabled = "#{old}.disabled"
+          next unless File.file?(old)
+          FileUtils.mv(old, disabled)
+          retired << [old, disabled]
+        end
+
+        { installed_folder: destination_folder, installed_loader: destination_loader,
+          source_tree_sha256: manifest.fetch('e4SourceTreeSha256'), backup_path: backup,
+          disabled_loaders: retired.map(&:last), restart_required: true }
+      rescue StandardError
+        FileUtils.rm_rf(destination_loader) if installed_new_loader && File.file?(destination_loader)
+        FileUtils.rm_rf(destination_folder) if installed_new_folder && File.directory?(destination_folder)
+        retired.reverse_each do |old, disabled|
+          FileUtils.mv(disabled, old) if File.file?(disabled) && !File.exist?(old)
+        end
+        FileUtils.mv(File.join(backup, LOADER), destination_loader) if moved_loader && File.file?(File.join(backup, LOADER))
+        FileUtils.mv(File.join(backup, FOLDER), destination_folder) if moved_folder && File.directory?(File.join(backup, FOLDER))
+        Dir.rmdir(backup) if backup && File.directory?(backup) && Dir.empty?(backup)
+        raise
       end
-      { installed_folder: destination_folder, installed_loader: destination_loader,
-        source_tree_sha256: manifest.fetch('e4SourceTreeSha256'), disabled_loaders: retired,
-        restart_required: true }
     end
+  end
+
+  # Only replace a complete Evolution install that this installer can identify.
+  # Unknown files at either owned path are preserved by refusing the upgrade.
+  def self.owned_installation?(folder, loader)
+    folder_exists = File.exist?(folder) || File.symlink?(folder)
+    loader_exists = File.exist?(loader) || File.symlink?(loader)
+    return nil unless folder_exists || loader_exists
+    raise 'Existing Evolution installation is incomplete; refusing replacement' unless folder_exists && loader_exists
+    raise 'Existing Evolution installation uses a symlink; refusing replacement' if File.symlink?(folder) || File.symlink?(loader)
+    raise 'Existing Evolution installation has unexpected path types' unless File.directory?(folder) && File.file?(loader)
+
+    loader_source = File.read(loader)
+    unless loader_source.include?("SketchupExtension.new('Sibambo BOM Engine Evolution'") &&
+           loader_source.include?("'evolution_lineup', 'master_menu.rb'")
+      raise 'Existing loader is not the managed Sibambo BOM Engine Evolution loader; refusing replacement'
+    end
+
+    engines = JSON.parse(File.read(File.join(folder, 'engines.json')))
+    raise 'Existing Evolution install has unexpected engine slots' unless engines.map { |engine| engine.fetch('id') } == ENGINE_IDS
+    e4_sha = engines.last.fetch('sha')
+    build_sha_path = File.join(folder, 'engine_e4_bomc', 'bom_engine', 'BUILD_SHA.txt')
+    unless e4_sha.match?(/\A[0-9a-f]{64}\z/) && File.file?(build_sha_path) && File.read(build_sha_path).strip == e4_sha
+      raise 'Existing Evolution install has an unverifiable E4 identity; refusing replacement'
+    end
+    { e4_sha: e4_sha }
   end
 end
 
