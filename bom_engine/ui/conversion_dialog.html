@@ -149,6 +149,19 @@
         var delta = Number(data.source_bytes) - Number(data.bytes);
         row('Selisih terhadap SKP', (delta < 0 ? 'lebih besar ' : 'lebih kecil ') + formatBytes(Math.abs(delta)));
       }
+      if (data.texture_bytes != null) {
+        var textureLabel = formatBytes(data.texture_bytes);
+        if (data.texture_unique != null) textureLabel += ' · ' + Number(data.texture_unique).toLocaleString() + ' unik';
+        row('Payload tekstur', textureLabel);
+      }
+      if (data.jcm_count != null && Number(data.jcm_count) > 0) {
+        row('JCM Exact', Number(data.jcm_count).toLocaleString() + ' tekstur · ' + formatBytes(data.jcm_bytes || 0));
+      } else if (String(data.profile || '').toLowerCase() === 'exact') {
+        row('JCM Exact', '0 tekstur');
+      }
+      (data.top_sections || []).forEach(function(section, index) {
+        row('Section #' + (index + 1) + ' · ' + String(section.name || ''), formatBytes(section.stored_bytes));
+      });
       el('outcome-note').textContent = data.gate_status === 'over_budget' || data.gate_status === 'rejected_over_budget' ?
         'Target ukuran tidak tercapai. Jangan baca ini sebagai lulus batas ukuran.' :
         data.profile === 'exact' ? 'Exact menjaga fidelity; ukuran lebih kecil tidak dijamin.' :

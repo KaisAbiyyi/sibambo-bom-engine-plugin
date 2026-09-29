@@ -153,6 +153,13 @@ module BOMEngine
       @result_path = result[:path] if @kind == :batch_export
       resize_result(650)
       stats = result[:validation] || {}
+      metrics = result[:metrics] || {}
+      texture_metrics = metrics[:textures] || {}
+      encodings = texture_metrics[:encodings] || {}
+      jcm = encodings[:jpeg_color_map] || encodings['jpeg_color_map'] || {}
+      top_sections = (metrics[:sections] || {}).map do |name, values|
+        { name: name.to_s, stored_bytes: values[:stored_bytes].to_i, raw_bytes: values[:raw_bytes].to_i }
+      end.sort_by { |row| -row[:stored_bytes] }.first(3)
       data = {
         path: result[:path],
         bytes: result[:bytes],
@@ -165,7 +172,13 @@ module BOMEngine
         mode: result[:mode],
         elapsed_seconds: elapsed_seconds,
         nodes: stats[:nodes],
-        triangles: stats[:triangles]
+        triangles: stats[:triangles],
+        texture_bytes: texture_metrics[:bytes],
+        texture_unique: texture_metrics[:unique],
+        texture_references: texture_metrics[:references],
+        jcm_count: jcm[:count] || jcm['count'],
+        jcm_bytes: jcm[:bytes] || jcm['bytes'],
+        top_sections: top_sections
       }
       data[:capture] = true if @kind == :capture
       data[:batch_export] = true if @kind == :batch_export
