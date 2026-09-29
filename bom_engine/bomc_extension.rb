@@ -80,7 +80,7 @@ module BOMEngine
       profile = requested.to_sym
       base = output_base_path(values[:output_path])
       raise ArgumentError, 'Pilih lokasi keluaran terlebih dahulu.' if base.empty?
-      raise ArgumentError, 'Gunakan lokasi lengkap dengan nama dasar file, bukan folder.' unless Pathname.new(base).absolute? && !base.match?(/[\\\/]\z/)
+      raise ArgumentError, 'Gunakan lokasi lengkap dengan nama dasar file, bukan folder.' unless absolute_output_base?(base) && !base.match?(/[\\\/]\z/)
       batch_mode = values[:batch_mode] || (values.key?(:batch_size) ? 'manual' : 'auto')
       processing = BOMCProcessing.from_ui(batch_mode: batch_mode, batch_size: values[:batch_size])
       {
@@ -89,6 +89,14 @@ module BOMEngine
         processing: processing
       }
     end
+
+    def absolute_output_base?(path)
+      value = path.to_s
+      Pathname.new(value).absolute? ||
+        value.match?(/\A[A-Za-z]:[\\\\\/]/) ||
+        value.start_with?('\\\\', '//')
+    end
+    private_class_method :absolute_output_base?
 
     def publish_validated(candidate:, report:, output_path:, source_info: nil)
       unless report && (report[:passed] == true || report['passed'] == true)
@@ -198,7 +206,7 @@ module BOMEngine
 
     def export_all_profiles(model, output_path:, settings:, progress:)
       base = output_base_path(output_path)
-      raise ArgumentError, 'Export All membutuhkan lokasi lengkap dan nama dasar keluaran.' unless Pathname.new(base).absolute? && !base.match?(/[\\\/]\z/)
+      raise ArgumentError, 'Export All membutuhkan lokasi lengkap dan nama dasar keluaran.' unless absolute_output_base?(base) && !base.match?(/[\\\/]\z/)
       raise ArgumentError, 'Simpan model sebelum Export All agar ketiga profil memakai sumber yang sama.' if model.path.to_s.empty? || (model.respond_to?(:modified?) && model.modified?)
 
       parent = File.dirname(base)
