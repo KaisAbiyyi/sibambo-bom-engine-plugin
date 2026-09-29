@@ -373,7 +373,9 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
         assert_equal 12_000, File.size(result[:path])
         assert_equal 0, result.dig(:evidence, :quality, :max_channel_error)
         assert_equal 0.0, result.dig(:evidence, :quality, :mean_squared_error)
-        assert_equal ['lossless'], result[:evidence][:attempts].map { |a| a[:mode]&.to_s }.compact
+        lossless_attempts = result[:evidence][:attempts].select { |attempt| attempt[:mode].to_s == 'lossless' }
+        assert_equal 2, lossless_attempts.length, 'Exact tries both normal and high-effort lossless WebP candidates'
+        assert_equal ['m4-q75', 'm6-q100-mt'], lossless_attempts.map { |attempt| attempt[:variant] }
         assert Dir.glob(File.join(dir, '*.jpg')).empty?, 'Exact must never re-encode JPEG'
         assert Dir.glob(File.join(dir, '*.lossy-*.webp')).empty?, 'Exact must never try lossy WebP'
         assert_nothing_raised { JSON.generate(result[:evidence]) }
