@@ -33,9 +33,9 @@ pixel keys, malformed correction streams, mismatched hashes, malformed JPEG
 structure, trailing bytes and unknown headers fail closed. No nearest colors.
 
 Limits: each side at most 16,384; at most 32,000,000 pixels; JPEG at most
-32 MiB; at most 262,144 entries and no more entries than pixels. There is no
-nested dictionary decompression. JPEG dimensions are inspected before native
-image decode, including marker validation after entropy scans. Hashes detect
+32 MiB; at most 262,144 entries and no more entries than pixels. Correction decompression is bounded by the declared exact output size and the
+32M-pixel limit. JPEG dimensions are inspected before native image decode,
+including marker validation after entropy scans. Hashes detect
 corruption and decoder disagreement; they are not signatures or proof of origin.
 
 Container texture table version 2 introduces media ID 6 for this representation.

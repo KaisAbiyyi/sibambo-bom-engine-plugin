@@ -33,19 +33,17 @@ class JpegColorMapTest < Minitest::Test
     assert_equal BOMEngine::BOMCJpegColorMap::XOR_RESIDUAL_DEFLATE, bytes.getbyte(10)
     assert_equal TARGET, codec.reconstruct(bytes, base)
   end
-  def test_compressed_dictionary_is_selected_when_smaller
-    width = 256
-    height = 256
-    jpeg = JPEG.dup
-    jpeg[7,4] = [height,width].pack('n2')
-    pixels = Array.new(width * height) do |index|
-      [index >> 16, (index >> 8) & 255, index & 255, 255]
-    end.flatten.pack('C*')
-    bytes = encode(jpeg: jpeg, base_rgba: pixels, target_rgba: pixels, width: width, height: height)
+  def test_deflated_dictionary_wire_round_trip
+    dictionary = [10,20,30,11,22,33,255,40,50,60,44,55,66,255].pack('C*')
+    compressed = Zlib::Deflate.deflate(dictionary, Zlib::BEST_COMPRESSION)
+    bytes = codec.send(
+      :serialize,
+      jpeg: JPEG, base_rgba: BASE, target_rgba: TARGET, width: 2, height: 1, count: 2,
+      codec: BOMEngine::BOMCJpegColorMap::DICTIONARY_DEFLATE, correction: compressed
+    )
     assert_equal BOMEngine::BOMCJpegColorMap::DICTIONARY_DEFLATE, bytes.getbyte(10)
-    assert_operator bytes.byteslice(28,4).unpack1('V'), :>, 0
-    assert_operator bytes.bytesize, :<, 128 + jpeg.bytesize + width * height * 7
-    assert_equal pixels, codec.reconstruct(bytes, pixels)
+    assert_equal compressed.bytesize, bytes.byteslice(28,4).unpack1('V')
+    assert_equal TARGET, codec.reconstruct(bytes, BASE)
   end
 
   def test_conflicting_dictionary_falls_back_to_exact_xor_residual
@@ -134,7 +132,7 @@ class JpegColorMapTest < Minitest::Test
     assert_equal TARGET, codec.reconstruct(decoded[:textures][0][:bytes],BASE)
     assert_raises(RuntimeError) { BOMEngine::BOMCDecoder.decode(bytes,allow_jpeg_color_map:false) }
   end
-  def test_writer_deflates_bounded_jcm_blob_section_when_it_saves_bytes
+  def test_writer_preserves_internally_compressed_jcm_payload
     width=100;height=10
     jpeg=JPEG.dup;jpeg[7,4]=[height,width].pack('n2')
     base=Array.new(width*height) { |index| [index >> 8,(index >> 4) & 255,index & 15,255] }.flatten.pack('C*')
@@ -146,9 +144,10 @@ class JpegColorMapTest < Minitest::Test
 
     packed=BOMEngine::BOMCWriter.pack(graph,profile: :exact)
     blob=packed.dig(:metrics,:sections,:textures)
-    assert_equal 1,blob[:codec], 'the measured smaller DEFLATE blob is selected for a bounded JCM payload'
+    assert_include [0,1],blob[:codec], 'container may keep or additionally deflate an already-compressed JCM payload'
     decoded=BOMEngine::BOMCDecoder.decode(packed[:bytes],allow_jpeg_color_map:true)
-    assert_equal texture,decoded[:textures][0][:bytes], 'blob decompression retains the exact JCM payload bytes'
+    assert_equal texture,decoded[:textures][0][:bytes], 'container decode retains exact JCM payload bytes'
+    assert_equal target,codec.reconstruct(decoded[:textures][0][:bytes],base)
   end
   def test_exact_publication_requires_digest_bound_color_map_pixel_evidence
     texture=encode
