@@ -25,6 +25,64 @@ class TestBOMCBudgetSolver < Test::Unit::TestCase
     assert_equal 140, result[:total_estimated_bytes]
   end
 
+  def test_exact_profile_selects_smallest_zero_error_candidate
+    larger = BOMEngine::BOMCCandidate::Candidate.new(
+      id: :exact_larger,
+      domain: :positions,
+      owner_id: :mesh_0,
+      stored_bytes_estimate: 140,
+      distortion_score: 0.0,
+      deterministic_rank: 0
+    )
+    smaller = BOMEngine::BOMCCandidate::Candidate.new(
+      id: :exact_smaller,
+      domain: :positions,
+      owner_id: :mesh_0,
+      stored_bytes_estimate: 70,
+      distortion_score: 0.0,
+      deterministic_rank: 5
+    )
+
+    result = BOMEngine::BOMCBudgetSolver.solve(
+      profile: :exact,
+      source_skp_bytes: 60,
+      candidate_groups: { mesh_0: [larger, smaller] }
+    )
+
+    assert_equal :exact_no_budget_required, result[:status]
+    assert_equal :min_bytes_within_exact_fidelity, result[:selection_policy]
+    assert_equal :exact_smaller, result[:selected_candidates][:mesh_0].id
+    assert_equal 70, result[:total_estimated_bytes]
+  end
+
+  def test_exact_profile_never_trades_fidelity_for_size
+    exact = BOMEngine::BOMCCandidate::Candidate.new(
+      id: :exact_lossless,
+      domain: :positions,
+      owner_id: :mesh_0,
+      stored_bytes_estimate: 140,
+      distortion_score: 0.0,
+      quality_evidence: { max_position_error_m: 0.0 }
+    )
+    tiny_lossy = BOMEngine::BOMCCandidate::Candidate.new(
+      id: :tiny_lossy,
+      domain: :positions,
+      owner_id: :mesh_0,
+      stored_bytes_estimate: 1,
+      distortion_score: 1.0e-15,
+      quality_evidence: { max_position_error_m: 1.0e-15 }
+    )
+
+    result = BOMEngine::BOMCBudgetSolver.solve(
+      profile: :exact,
+      source_skp_bytes: 100,
+      candidate_groups: { mesh_0: [tiny_lossy, exact] }
+    )
+
+    assert_equal :exact_lossless, result[:selected_candidates][:mesh_0].id
+    assert_equal 140, result[:total_estimated_bytes]
+  end
+
   def test_research_profile_requires_source_size
     c1 = BOMEngine::BOMCCandidate::Candidate.new(
       id: :c1,

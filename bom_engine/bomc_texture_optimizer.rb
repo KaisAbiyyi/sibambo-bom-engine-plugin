@@ -260,7 +260,7 @@ module BOMEngine
         evidence = measure_phase(timings, :webp_search) do
           adaptive_webp(png_path, reference, evidence, loader, profile,
             semantic_class, native_jpeg, pixel_lossless: true,
-            expanded_lossless_search: allow_jpeg_color_map == true, candidate_cache: candidate_cache, &checkpoint)
+            expanded_lossless_search: profile.to_s.downcase.to_sym == :exact, candidate_cache: candidate_cache, &checkpoint)
         end
         if allow_jpeg_color_map == true && profile.to_s == 'exact' && native_jpeg
           evidence = measure_phase(timings, :color_map_evaluation) do

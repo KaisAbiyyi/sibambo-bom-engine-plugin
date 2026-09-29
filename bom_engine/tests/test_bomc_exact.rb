@@ -19,25 +19,39 @@ class TestBOMCExactProfile < Test::Unit::TestCase
     packed = BOMEngine::BOMCWriter.pack(@graph, profile: :exact)
     metrics = packed[:metrics]
 
-    # Positions: FLOAT64_ABSOLUTE (1), max error 0.0
     metrics[:positions].each do |pos_metric|
-      assert_equal BOMEngine::BOMC::PositionCodec::FLOAT64_ABSOLUTE, pos_metric[:codec], 'Position codec must be FLOAT64_ABSOLUTE'
-      assert_in_delta 0.0, pos_metric.dig(:errors, :max), 1e-12
+      assert_equal 0.0, pos_metric.dig(:errors, :max), 'Exact positions must have zero measured error'
     end
-
-    # Normals: FLOAT64 (3), max error 0.0
-    assert_equal BOMEngine::BOMC::NormalCodec::FLOAT64, metrics.dig(:normals, :codec), 'Normal codec must be FLOAT64'
-    assert_in_delta 0.0, metrics.dig(:normals, :errors, :max), 1e-12
-
-    # UVs: FLOAT64 (5), max error 0.0
+    assert_equal 0.0, metrics.dig(:normals, :errors, :max), 'Exact normals must have zero measured error'
     metrics[:uv].each do |uv_metric|
-      assert_equal BOMEngine::BOMC::UVCodec::FLOAT64, uv_metric[:codec], 'UV codec must be FLOAT64'
-      assert_in_delta 0.0, uv_metric.dig(:errors, :max), 1e-12
+      assert_equal 0.0, uv_metric.dig(:errors, :max), 'Exact UVs must have zero measured error'
     end
+    assert_equal 0.0, metrics.dig(:transforms, :errors, :max), 'Exact transforms must have zero measured error'
+    assert_equal :min_bytes_within_exact_fidelity, packed.dig(:solver_result, :selection_policy)
+  end
 
-    # Transforms: FLOAT64_3X4 (1), max error 0.0
-    assert_equal BOMEngine::BOMC::TransformCodec::FLOAT64_3X4, metrics.dig(:transforms, :codec), 'Transform codec must be FLOAT64_3X4'
-    assert_in_delta 0.0, metrics.dig(:transforms, :errors, :max), 1e-12
+  def test_exact_position_frontier_prefers_smallest_zero_error_representation
+    values = [
+      0.0, 0.0, 0.0,
+      1.0, 0.0, 0.0,
+      1.0, 1.0, 0.0,
+      0.0, 1.0, 0.0
+    ]
+    candidates = BOMEngine::BOMC::PositionCodec.candidate_objects(
+      values,
+      loops: [[0, 1, 2, 3]],
+      max_error_m: 0.0,
+      owner_id: :exact_fixture
+    )
+    zero_error = candidates.select { |candidate| candidate.distortion_score.to_f.zero? }
+    assert_operator zero_error.length, :>, 1, 'Exact position frontier should expose multiple zero-error candidates when representable'
+
+    result = BOMEngine::BOMCBudgetSolver.solve(
+      profile: :exact,
+      candidate_groups: { exact_fixture: candidates }
+    )
+    expected = zero_error.min_by { |candidate| [candidate.stored_bytes_estimate, candidate.deterministic_rank] }
+    assert_equal expected.id, result[:selected_candidates][:exact_fixture].id
   end
 
   def test_exact_profile_round_trip_fidelity

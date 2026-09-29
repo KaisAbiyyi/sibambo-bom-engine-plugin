@@ -101,7 +101,7 @@ module BOMEngine
         quality = BOMCTextureOptimizer.compare(reference, close_candidate)
         assert(quality[:compatible] && quality[:psnr_db] > 40.0, 'pixel comparison ignores row padding and accepts a high-quality decoded candidate')
 
-        verify_opt_in_lossless_effort_search(reference)
+        verify_exact_lossless_effort_search(reference)
 
         transparent = image_rep([
           [10, 20, 30], [40, 50, 60],
@@ -217,7 +217,7 @@ module BOMEngine
         false
       end
 
-      def verify_opt_in_lossless_effort_search(reference)
+      def verify_exact_lossless_effort_search(reference)
         encoder = BOMCTextureEncoder
         original_capabilities = encoder.method(:capabilities)
         original_encode = encoder.method(:encode_webp)
@@ -244,14 +244,14 @@ module BOMEngine
           texture = FakeTexture.new('source.png', reference)
           result = BOMCTextureOptimizer.stage(
             texture: texture, directory: directory, basename: 'source', source_path: 'source.png',
-            profile: :exact, policy: :pixel_lossless, allow_jpeg_color_map: true,
+            profile: :exact, policy: :pixel_lossless, allow_jpeg_color_map: false,
             image_rep_loader: ->(_path) { reference }
           )
-          assert(calls.length == 2, 'the size candidate opt-in tries both bounded lossless settings')
+          assert(calls.length == 2, 'normal Exact tries both bounded lossless settings')
           assert(calls[0][:options][:lossless_method] == 4 && calls[0][:options][:lossless_quality] == 75 &&
-            calls[0][:options][:multithreaded] == false, 'the default exact lossless trial records explicit m4/q75 settings')
+            calls[0][:options][:multithreaded] == false, 'the first Exact lossless trial records explicit m4/q75 settings')
           assert(calls[1][:options][:lossless_method] == 6 && calls[1][:options][:lossless_quality] == 100 &&
-            calls[1][:options][:multithreaded] == true, 'the opt-in higher-effort lossless trial uses m6/q100/multithreaded')
+            calls[1][:options][:multithreaded] == true, 'Exact also tries the higher-effort m6/q100/multithreaded lossless candidate')
           assert(result[:path].include?('lossless-m6-q100-mt.webp'), 'the smaller measured high-effort candidate wins by bytes')
         ensure
           FileUtils.remove_entry(directory) if directory && Dir.exist?(directory)

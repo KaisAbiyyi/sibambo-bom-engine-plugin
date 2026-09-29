@@ -79,12 +79,25 @@ module BOMEngine
       end
 
       if contract.profile == :exact
-        # Exact profile: select highest-fidelity candidate for each group unconditionally
+        # Exact is fidelity-hard and size-soft: publication is never blocked by
+        # source size, but every selected candidate must reconstruct with zero
+        # measured error. Among those lossless candidates, choose the smallest
+        # measured stored representation deterministically.
         selected = {}
         groups.each do |owner_id, candidates|
-          valid = candidates.select(&:pass_hard_constraints?)
-          raise FidelityConstraintViolationError.new("No valid candidate for #{owner_id}") if valid.empty?
-          selected[owner_id] = valid.min_by { |c| [c.distortion_score, c.deterministic_rank] }
+          valid = candidates.select do |candidate|
+            candidate.pass_hard_constraints? &&
+              candidate.distortion_score.to_f.zero? &&
+              satisfies_profile_fidelity?(candidate, contract)
+          end
+          if valid.empty?
+            raise FidelityConstraintViolationError.new(
+              "No zero-error candidate for #{owner_id} under Exact profile.",
+              owner_id: owner_id,
+              profile: contract.name
+            )
+          end
+          selected[owner_id] = valid.min_by { |candidate| [candidate.stored_bytes_estimate, candidate.deterministic_rank] }
         end
         return {
           status: :exact_no_budget_required,
@@ -93,9 +106,10 @@ module BOMEngine
           preferred_target_bytes: nil,
           preferred_target_achieved: true,
           diagnostic_reason: nil,
+          selection_policy: :min_bytes_within_exact_fidelity,
           selected_candidates: selected,
           total_estimated_bytes: Integer(fixed_bytes_estimate) + selected.values.sum(&:stored_bytes_estimate),
-          audit_trail: [{ step: :exact_highest_fidelity, selected: selected.transform_values(&:id) }]
+          audit_trail: [{ step: :exact_lossless_min_bytes, selected: selected.transform_values(&:id) }]
         }
       end
 
@@ -327,21 +341,22 @@ module BOMEngine
 
     def satisfies_profile_fidelity?(candidate, contract)
       ev = candidate.quality_evidence
-      if contract.position_error_m.is_a?(Numeric) && ev[:max_position_error_m]
-        return false if ev[:max_position_error_m].to_f > contract.position_error_m + 1e-12
-      end
-      if contract.normal_error_deg.is_a?(Numeric) && ev[:max_normal_error_deg]
-        return false if ev[:max_normal_error_deg].to_f > contract.normal_error_deg + 1e-12
-      end
-      if contract.uv_error.is_a?(Numeric) && ev[:max_uv_error]
-        return false if ev[:max_uv_error].to_f > contract.uv_error + 1e-12
-      end
-      if contract.transform_error.is_a?(Numeric) && ev[:max_transform_error]
-        return false if ev[:max_transform_error].to_f > contract.transform_error + 1e-12
-      end
+      return false unless within_profile_limit?(ev[:max_position_error_m], contract.position_error_m)
+      return false unless within_profile_limit?(ev[:max_normal_error_deg], contract.normal_error_deg)
+      return false unless within_profile_limit?(ev[:max_uv_error], contract.uv_error)
+      return false unless within_profile_limit?(ev[:max_transform_error], contract.transform_error)
       true
     end
     private_class_method :satisfies_profile_fidelity?
+
+    def within_profile_limit?(measured, limit)
+      return true if measured.nil? || !limit.is_a?(Numeric)
+
+      measured_value = measured.to_f
+      limit_value = limit.to_f
+      limit_value.zero? ? measured_value.zero? : measured_value <= limit_value + 1e-12
+    end
+    private_class_method :within_profile_limit?
 
     def build_pareto_frontier(candidates)
       # Sort candidates by stored_bytes_estimate descending, then distortion_score ascending

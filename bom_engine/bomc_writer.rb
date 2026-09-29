@@ -521,11 +521,13 @@ module BOMEngine
       end
 
       def build_geometry
-        is_exact = @profile_contract.profile == :exact
-        forced_pos_codec = is_exact ? BOMC::PositionCodec::FLOAT64_ABSOLUTE : nil
-        forced_uv_codec = is_exact ? BOMC::UVCodec::FLOAT64 : nil
-        forced_normal_codec = is_exact ? BOMC::NormalCodec::FLOAT64 : nil
-        forced_transform_codec = is_exact ? BOMC::TransformCodec::FLOAT64_3X4 : nil
+        # Exact fidelity is enforced by the candidate solver/validator rather
+        # than by pinning a single wire codec. This lets an alternative codec
+        # win only when it reconstructs with exactly zero measured error.
+        forced_pos_codec = nil
+        forced_uv_codec = nil
+        forced_normal_codec = nil
+        forced_transform_codec = nil
 
         faces = []
         normals = []

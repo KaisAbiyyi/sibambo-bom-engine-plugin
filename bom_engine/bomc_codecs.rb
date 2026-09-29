@@ -70,7 +70,7 @@ module BOMEngine
         CodecMath.finite_values!(source, 'Position buffer')
 
         count = source.length / 3
-        if forced_codec == FLOAT64_ABSOLUTE || max_error_m.to_f == 0.0
+        if forced_codec == FLOAT64_ABSOLUTE
           float64_bytes = source.pack('E*')
           return [
             {
@@ -338,7 +338,7 @@ module BOMEngine
         CodecMath.finite_values!(source, 'Normal buffer')
 
         count = source.length / 3
-        if forced_codec == FLOAT64 || max_error_deg.to_f == 0.0
+        if forced_codec == FLOAT64
           float64_bytes = source.pack('E*')
           return [
             {
@@ -379,7 +379,7 @@ module BOMEngine
         oct_summary = CodecMath.error_summary(oct_errors)
         use_oct = oct_summary[:max] <= max_error_deg.to_f + 1.0e-12
 
-        [
+        candidates = [
           {
             name: 'float32x3',
             codec: FLOAT32,
@@ -405,6 +405,22 @@ module BOMEngine
             count: count
           }
         ]
+        if max_error_deg.to_f == 0.0
+          float64_bytes = source.pack('E*')
+          candidates << {
+            name: 'float64x3',
+            codec: FLOAT64,
+            bytes: float64_bytes,
+            raw_bytes: float64_bytes.bytesize,
+            deflate_bytes: CodecMath.compressed_size(float64_bytes),
+            errors: { max: 0.0, p95: 0.0, rms: 0.0 },
+            passed: true,
+            semantic_class: semantic_class,
+            complexity: 0,
+            count: count
+          }
+        end
+        candidates
       end
 
       def candidate_objects(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, semantic_class: nil, forced_codec: nil, owner_id: nil)
@@ -538,7 +554,7 @@ module BOMEngine
         CodecMath.finite_values!(source, 'UV buffer')
 
         count = source.length / 2
-        if forced_codec == FLOAT64 || max_error.to_f == 0.0
+        if forced_codec == FLOAT64
           float64_bytes = source.pack('E*')
           return [
             {
@@ -764,7 +780,7 @@ module BOMEngine
         CodecMath.finite_values!(transforms.flatten, 'Transform buffer')
 
         count = transforms.length
-        if forced_codec == FLOAT64_3X4 || max_error.to_f == 0.0
+        if forced_codec == FLOAT64_3X4
           full_matrix = transforms.any? { |matrix| !affine_matrix?(matrix) }
           codec = full_matrix ? FLOAT64_4X4 : FLOAT64_3X4
           name = full_matrix ? 'float64_4x4' : 'float64_3x4'
