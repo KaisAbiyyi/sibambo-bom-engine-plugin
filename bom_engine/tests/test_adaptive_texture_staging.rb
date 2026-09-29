@@ -419,6 +419,33 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
       image_rep_loader: ->(path) { path.end_with?('.jpg') && changed ? frame(1) : frame })
   end
 
+  def test_exact_keeps_smaller_native_png_only_when_displayed_pixels_match
+    with_codec(fail_encode: true) do
+      Dir.mktmpdir do |dir|
+        reference = frame(0, alpha: 64)
+        texture = Texture.new(reference)
+        texture.define_singleton_method(:write) do |path, colorized|
+          if path.include?('.native.png')
+            raise 'native extraction must be uncolorized' if colorized
+            File.binwrite(path, 'n' * 600)
+          else
+            raise 'staged fallback must preserve displayed pixels' unless colorized
+            File.binwrite(path, 'p' * 20_000)
+          end
+          true
+        end
+        result = BOMEngine::BOMCTextureOptimizer.stage(texture: texture, directory: dir, basename: 'material',
+          source_path: 'embedded.png', profile: :exact,
+          image_rep_loader: ->(_path) { reference })
+        assert_equal :native_lossless_candidate, result.dig(:evidence,:selected)
+        assert_equal '.png', File.extname(result[:path])
+        assert_equal 600, File.size(result[:path])
+        assert_equal 0, result.dig(:evidence,:quality,:max_channel_error)
+        assert_equal 0.0, result.dig(:evidence,:quality,:mean_squared_error)
+      end
+    end
+  end
+
   def test_exact_keeps_smaller_native_jpeg_only_when_displayed_pixels_match
     with_codec do
       Dir.mktmpdir do |dir|

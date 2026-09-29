@@ -11,6 +11,7 @@ require_relative 'bomc_texture_policy'
 require_relative 'bomc_texture_encoder'
 require_relative 'bomc_candidate'
 require_relative 'bomc_jpeg_color_map'
+require_relative 'bomc_png_optimizer'
 
 module BOMEngine
   module BOMCTextureOptimizer
@@ -19,7 +20,7 @@ module BOMEngine
     CHECKPOINT_PIXELS = 32_768
     WEBP_QUALITIES = [80, 90, 95, 100].freeze
     MAX_ADAPTIVE_PIXELS = 32_000_000
-    POLICY_REVISION = 'adaptive-texture-5'.freeze
+    POLICY_REVISION = 'adaptive-texture-6'.freeze
     LOSSLESS_SEARCH_REVISION = 'exact-webp-m4q75-m6q100mt-1'.freeze
     JCM_POLICY_REVISION = 'exact-jcm-2'.freeze
 
@@ -257,6 +258,15 @@ module BOMEngine
           evidence = measure_phase(timings, :native_jpeg_evaluation) do
             select_native_jpeg(texture, png_path, reference, evidence, loader, &checkpoint)
           end
+        elsif profile.to_s.downcase.to_sym == :exact
+          evidence = measure_phase(timings, :native_lossless_evaluation) do
+            select_native_lossless(texture, source_path, png_path, reference, evidence, loader, &checkpoint)
+          end
+        end
+        if profile.to_s.downcase.to_sym == :exact
+          evidence = measure_phase(timings, :png_repack) do
+            select_optimized_png(png_path, reference, evidence, loader, &checkpoint)
+          end
         end
         evidence = measure_phase(timings, :webp_search) do
           adaptive_webp(png_path, reference, evidence, loader, profile,
@@ -355,6 +365,72 @@ module BOMEngine
       baseline.merge(reason: :native_jpeg_error, error: "#{error.class}: #{error.message}")
     end
     private_class_method :select_native_jpeg
+
+    def select_native_lossless(texture, source_path, png_path, reference, baseline, loader, &checkpoint)
+      extension = File.extname(source_path.to_s).downcase
+      return baseline unless ['.png', '.webp'].include?(extension)
+
+      path = png_path.sub(/\.png\z/i, ".native#{extension}")
+      attempts = Array(baseline[:attempts]).dup
+      unless texture.write(path, false) && File.file?(path) && File.size(path) > 0
+        return baseline.merge(attempts: attempts + [{codec: :native_lossless, extension: extension, reason: :unavailable}])
+      end
+      bytes = File.size(path)
+      if bytes >= File.size(baseline[:path])
+        return baseline.merge(attempts: attempts + [{codec: :native_lossless, extension: extension, reason: :not_smaller, bytes: bytes}])
+      end
+
+      measured = compare(reference, loader.call(path), &checkpoint)
+      unless measured[:compatible] == true && measured[:alpha_preserved] == true &&
+          measured[:max_channel_error] == 0 && measured[:mean_squared_error] == 0.0
+        return baseline.merge(attempts: attempts + [{codec: :native_lossless, extension: extension,
+          reason: :pixel_mismatch, bytes: bytes, quality: measured}])
+      end
+
+      media = extension == '.webp' ? :webp : :png
+      baseline.merge(path: path, selected: :native_lossless_candidate, candidate_media_type: media,
+        candidate_bytes: bytes, native_lossless: true, native_jpeg: false,
+        reason: :pixel_identical_native_lossless, quality: measured, alpha_preserved: true,
+        savings_bytes: File.size(png_path)-bytes, savings_ratio: 1.0-bytes.to_f/File.size(png_path),
+        attempts: attempts + [{codec: :native_lossless, extension: extension, reason: :accepted, bytes: bytes}])
+    rescue StandardError => error
+      raise if cancellation_error?(error)
+      baseline.merge(attempts: Array(baseline[:attempts]) + [{codec: :native_lossless, extension: extension,
+        reason: :candidate_error, error: "#{error.class}: #{error.message}"}])
+    end
+    private_class_method :select_native_lossless
+
+    def select_optimized_png(png_path, reference, baseline, loader, &checkpoint)
+      attempts = Array(baseline[:attempts]).dup
+      path = png_path.sub(/\.png\z/i,'.optimized.png')
+      optimized = BOMCPngOptimizer.optimize(source_path: png_path, output_path: path, checkpoint: checkpoint)
+      return baseline.merge(attempts: attempts + [{codec: :png_repack, reason: :not_smaller_or_unsupported}]) unless optimized
+
+      bytes = File.size(path)
+      if bytes >= File.size(baseline[:path])
+        return baseline.merge(attempts: attempts + [{codec: :png_repack, reason: :not_smaller_than_current,
+          bytes: bytes, strategy: optimized[:strategy]}])
+      end
+
+      measured = compare(reference, loader.call(path), &checkpoint)
+      unless measured[:compatible] == true && measured[:alpha_preserved] == true &&
+          measured[:max_channel_error] == 0 && measured[:mean_squared_error] == 0.0
+        return baseline.merge(attempts: attempts + [{codec: :png_repack, reason: :pixel_mismatch,
+          bytes: bytes, strategy: optimized[:strategy], quality: measured}])
+      end
+
+      baseline.merge(path: path, selected: :optimized_png_candidate, candidate_media_type: :png,
+        candidate_bytes: bytes, reason: :verified_png_repack_smaller, quality: measured,
+        alpha_preserved: true, savings_bytes: File.size(png_path)-bytes,
+        savings_ratio: 1.0-bytes.to_f/File.size(png_path),
+        attempts: attempts + [{codec: :png_repack, reason: :accepted, bytes: bytes,
+          strategy: optimized[:strategy], source_bytes: optimized[:source_bytes]}])
+    rescue StandardError => error
+      raise if cancellation_error?(error)
+      baseline.merge(attempts: attempts + [{codec: :png_repack, reason: :candidate_error,
+        error: "#{error.class}: #{error.message}"}])
+    end
+    private_class_method :select_optimized_png
 
     # Exact-only lossless candidate. Standard Exact export enables it on
     # supported Windows hosts; unsupported/conflicting cases retain another
@@ -460,7 +536,8 @@ module BOMEngine
     # Choose the smallest measured candidate satisfying the unchanged contract.
     def adaptive_webp(png_path, reference, baseline, loader, profile, semantic_class, native_jpeg,
       pixel_lossless: false, expanded_lossless_search: false, candidate_cache: nil, &checkpoint)
-      attempts = [baseline.reject { |key, _| key == :path }]
+      attempts = Array(baseline[:attempts]).dup
+      attempts << baseline.reject { |key, _| key == :path || key == :attempts }
       best = if baseline[:path] == png_path
                baseline.merge(quality: { compatible: true, mean_squared_error: 0.0,
                  max_channel_error: 0, psnr_db: nil, alpha_preserved: true },

@@ -159,6 +159,10 @@
       } else if (String(data.profile || '').toLowerCase() === 'exact') {
         row('JCM Exact', '0 tekstur');
       }
+      (data.texture_encodings || []).forEach(function(encoding) {
+        row('Encoding · ' + String(encoding.name || '').toUpperCase(),
+          Number(encoding.count || 0).toLocaleString() + ' tekstur · ' + formatBytes(encoding.bytes || 0));
+      });
       (data.top_sections || []).forEach(function(section, index) {
         row('Section #' + (index + 1) + ' · ' + String(section.name || ''), formatBytes(section.stored_bytes));
       });

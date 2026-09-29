@@ -157,6 +157,10 @@ module BOMEngine
       texture_metrics = metrics[:textures] || {}
       encodings = texture_metrics[:encodings] || {}
       jcm = encodings[:jpeg_color_map] || encodings['jpeg_color_map'] || {}
+      texture_encodings = encodings.map do |name, values|
+        { name: name.to_s, count: (values[:count] || values['count']).to_i,
+          bytes: (values[:bytes] || values['bytes']).to_i }
+      end.sort_by { |row| -row[:bytes] }
       top_sections = (metrics[:sections] || {}).map do |name, values|
         { name: name.to_s, stored_bytes: values[:stored_bytes].to_i, raw_bytes: values[:raw_bytes].to_i }
       end.sort_by { |row| -row[:stored_bytes] }.first(3)
@@ -178,6 +182,7 @@ module BOMEngine
         texture_references: texture_metrics[:references],
         jcm_count: jcm[:count] || jcm['count'],
         jcm_bytes: jcm[:bytes] || jcm['bytes'],
+        texture_encodings: texture_encodings,
         top_sections: top_sections
       }
       data[:capture] = true if @kind == :capture
