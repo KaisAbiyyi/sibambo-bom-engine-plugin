@@ -14,11 +14,25 @@ module BOMEngine
     def self.extract(model, tw, texture_dir, checkpoint: nil, optimize_textures: false, profile: :visual, semantic_class: :class_b, material_classes: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil)
       Dir.mkdir(texture_dir) if texture_dir && !Dir.exist?(texture_dir)
       written = 0
-      materials = model.materials
+      materials = model.materials.to_a
       total = materials.length
-      color_map_budget = allow_jpeg_color_map ? { remaining_pixels: 64_000_000, hashes: {} } : nil
+      color_map_budget = allow_jpeg_color_map ? { remaining_pixels: 128_000_000, hashes: {} } : nil
 
-      materials.each_with_index.map do |mat, index|
+      work = materials.each_with_index.to_a
+      if allow_jpeg_color_map && profile.to_s.downcase.to_sym == :exact
+        # JCM is globally pixel-budgeted. Process the largest JPEG-backed
+        # textures first so material insertion order cannot consume the budget
+        # before the dominant assets are measured.
+        work.sort_by! do |mat, index|
+          texture = mat.texture
+          jpeg = texture && %w[.jpg .jpeg].include?(File.extname(texture.filename.to_s).downcase)
+          pixels = texture ? texture.image_width.to_i * texture.image_height.to_i : 0
+          [jpeg ? 0 : 1, -pixels, index]
+        end
+      end
+
+      results = Array.new(total)
+      work.each do |mat, index|
         checkpoint.call(stage: :snapshot_materials, processed: index, total: total) if checkpoint
         c = mat.color
         entry = {
@@ -96,11 +110,12 @@ module BOMEngine
           end
         end
 
-        entry
-      end.tap do
-        checkpoint.call(stage: :snapshot_materials, processed: total, total: total) if checkpoint
-        Logger.info("Wrote #{written} texture(s) to #{texture_dir}") if texture_dir && defined?(Logger)
+        results[index] = entry
       end
+
+      checkpoint.call(stage: :snapshot_materials, processed: total, total: total) if checkpoint
+      Logger.info("Wrote #{written} texture(s) to #{texture_dir}") if texture_dir && defined?(Logger)
+      results
     end
 
   end

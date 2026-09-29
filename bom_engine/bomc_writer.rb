@@ -976,8 +976,9 @@ module BOMEngine
         mapped_pixels = @textures.sum do |texture|
           texture[:media_type] == :jpeg_color_map ? texture[:image_width_px] * texture[:image_height_px] : 0
         end
-        # Match the experimental consumer limit. @textures is already deduplicated.
-        raise 'BOMC color-map aggregate pixel budget exceeded' if mapped_pixels > 64_000_000
+        # Bound matches the 128M-pixel envelope already exercised by the
+        # RUMAH-Y host capture. @textures is already payload-deduplicated.
+        raise 'BOMC color-map aggregate pixel budget exceeded' if mapped_pixels > 128_000_000
         version = @textures.any? { |texture| texture[:media_type] == :jpeg_color_map } ? 2 : 1
         bytes = [version, 0, 0, 0, @textures.length].pack('CCCCV')
         bytes << @textures.map { |texture| BOMC::TEXTURE_MEDIA.fetch(texture[:media_type], 0) }.pack('C*')

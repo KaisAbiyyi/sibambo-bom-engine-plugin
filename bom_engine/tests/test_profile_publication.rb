@@ -201,9 +201,41 @@ class TestProfilePublication < Test::Unit::TestCase
     end
     assert_equal [true,true],seen.map { |item| item[:allow_jpeg_color_map] }
     assert_same seen[0][:color_map_budget],seen[1][:color_map_budget]
-    assert_equal 64_000_000,seen[0][:color_map_budget][:remaining_pixels]
+    assert_equal 128_000_000,seen[0][:color_map_budget][:remaining_pixels]
   ensure
     BOMEngine::BOMCTextureOptimizer.define_singleton_method(:stage,original) if original
+  end
+
+  def test_exact_jcm_stages_largest_jpeg_textures_first_without_reordering_materials
+    calls = []
+    optimizer = BOMEngine::BOMCTextureOptimizer
+    original = optimizer.method(:stage)
+    optimizer.define_singleton_method(:stage) do |**kwargs, &block|
+      calls << [kwargs[:basename], kwargs[:texture].image_width * kwargs[:texture].image_height]
+      path = File.join(kwargs[:directory], "#{kwargs[:basename]}.png")
+      File.binwrite(path, 'x')
+      { path: path, filename: File.basename(path), evidence: { selected: :staged_png } }
+    end
+
+    image = ->(w, h) { FakeImageRep.new(w, h, 24, 0, "\0".b * (w * h * 3)) }
+    small = FakeMaterial.new(1, 'Small', 'Small', FakeColor.new(255,255,255,255), 1.0, 1,
+      FakeTexture.new('small.jpg', image.call(100, 100)))
+    png = FakeMaterial.new(2, 'Png', 'Png', FakeColor.new(255,255,255,255), 1.0, 1,
+      FakeTexture.new('large.png', image.call(1000, 1000)))
+    large = FakeMaterial.new(3, 'Large', 'Large', FakeColor.new(255,255,255,255), 1.0, 1,
+      FakeTexture.new('large.jpg', image.call(2000, 2000)))
+    model = FakeModel.new([small, png, large], [], nil)
+
+    Dir.mktmpdir('jcm-priority') do |dir|
+      result = BOMEngine::MaterialExtractor.extract(model, nil, dir,
+        optimize_textures: true, profile: :exact, allow_jpeg_color_map: true)
+      assert_equal ['Small', 'Png', 'Large'], result.map { |row| row[:name] },
+        'material output order must stay source-stable'
+    end
+    assert_equal ['Large', 'Small', 'Png'], calls.map(&:first),
+      'Exact JCM must measure the largest JPEG-backed textures before lower-impact candidates'
+  ensure
+    optimizer.define_singleton_method(:stage, original) if original
   end
 
   # Test 2: Shared texture Class A/C resolves to strictest Class A

@@ -60,9 +60,11 @@ Four large captured textures now pass this host-to-browser equality gate.
 Standard Exact resolves `allow_jpeg_color_map: nil` to enabled; explicit
 `false` remains available for legacy-consumer compatibility tests. JCM no
 longer imposes a source-size publication gate: fidelity remains mandatory while
-source-vs-output size stays benchmark evidence. Material staging shares a 64M
-mapped-pixel budget, charging unique payloads once. Writer and consumer enforce
-the same aggregate bound independently.
+source-vs-output size stays benchmark evidence. Material staging uses a bounded
+128M mapped-pixel envelope, matching the previous RUMAH-Y host-capture limit and
+charging unique payloads once. Exact stages JPEG-backed textures largest-first
+so material insertion order cannot consume the global budget ahead of dominant
+assets. The writer independently enforces the same 128M aggregate bound.
 Already-verified native JPEG does not spend mapped-pixel budget for marginal
 size savings. Consumer payload-byte metrics exclude reconstructed PNG assets;
 asset bytes are reported separately.
