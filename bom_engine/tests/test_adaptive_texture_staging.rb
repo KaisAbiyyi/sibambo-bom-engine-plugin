@@ -310,8 +310,12 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
         end
         calls_before = encode_calls.length
         decodes_before = decode_calls
-        cached_file = Dir.glob(File.join(cache_dir, '*.webp')).first
-        refute_nil cached_file
+        selected_cache_key, selected_cache_entry = cache.fetch(:entries).find do |_key, entry|
+          entry[:sha256] == expected_sha
+        end
+        refute_nil selected_cache_entry
+        cached_file = File.join(cache_dir, "#{selected_cache_key}.webp")
+        assert File.file?(cached_file), 'the selected candidate must exist in the cache before corruption'
         File.binwrite(cached_file, 'corrupt')
         Dir.mktmpdir('after', root) do |dir|
           assert_equal expected_sha, Digest::SHA256.file(stage(dir, candidate_cache: cache)[:path]).hexdigest
