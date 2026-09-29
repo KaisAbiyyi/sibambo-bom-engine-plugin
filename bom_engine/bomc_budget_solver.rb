@@ -343,6 +343,9 @@ module BOMEngine
       ev = candidate.quality_evidence
       return false unless within_profile_limit?(ev[:max_position_error_m], contract.position_error_m)
       return false unless within_profile_limit?(ev[:max_normal_error_deg], contract.normal_error_deg)
+      if contract.profile == :exact && ev.key?(:max_normal_component_error)
+        return false unless ev[:max_normal_component_error].to_f.zero?
+      end
       return false unless within_profile_limit?(ev[:max_uv_error], contract.uv_error)
       return false unless within_profile_limit?(ev[:max_transform_error], contract.transform_error)
       true

@@ -54,6 +54,28 @@ class TestBOMCExactProfile < Test::Unit::TestCase
     assert_equal expected.id, result[:selected_candidates][:exact_fixture].id
   end
 
+  def test_exact_normals_require_component_identity_not_only_direction
+    values = [1.0 / 3.0, 0.0, 0.0]
+    candidates = BOMEngine::BOMC::NormalCodec.candidate_objects(
+      values,
+      max_error_deg: 0.0,
+      owner_id: :exact_normals_fixture
+    )
+    float32 = candidates.find { |candidate| candidate.codec == BOMEngine::BOMC::NormalCodec::FLOAT32 }
+    assert_equal 0.0, float32.distortion_score,
+      'direction can remain identical even when Float32 changes the stored normal components'
+    assert_operator float32.quality_evidence[:max_normal_component_error], :>, 0.0
+    assert_equal false, float32.pass_hard_constraints?
+
+    result = BOMEngine::BOMCBudgetSolver.solve(
+      profile: :exact,
+      candidate_groups: { exact_normals_fixture: candidates }
+    )
+    selected = result[:selected_candidates][:exact_normals_fixture]
+    assert_equal BOMEngine::BOMC::NormalCodec::FLOAT64, selected.codec
+    assert_equal 0.0, selected.quality_evidence[:max_normal_component_error]
+  end
+
   def test_exact_profile_round_trip_fidelity
     packed = BOMEngine::BOMCWriter.pack(@graph, profile: :exact)
     decoded = BOMEngine::BOMCDecoder.decode(packed[:bytes])

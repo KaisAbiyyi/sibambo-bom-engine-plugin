@@ -348,6 +348,7 @@ module BOMEngine
               raw_bytes: float64_bytes.bytesize,
               deflate_bytes: CodecMath.compressed_size(float64_bytes),
               errors: { max: 0.0, p95: 0.0, rms: 0.0 },
+              component_errors: { max: 0.0, p95: 0.0, rms: 0.0 },
               passed: true,
               semantic_class: semantic_class,
               complexity: 0,
@@ -360,6 +361,7 @@ module BOMEngine
         float_decoded = float_bytes.unpack('e*')
         float_errors = angular_errors(source, float_decoded)
         float_summary = CodecMath.error_summary(float_errors)
+        float_component_summary = component_errors(source, float_decoded)
 
         oct_values = []
         source.each_slice(3) do |normal|
@@ -377,7 +379,9 @@ module BOMEngine
         oct_decoded = decode(oct_block)
         oct_errors = angular_errors(source, oct_decoded)
         oct_summary = CodecMath.error_summary(oct_errors)
-        use_oct = oct_summary[:max] <= max_error_deg.to_f + 1.0e-12
+        oct_component_summary = component_errors(source, oct_decoded)
+        exact_components = max_error_deg.to_f.zero?
+        use_oct = exact_components ? oct_component_summary[:max].zero? : oct_summary[:max] <= max_error_deg.to_f + 1.0e-12
 
         candidates = [
           {
@@ -387,7 +391,8 @@ module BOMEngine
             raw_bytes: float_bytes.bytesize,
             deflate_bytes: CodecMath.compressed_size(float_bytes),
             errors: float_summary,
-            passed: float_summary[:max] <= max_error_deg.to_f + 1.0e-12,
+            component_errors: float_component_summary,
+            passed: exact_components ? float_component_summary[:max].zero? : float_summary[:max] <= max_error_deg.to_f + 1.0e-12,
             semantic_class: semantic_class,
             complexity: 1,
             count: count
@@ -399,6 +404,7 @@ module BOMEngine
             raw_bytes: oct_bytes.bytesize,
             deflate_bytes: CodecMath.compressed_size(oct_bytes),
             errors: oct_summary,
+            component_errors: oct_component_summary,
             passed: use_oct,
             semantic_class: semantic_class,
             complexity: 2,
@@ -414,6 +420,7 @@ module BOMEngine
             raw_bytes: float64_bytes.bytesize,
             deflate_bytes: CodecMath.compressed_size(float64_bytes),
             errors: { max: 0.0, p95: 0.0, rms: 0.0 },
+            component_errors: { max: 0.0, p95: 0.0, rms: 0.0 },
             passed: true,
             semantic_class: semantic_class,
             complexity: 0,
@@ -441,6 +448,7 @@ module BOMEngine
             quality_evidence: {
               semantic_class: semantic_class,
               max_normal_error_deg: c[:errors][:max].to_f,
+              max_normal_component_error: c.fetch(:component_errors, {})[:max].to_f,
               semantic_distortion: 0.0,
               protected_topology_distortion: 0.0
             },
@@ -523,6 +531,13 @@ module BOMEngine
         value < 0.0 ? -1.0 : 1.0
       end
       private_class_method :sign
+
+      def component_errors(source, decoded)
+        CodecMath.error_summary(
+          source.each_with_index.map { |value, index| (value.to_f - decoded[index].to_f).abs }
+        )
+      end
+      private_class_method :component_errors
 
       def angular_errors(source, decoded)
         source.each_slice(3).with_index.map do |normal, index|
