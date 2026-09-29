@@ -21,6 +21,7 @@ module BOMEngine
     MAX_ADAPTIVE_PIXELS = 32_000_000
     POLICY_REVISION = 'adaptive-texture-5'.freeze
     LOSSLESS_SEARCH_REVISION = 'exact-webp-m4q75-m6q100mt-1'.freeze
+    JCM_POLICY_REVISION = 'exact-jcm-2'.freeze
 
     module_function
 
@@ -367,9 +368,13 @@ module BOMEngine
       return baseline if reference.width * reference.height > MAX_ADAPTIVE_PIXELS
       return baseline unless opaque?(reference, &checkpoint)
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      pixels = reference.width * reference.height
+      time_budget_seconds = [[30.0 + pixels.to_f / 500_000.0, 30.0].max, 90.0].min
       bounded = lambda do |processed, total|
         checkpoint.call(processed,total) if checkpoint
-        raise 'Exact color-map time budget exceeded' if Process.clock_gettime(Process::CLOCK_MONOTONIC)-started > 30.0
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC)-started > time_budget_seconds
+          raise 'Exact color-map time budget exceeded'
+        end
       end
       native_path = png_path.sub(/\.png\z/i,'.native.jpg')
       unless File.file?(native_path) && File.size(native_path) > 0
@@ -388,7 +393,6 @@ module BOMEngine
         return baseline.merge(attempts:attempts + [{codec: :jpeg_color_map,reason:bytes ? :not_smaller : :not_encodable,bytes:bytes&.bytesize}])
       end
       digest = Digest::SHA256.hexdigest(bytes)
-      pixels = reference.width * reference.height
       if budget && !budget.fetch(:hashes).key?(digest) && pixels > budget.fetch(:remaining_pixels)
         return baseline.merge(attempts: attempts + [{codec: :jpeg_color_map, reason: :aggregate_pixel_budget}])
       end
@@ -398,13 +402,16 @@ module BOMEngine
         budget[:remaining_pixels] -= pixels
         budget[:hashes][digest] = true
       end
+      correction_codec = bytes.getbyte(10)
+      correction_length = bytes.byteslice(28,4).unpack1('V')
       baseline.merge(path:path,selected: :jpeg_color_map_candidate,candidate_media_type: :jpeg_color_map,
-        reason: :verified_color_map_smaller,candidate_bytes:bytes.bytesize,selected_sha256:Digest::SHA256.hexdigest(bytes),
-        policy_revision:'exact-jcm-1',base_pixel_sha256:Digest::SHA256.hexdigest(base),output_pixel_sha256:Digest::SHA256.hexdigest(target),
+        reason: :verified_color_map_smaller,candidate_bytes:bytes.bytesize,selected_sha256:digest,
+        policy_revision:JCM_POLICY_REVISION,base_pixel_sha256:Digest::SHA256.hexdigest(base),output_pixel_sha256:Digest::SHA256.hexdigest(target),
         normalized_jpeg_sha256:Digest::SHA256.hexdigest(jpeg),required_loader:'bomc-next-jcm-v1',
+        correction_codec:correction_codec,correction_bytes:correction_length,time_budget_seconds:time_budget_seconds,
         quality:{compatible:true,mean_squared_error:0.0,max_channel_error:0,psnr_db:nil,alpha_preserved:true},
         alpha_preserved:true,savings_bytes:File.size(png_path)-bytes.bytesize,savings_ratio:1.0-bytes.bytesize.to_f/File.size(png_path),
-        attempts:attempts + [{codec: :jpeg_color_map,reason: :accepted,bytes:bytes.bytesize}])
+        attempts:attempts + [{codec: :jpeg_color_map,correction_codec:correction_codec,reason: :accepted,bytes:bytes.bytesize}])
     rescue StandardError => error
       raise if cancellation_error?(error)
       baseline.merge(attempts:attempts + [{codec: :jpeg_color_map,reason: :candidate_error,error:"#{error.class}: #{error.message}"}])
@@ -418,11 +425,27 @@ module BOMEngine
       processed = 0
       total = frame[:width] * frame[:height]
       checkpoint.call(0, total) if checkpoint
+
+      # SketchUp's common BGRA32 path can be converted a row at a time with
+      # native unpack/pack rather than four Ruby String appends per pixel.
+      if frame[:channels] == 4
+        row_bytes = frame[:width] * 4
+        frame[:height].times do |row|
+          values = frame[:data].byteslice(row * frame[:stride], row_bytes).unpack('V*')
+          values.map! do |value|
+            (value & 0xff00ff00) | ((value & 0x000000ff) << 16) | ((value & 0x00ff0000) >> 16)
+          end
+          bytes << values.pack('V*')
+          processed += frame[:width]
+          checkpoint.call(processed, total) if checkpoint && (processed == total || (processed % CHECKPOINT_PIXELS) < frame[:width])
+        end
+        return bytes
+      end
+
       frame[:height].times do |row|
         offset = row * frame[:stride]
         frame[:width].times do
-          bytes << frame[:data].getbyte(offset+2) << frame[:data].getbyte(offset+1) << frame[:data].getbyte(offset)
-          bytes << (frame[:channels] == 4 ? frame[:data].getbyte(offset+3) : 255)
+          bytes << frame[:data].getbyte(offset+2) << frame[:data].getbyte(offset+1) << frame[:data].getbyte(offset) << 255
           offset += frame[:channels]
           processed += 1
           checkpoint.call(processed, total) if checkpoint && ((processed % CHECKPOINT_PIXELS).zero? || processed == total)

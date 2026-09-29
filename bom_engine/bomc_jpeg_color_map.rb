@@ -1,19 +1,28 @@
 # frozen_string_literal: true
 require 'digest'
+require 'zlib'
 
 module BOMEngine
-  # Experimental standalone representation. Never advertise these bytes as JPEG.
-  # v1: opaque top-down RGBA8; exact RGB-key dictionary; no color management.
+  # Exact JPEG-backed texture representation.
+  # v1: opaque top-down RGBA8; exact correction payload; no color management.
+  #
+  # Correction codecs:
+  #   0 = stored RGB->RGBA dictionary (legacy v1)
+  #   1 = zlib-deflated RGB->RGBA dictionary
+  #   2 = zlib-deflated per-pixel RGBA XOR residual
   module BOMCJpegColorMap
     MAGIC = "BOMJCM\r\n".b.freeze
     HEADER_BYTES = 128
     MAX_PIXELS = 32_000_000
     MAX_ENTRIES = 262_144
     MAX_JPEG_BYTES = 32 * 1024 * 1024
+    DICTIONARY_STORED = 0
+    DICTIONARY_DEFLATE = 1
+    XOR_RESIDUAL_DEFLATE = 2
     module_function
 
     # No JPEG re-encoding. The caller MUST decode these normalized bytes and use
-    # that frame as the mapping base; stripping metadata is not itself pixel proof.
+    # that frame as the correction base; stripping metadata is not pixel proof.
     def normalize_jpeg(jpeg, width, height)
       validate_dimensions(width,height)
       raise ArgumentError, 'Exact color-map invalid JPEG' unless jpeg.is_a?(String) && jpeg.bytesize <= MAX_JPEG_BYTES && jpeg.byteslice(0,2) == "\xff\xd8".b
@@ -92,80 +101,201 @@ module BOMEngine
     def encode(jpeg:, base_rgba:, target_rgba:, width:, height:, &checkpoint)
       validate_dimensions(width,height)
       validate_jpeg(jpeg,width,height)
-      expected = width * height * 4
-      unless base_rgba.is_a?(String) && target_rgba.is_a?(String) && base_rgba.bytesize == expected && target_rgba.bytesize == expected
+      pixels = width * height
+      expected = pixels * 4
+      unless base_rgba.is_a?(String) && target_rgba.is_a?(String) &&
+          base_rgba.bytesize == expected && target_rgba.bytesize == expected
         raise ArgumentError, 'Exact color-map frame length'
       end
+
       table = {}
+      table_valid = true
+      residual_stream = Zlib::Deflate.new(Zlib::BEST_COMPRESSION)
+      residual = +''.b
       offset = 0
-      while offset < expected
-        checkpoint.call(offset/4, width*height) if checkpoint
-        # Bounded integer blocks avoid allocating millions of four-byte Strings
-        # for repeated pixels; alpha and conflict checks still cover every pixel.
-        length = [131_072,expected-offset].min
-        base_pixels = base_rgba.byteslice(offset,length).unpack('N*')
-        target_pixels = target_rgba.byteslice(offset,length).unpack('N*')
-        base_pixels.each_with_index do |pixel,index|
-          value = target_pixels[index]
-          return nil unless (pixel & 255) == 255 && (value & 255) == 255
-          key = pixel >> 8
-          previous = table[key]
-          return nil if previous && previous != value
-          table[key] = value unless previous
-          return nil if table.length > MAX_ENTRIES
+      begin
+        while offset < expected
+          checkpoint.call(offset/4, pixels) if checkpoint
+          length = [131_072, expected-offset].min
+          length -= length % 4
+          base_pixels = base_rgba.byteslice(offset,length).unpack('N*')
+          target_pixels = target_rgba.byteslice(offset,length).unpack('N*')
+          base_pixels.each_index do |index|
+            pixel = base_pixels[index]
+            value = target_pixels[index]
+            return nil unless (pixel & 255) == 255 && (value & 255) == 255
+
+            if table_valid
+              key = pixel >> 8
+              previous = table[key]
+              if previous && previous != value
+                table_valid = false
+                table = nil
+              elsif previous.nil?
+                table[key] = value
+                if table.length > MAX_ENTRIES
+                  table_valid = false
+                  table = nil
+                end
+              end
+            end
+
+            base_pixels[index] = pixel ^ value
+          end
+          residual << residual_stream.deflate(base_pixels.pack('N*'), Zlib::NO_FLUSH)
+          offset += length
         end
-        offset += length
+        residual << residual_stream.finish
+      ensure
+        residual_stream.close rescue nil
       end
-      dictionary = +''.b
-      table.keys.sort.each { |key| dictionary << [key >> 16, (key >> 8) & 255, key & 255].pack('C*') << [table[key]].pack('N') }
-      bytes = MAGIC + [1,0,0,1].pack('C*') + [width,height,table.length,jpeg.bytesize,0].pack('V5') +
-        Digest::SHA256.digest(jpeg) + Digest::SHA256.digest(base_rgba) + Digest::SHA256.digest(target_rgba) + jpeg.b + dictionary
-      # Verify the serialized candidate, not just the in-memory map construction.
+
+      candidates = []
+      if table_valid && table && !table.empty?
+        dictionary = +''.b
+        table.keys.sort.each do |key|
+          dictionary << [key >> 16, (key >> 8) & 255, key & 255].pack('C*') << [table[key]].pack('N')
+        end
+        candidates << serialize(
+          jpeg: jpeg, base_rgba: base_rgba, target_rgba: target_rgba,
+          width: width, height: height, count: table.length,
+          codec: DICTIONARY_STORED, correction: dictionary
+        )
+        compressed_dictionary = Zlib::Deflate.deflate(dictionary, Zlib::BEST_COMPRESSION)
+        if compressed_dictionary.bytesize < dictionary.bytesize
+          candidates << serialize(
+            jpeg: jpeg, base_rgba: base_rgba, target_rgba: target_rgba,
+            width: width, height: height, count: table.length,
+            codec: DICTIONARY_DEFLATE, correction: compressed_dictionary
+          )
+        end
+      end
+
+      candidates << serialize(
+        jpeg: jpeg, base_rgba: base_rgba, target_rgba: target_rgba,
+        width: width, height: height, count: pixels,
+        codec: XOR_RESIDUAL_DEFLATE, correction: residual
+      )
+
+      bytes = candidates.min_by(&:bytesize)
       raise ArgumentError, 'Exact color-map reconstruction differs' unless reconstruct(bytes,base_rgba,&checkpoint) == target_rgba.b
       bytes
     end
 
+    def serialize(jpeg:, base_rgba:, target_rgba:, width:, height:, count:, codec:, correction:)
+      stored_length = codec == DICTIONARY_STORED ? 0 : correction.bytesize
+      MAGIC + [1,0,codec,1].pack('C*') +
+        [width,height,count,jpeg.bytesize,stored_length].pack('V5') +
+        Digest::SHA256.digest(jpeg) + Digest::SHA256.digest(base_rgba) +
+        Digest::SHA256.digest(target_rgba) + jpeg.b + correction.b
+    end
+    private_class_method :serialize
+
+    def inflate_exact(bytes, expected)
+      raise ArgumentError, 'Exact color-map correction bounds' if expected <= 0 || expected > MAX_PIXELS * 4
+      raise ArgumentError, 'Exact color-map correction bounds' if bytes.bytesize > expected + 65_536
+      inflated = Zlib::Inflate.inflate(bytes)
+      raise ArgumentError, 'Exact color-map correction length' unless inflated.bytesize == expected
+      inflated.b
+    rescue Zlib::Error => error
+      raise ArgumentError, "Exact color-map correction deflate: #{error.message}"
+    end
+    private_class_method :inflate_exact
+
     def parse(bytes)
       raise ArgumentError, 'Exact color-map length' unless bytes.is_a?(String) && bytes.bytesize >= HEADER_BYTES
-      raise ArgumentError, 'Exact color-map header' unless bytes.byteslice(0,8) == MAGIC && bytes.byteslice(8,4).unpack('C4') == [1,0,0,1]
-      width,height,count,jpeg_length,reserved = bytes.byteslice(12,20).unpack('V5')
-      raise ArgumentError, 'Exact color-map header' unless reserved.zero?
-      validate_dimensions(width,height)
-      unless count > 0 && count <= MAX_ENTRIES && count <= width*height && jpeg_length > 0 && jpeg_length <= MAX_JPEG_BYTES
-        raise ArgumentError, 'Exact color-map resource bounds'
+      raise ArgumentError, 'Exact color-map header' unless bytes.byteslice(0,8) == MAGIC
+      version, flags, codec, layout = bytes.byteslice(8,4).unpack('C4')
+      unless version == 1 && flags.zero? && [DICTIONARY_STORED, DICTIONARY_DEFLATE, XOR_RESIDUAL_DEFLATE].include?(codec) && layout == 1
+        raise ArgumentError, 'Exact color-map header'
       end
-      raise ArgumentError, 'Exact color-map length' unless bytes.bytesize == HEADER_BYTES + jpeg_length + count*7
+
+      width,height,count,jpeg_length,correction_length = bytes.byteslice(12,20).unpack('V5')
+      validate_dimensions(width,height)
+      pixels = width * height
+      raise ArgumentError, 'Exact color-map resource bounds' unless jpeg_length > 0 && jpeg_length <= MAX_JPEG_BYTES
+
+      expected_correction = if codec == XOR_RESIDUAL_DEFLATE
+                              raise ArgumentError, 'Exact color-map residual count' unless count == pixels
+                              pixels * 4
+                            else
+                              unless count > 0 && count <= MAX_ENTRIES && count <= pixels
+                                raise ArgumentError, 'Exact color-map resource bounds'
+                              end
+                              count * 7
+                            end
+
+      payload_length = codec == DICTIONARY_STORED ? expected_correction : correction_length
+      if codec == DICTIONARY_STORED
+        raise ArgumentError, 'Exact color-map header' unless correction_length.zero?
+      else
+        raise ArgumentError, 'Exact color-map correction bounds' unless correction_length > 0 && correction_length <= expected_correction + 65_536
+      end
+      raise ArgumentError, 'Exact color-map length' unless bytes.bytesize == HEADER_BYTES + jpeg_length + payload_length
+
       jpeg = bytes.byteslice(HEADER_BYTES,jpeg_length).b
       raise ArgumentError, 'Exact color-map JPEG hash' unless Digest::SHA256.digest(jpeg) == bytes.byteslice(32,32).b
       validate_jpeg(jpeg,width,height)
-      dictionary = bytes.byteslice(HEADER_BYTES+jpeg_length,count*7).b
+      encoded_correction = bytes.byteslice(HEADER_BYTES+jpeg_length,payload_length).b
+      correction = codec == DICTIONARY_STORED ? encoded_correction : inflate_exact(encoded_correction, expected_correction)
+
+      result = {
+        width: width, height: height, jpeg: jpeg, codec: codec,
+        base_hash: bytes.byteslice(64,32).b, output_hash: bytes.byteslice(96,32).b
+      }
+      if codec == XOR_RESIDUAL_DEFLATE
+        result[:residual] = correction
+        return result
+      end
+
       table = {}
       previous = -1
       count.times do |index|
-        offset = index*7
-        key = dictionary.getbyte(offset)*65_536 + dictionary.getbyte(offset+1)*256 + dictionary.getbyte(offset+2)
+        row = index*7
+        key = correction.getbyte(row)*65_536 + correction.getbyte(row+1)*256 + correction.getbyte(row+2)
         raise ArgumentError, 'Exact color-map keys must be strictly sorted' if key <= previous
-        raise ArgumentError, 'Exact color-map v1 alpha unsupported' unless dictionary.getbyte(offset+6) == 255
-        table[key] = dictionary.byteslice(offset+3,4)
+        raise ArgumentError, 'Exact color-map v1 alpha unsupported' unless correction.getbyte(row+6) == 255
+        table[key] = correction.byteslice(row+3,4)
         previous = key
       end
-      {width:width,height:height,jpeg:jpeg,table:table,base_hash:bytes.byteslice(64,32).b,output_hash:bytes.byteslice(96,32).b}
+      result[:table] = table
+      result
     end
 
     def reconstruct(bytes, base_rgba, &checkpoint)
       map = parse(bytes)
-      raise ArgumentError, 'Exact color-map base length' unless base_rgba.is_a?(String) && base_rgba.bytesize == map[:width]*map[:height]*4
+      pixels = map[:width] * map[:height]
+      raise ArgumentError, 'Exact color-map base length' unless base_rgba.is_a?(String) && base_rgba.bytesize == pixels*4
       raise ArgumentError, 'Exact color-map base pixel hash' unless Digest::SHA256.digest(base_rgba) == map[:base_hash]
+
       out = +''.b
-      offset = 0
-      while offset < base_rgba.bytesize
-        checkpoint.call(offset/4,map[:width]*map[:height]) if checkpoint && (offset % 131_072).zero?
-        raise ArgumentError, 'Exact color-map base alpha unsupported' unless base_rgba.getbyte(offset+3) == 255
-        key = base_rgba.getbyte(offset)*65_536 + base_rgba.getbyte(offset+1)*256 + base_rgba.getbyte(offset+2)
-        value = map[:table][key]
-        raise ArgumentError, 'Exact color-map missing dictionary key' unless value
-        out << value
-        offset += 4
+      if map[:codec] == XOR_RESIDUAL_DEFLATE
+        offset = 0
+        while offset < base_rgba.bytesize
+          checkpoint.call(offset/4,pixels) if checkpoint && (offset % 131_072).zero?
+          length = [131_072,base_rgba.bytesize-offset].min
+          length -= length % 4
+          base_values = base_rgba.byteslice(offset,length).unpack('N*')
+          residual_values = map[:residual].byteslice(offset,length).unpack('N*')
+          base_values.each_index do |index|
+            raise ArgumentError, 'Exact color-map base alpha unsupported' unless (base_values[index] & 255) == 255
+            base_values[index] ^= residual_values[index]
+            raise ArgumentError, 'Exact color-map output alpha unsupported' unless (base_values[index] & 255) == 255
+          end
+          out << base_values.pack('N*')
+          offset += length
+        end
+      else
+        offset = 0
+        while offset < base_rgba.bytesize
+          checkpoint.call(offset/4,pixels) if checkpoint && (offset % 131_072).zero?
+          raise ArgumentError, 'Exact color-map base alpha unsupported' unless base_rgba.getbyte(offset+3) == 255
+          key = base_rgba.getbyte(offset)*65_536 + base_rgba.getbyte(offset+1)*256 + base_rgba.getbyte(offset+2)
+          value = map[:table][key]
+          raise ArgumentError, 'Exact color-map missing dictionary key' unless value
+          out << value
+          offset += 4
+        end
       end
       raise ArgumentError, 'Exact color-map output pixel hash' unless Digest::SHA256.digest(out) == map[:output_hash]
       out

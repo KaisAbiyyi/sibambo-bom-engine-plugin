@@ -25,9 +25,39 @@ class JpegColorMapTest < Minitest::Test
     assert_equal [10,20,30,11,22,33,255,40,50,60,44,55,66,255].pack('C*'), bytes.byteslice(-14,14)
     assert_equal TARGET, codec.reconstruct(bytes, BASE)
   end
-  def test_conflicting_color_mapping_is_not_encodable
-    assert_nil encode(base_rgba: BASE.byteslice(0,4)*2)
+  def test_conflicting_color_mapping_uses_residual_instead_of_failing
+    jpeg = JPEG.dup
+    jpeg[7,4] = [1,2].pack('n2')
+    base = BASE.byteslice(0,4) * 2
+    bytes = encode(jpeg: jpeg, base_rgba: base, target_rgba: TARGET, width: 2, height: 1)
+    assert_equal BOMEngine::BOMCJpegColorMap::XOR_RESIDUAL_DEFLATE, bytes.getbyte(10)
+    assert_equal TARGET, codec.reconstruct(bytes, base)
   end
+  def test_compressed_dictionary_is_selected_when_smaller
+    width = 256
+    height = 256
+    jpeg = JPEG.dup
+    jpeg[7,4] = [height,width].pack('n2')
+    pixels = Array.new(width * height) do |index|
+      [index >> 16, (index >> 8) & 255, index & 255, 255]
+    end.flatten.pack('C*')
+    bytes = encode(jpeg: jpeg, base_rgba: pixels, target_rgba: pixels, width: width, height: height)
+    assert_equal BOMEngine::BOMCJpegColorMap::DICTIONARY_DEFLATE, bytes.getbyte(10)
+    assert_operator bytes.byteslice(28,4).unpack1('V'), :>, 0
+    assert_operator bytes.bytesize, :<, 128 + jpeg.bytesize + width * height * 7
+    assert_equal pixels, codec.reconstruct(bytes, pixels)
+  end
+
+  def test_conflicting_dictionary_falls_back_to_exact_xor_residual
+    base = BASE.byteslice(0,4) * 2
+    target = [11,22,33,255,44,55,66,255].pack('C*')
+    jpeg = JPEG.dup
+    jpeg[7,4] = [1,2].pack('n2')
+    bytes = encode(jpeg: jpeg, base_rgba: base, target_rgba: target, width: 2, height: 1)
+    assert_equal BOMEngine::BOMCJpegColorMap::XOR_RESIDUAL_DEFLATE, bytes.getbyte(10)
+    assert_equal target, codec.reconstruct(bytes, base)
+  end
+
   def test_repeated_colors_do_not_allocate_one_target_string_per_pixel
     tracked=Class.new(String) do
       attr_reader :pixel_slices

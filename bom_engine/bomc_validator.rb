@@ -569,7 +569,7 @@ module BOMEngine
             verified = evidence_list.compact.any? do |outer|
               ev = outer.dig(:staging, :policy_revision) ? outer[:staging] : outer
               q = ev[:quality] || {}
-              ev[:policy_revision] == 'exact-jcm-1' && ev[:selected] == :jpeg_color_map_candidate &&
+              ['exact-jcm-1', 'exact-jcm-2'].include?(ev[:policy_revision]) && ev[:selected] == :jpeg_color_map_candidate &&
                 ev[:profile].to_s == 'exact' && ev[:required_loader] == 'bomc-next-jcm-v1' &&
                 ev[:selected_sha256] == tex[:sha256] &&
                 ev[:base_pixel_sha256] == map[:base_hash].unpack1('H*') &&
