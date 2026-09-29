@@ -83,12 +83,14 @@ class JpegColorMapTest < Minitest::Test
     assert_raises(ArgumentError) { encode(base_rgba: BASE.byteslice(0,7)) }
     assert_raises(ArgumentError) { encode(width: 0) }
   end
-  def test_high_color_count_is_not_encodable_instead_of_building_an_unbounded_map
+  def test_high_color_count_uses_bounded_residual_instead_of_unbounded_dictionary
     count=1024*257
     pixels=+''.b
     count.times { |i| pixels << [i>>16,(i>>8)&255,i&255,255].pack('C*') }
     jpeg=JPEG.dup;jpeg[7,4]=[257,1024].pack('n2')
-    assert_nil encode(jpeg:jpeg,base_rgba:pixels,target_rgba:pixels,width:1024,height:257)
+    bytes=encode(jpeg:jpeg,base_rgba:pixels,target_rgba:pixels,width:1024,height:257)
+    assert_equal BOMEngine::BOMCJpegColorMap::XOR_RESIDUAL_DEFLATE, bytes.getbyte(10)
+    assert_equal pixels, codec.reconstruct(bytes,pixels)
   end
   def test_modified_base_or_mapping_cannot_publish_pixels
     bytes = encode
