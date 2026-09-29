@@ -1,6 +1,6 @@
-# Experimental Exact JPEG color map v1
+# Exact JPEG color map v1
 
-Not certified. Existing releases, loaders and installed packages are unchanged.
+Not certified. The current E4 Exact producer may select this lossless representation when it is smaller; Visual and Research never use it.
 This representation is not JPEG or WebP and must never use their media IDs.
 
 Canonical pixels are top-down, tightly packed RGBA8, opaque (alpha 255).
@@ -36,29 +36,28 @@ image decode, including marker validation after entropy scans. Hashes detect
 corruption and decoder disagreement; they are not signatures or proof of origin.
 
 Container texture table version 2 introduces media ID 6 for this representation.
-Both reference and browser readers reject table v2 unless explicitly opted in;
-table v1 rejects media ID 6. Browser identity `bomc-next-jcm-v1` is registered but
-no existing catalog release is changed. PNG assets are generated only after all
-canonical pixel checks pass. The browser additionally limits the aggregate of
-mapped textures to 64 million pixels per model.
+Current Ruby and browser E4 readers accept table v2/media 6 by default; callers
+may explicitly disable JCM compatibility when testing a legacy consumer. PNG
+assets are generated only after all canonical pixel checks pass. The producer
+and browser retain the 64 million aggregate mapped-pixel bound per model.
 
-Adaptive staging is experimental/opt-in, Windows-only (verified BGR/BGRA host
-layout), and Exact-only. It competes complete payload bytes against the already
-verified PNG/native JPEG/WebP choice. Thirty-second mapping budget, conflicting
-maps, excessive entries, unsupported metadata, alpha and decode failures retain
-the earlier verified candidate. Normal export menus never opt in.
+Adaptive JCM staging is Windows-only (verified BGR/BGRA host layout) and
+Exact-only. Standard Exact enables it automatically and competes complete payload
+bytes against the already verified PNG/native JPEG/WebP choice. Thirty-second
+mapping budget, conflicting maps, excessive entries, unsupported metadata,
+alpha and decode failures retain the earlier verified lossless candidate.
 
 The isolated texture-only capture builder does not install an extension or
 export geometry. A lean entry captures original host buffers and native JPEGs;
 offline encoding and browser verification bind canonical pixels to those files.
 Four large captured textures now pass this host-to-browser equality gate.
 
-Experimental export plumbing is explicit via `allow_jpeg_color_map: true`,
-Exact only and disabled in existing menus. Runtime source must be saved and
-unmodified, with a known positive source size. The experimental file must be
-strictly smaller than that source before publication; no quality relaxation.
-Material staging shares a 64M mapped-pixel budget, charging unique payloads
-once. Writer and consumer enforce the same aggregate bound independently.
+Standard Exact resolves `allow_jpeg_color_map: nil` to enabled; explicit
+`false` remains available for legacy-consumer compatibility tests. JCM no
+longer imposes a source-size publication gate: fidelity remains mandatory while
+source-vs-output size stays benchmark evidence. Material staging shares a 64M
+mapped-pixel budget, charging unique payloads once. Writer and consumer enforce
+the same aggregate bound independently.
 Already-verified native JPEG does not spend mapped-pixel budget for marginal
 size savings. Consumer payload-byte metrics exclude reconstructed PNG assets;
 asset bytes are reported separately.

@@ -85,11 +85,17 @@ module BOMEngine
           decoded = BOMCDecoder.decode(BOMCWriter.pack(fixture_graph, profile: profile)[:bytes])
           assert(decoded.dig(:encoding_contract, :profile) == profile, "Section 20 preserves #{profile} profile")
         end
+        assert(BOMCExtension.send(:resolve_jpeg_color_map, :exact, nil) == true,
+          'standard Exact enables the verified JPEG color-map candidate automatically')
+        assert(BOMCExtension.send(:resolve_jpeg_color_map, :research, nil) == false,
+          'Research does not enable the Exact-only JPEG color-map codec')
+        assert(BOMCExtension.send(:resolve_jpeg_color_map, :exact, false) == false,
+          'callers can explicitly disable JPEG color-map compatibility for legacy consumers')
         menu = FakeMenu.new
         BOMCExtension.register_menu(menu)
         assert(
-          menu.labels == ['Sibambo BOMC Engine: Export BOMC 1.2...', 'Sibambo BOMC Engine: Experimental Exact size candidate (JCM)...', 'About Sibambo BOMC Engine'],
-          'experimental Exact size targeting requires a separately labeled explicit menu action'
+          menu.labels == ['Sibambo BOMC Engine: Export BOMC 1.2...', 'About Sibambo BOMC Engine'],
+          'JCM is part of standard Exact and no longer needs a separate experimental menu'
         )
 
         texture_dir = Dir.mktmpdir('bomc-texture-choice')

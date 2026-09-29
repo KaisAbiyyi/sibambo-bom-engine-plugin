@@ -20,7 +20,7 @@ module BOMEngine
       decode(File.binread(path))
     end
 
-    def self.decode(bytes, allow_jpeg_color_map: false)
+    def self.decode(bytes, allow_jpeg_color_map: true)
       Decoder.new(bytes, allow_jpeg_color_map: allow_jpeg_color_map).decode
     end
 
@@ -42,7 +42,7 @@ module BOMEngine
     end
 
     class Decoder
-      def initialize(bytes, allow_jpeg_color_map: false)
+      def initialize(bytes, allow_jpeg_color_map: true)
         @allow_jpeg_color_map = allow_jpeg_color_map == true
         @container = BOMC::Container.parse(bytes)
         @sections = {}
@@ -563,7 +563,7 @@ module BOMEngine
       def decode_textures(table_bytes, blob_bytes)
         cursor = Cursor.new(table_bytes)
         version, reserved_a, reserved_b, reserved_c = cursor.read(4).unpack('CCCC')
-        raise 'BOMC requires experimental color-map loader.' if version == 2 && !@allow_jpeg_color_map
+        raise 'BOMC requires a JPEG color-map capable loader.' if version == 2 && !@allow_jpeg_color_map
         raise 'BOMC invalid: texture table header.' unless [1,2].include?(version) && [reserved_a, reserved_b, reserved_c].all?(&:zero?)
         count = cursor.read_u32
         media = cursor.read(count).unpack('C*')

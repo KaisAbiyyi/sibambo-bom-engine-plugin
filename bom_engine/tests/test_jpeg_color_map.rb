@@ -93,14 +93,14 @@ class JpegColorMapTest < Minitest::Test
     malformed=tagged.dup;malformed.setbyte(4,255)
     assert_raises(ArgumentError) { codec.normalize_jpeg(malformed,2,1) }
   end
-  def test_container_uses_explicit_table_v2_and_reference_reader_requires_opt_in
+  def test_container_uses_table_v2_and_standard_reader_accepts_jcm
     graph={materials:[{id:'m'}],definitions:[{id:'d',kind:'root',node_ids:[]}],nodes:[{id:'root',kind:'root',definition_id:'d',transform_id:0}],transforms:[BOMEngine::BOMC::ModelAdapter::IDENTITY],meshes:[],tags:[]}
     graph[:materials][0][:texture]={bytes:encode,filename:'sample.jcm',image_width_px:2,image_height_px:1}
     bytes=BOMEngine::BOMCWriter.pack(graph,profile: :exact)[:bytes]
-    assert_raises(RuntimeError) { BOMEngine::BOMCDecoder.decode(bytes) }
-    decoded=BOMEngine::BOMCDecoder.decode(bytes,allow_jpeg_color_map:true)
+    decoded=BOMEngine::BOMCDecoder.decode(bytes)
     assert_equal :jpeg_color_map, decoded[:textures][0][:media_type]
     assert_equal TARGET, codec.reconstruct(decoded[:textures][0][:bytes],BASE)
+    assert_raises(RuntimeError) { BOMEngine::BOMCDecoder.decode(bytes,allow_jpeg_color_map:false) }
   end
   def test_writer_deflates_bounded_jcm_blob_section_when_it_saves_bytes
     width=100;height=10

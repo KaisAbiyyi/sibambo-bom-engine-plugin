@@ -19,7 +19,7 @@ module BOMEngine
     CHECKPOINT_PIXELS = 32_768
     WEBP_QUALITIES = [80, 90, 95, 100].freeze
     MAX_ADAPTIVE_PIXELS = 32_000_000
-    POLICY_REVISION = 'adaptive-texture-4'.freeze
+    POLICY_REVISION = 'adaptive-texture-5'.freeze
     LOSSLESS_SEARCH_REVISION = 'exact-webp-m4q75-m6q100mt-1'.freeze
 
     module_function
@@ -355,8 +355,9 @@ module BOMEngine
     end
     private_class_method :select_native_jpeg
 
-    # Opt-in preview only. Existing export menus never request this capability.
-    # Conversion is based on texture pixels, never model/material names.
+    # Exact-only lossless candidate. Standard Exact export enables it on
+    # supported Windows hosts; unsupported/conflicting cases retain another
+    # verified lossless candidate. Conversion is based on pixels, never names.
     def select_color_map(texture, png_path, reference, baseline, loader, budget = nil, &checkpoint)
       attempts = Array(baseline[:attempts]).dup
       # No reconstruction dependency for pixels already preserved by native JPEG.

@@ -149,11 +149,10 @@ module BOMEngine
       }
     end
 
-    def publish_graph(path, graph, profile: DEFAULT_PROFILE, base_path: nil, source_info: nil, allow_jpeg_color_map: false)
+    def publish_graph(path, graph, profile: DEFAULT_PROFILE, base_path: nil, source_info: nil, allow_jpeg_color_map: nil)
       prof = normalize_profile(profile)
-      validate_experimental_profile!(prof, allow_jpeg_color_map)
+      jcm_enabled = resolve_jpeg_color_map(prof, allow_jpeg_color_map)
       src_info = source_info || (graph.is_a?(Hash) ? graph[:source_info] : nil)
-      require_experimental_source!(src_info) if allow_jpeg_color_map
       if src_info.nil? && BOMCProfile.fetch(prof).requires_source_size?
         estimated = (graph.is_a?(Hash) && graph[:source_skp_bytes]) || 10_000_000
         src_info = { available: true, bytes: estimated }
@@ -164,8 +163,7 @@ module BOMEngine
         profile: prof,
         base_path: base_path
       )
-      enforce_experimental_size!(candidate, src_info) if allow_jpeg_color_map
-      decoded = BOMCDecoder.decode(candidate.fetch(:bytes), allow_jpeg_color_map: allow_jpeg_color_map)
+      decoded = BOMCDecoder.decode(candidate.fetch(:bytes), allow_jpeg_color_map: jcm_enabled)
       texture_evidence = (graph.is_a?(Hash) && graph[:materials]) ? graph[:materials].map { |m| m.dig(:texture, :encoding_evidence) }.compact : nil
       report = BOMCValidator.validate_profile!(
         source: graph,
@@ -173,21 +171,17 @@ module BOMEngine
         profile: prof,
         texture_evidence: texture_evidence
       )
-      published = publish_validated(candidate: candidate, report: report, output_path: path,
-        source_info: allow_jpeg_color_map ? src_info : nil)
-      allow_jpeg_color_map ? published.merge(required_loader: 'bomc-next-jcm-v1') : published
+      published = publish_validated(candidate: candidate, report: report, output_path: path)
+      jcm_selected?(candidate) ? published.merge(required_loader: 'bomc-next-jcm-v1') : published
     end
 
-    def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil)
+    def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil, allow_jpeg_color_map: nil, prepared_color_maps: nil, candidate_cache: nil)
       profile = normalize_profile(profile)
-      validate_experimental_profile!(profile, allow_jpeg_color_map)
-      if allow_jpeg_color_map && (!model.respond_to?(:modified?) || model.modified?)
-        raise ArgumentError, 'Experimental Exact export requires a saved model without unsaved changes'
-      end
+      jcm_enabled = resolve_jpeg_color_map(profile, allow_jpeg_color_map)
       processing = settings || BOMCProcessing.settings(:balanced)
       yield_callback = progress || ->(_event) {}
       context = export_context(output_path, yield_callback, profile: profile, diagnostics: diagnostics,
-        allow_jpeg_color_map: allow_jpeg_color_map, prepared_color_maps: prepared_color_maps,
+        allow_jpeg_color_map: jcm_enabled, prepared_color_maps: prepared_color_maps,
         candidate_cache: candidate_cache)
       result = BOMCExportJob.run(
         model: model,
@@ -195,13 +189,7 @@ module BOMEngine
         settings: processing,
         context: context
       ).merge(format: 'bomc', profile: profile)
-      if allow_jpeg_color_map
-        published = result[:published] || {}
-        result.merge(required_loader: 'bomc-next-jcm-v1', bytes: published[:bytes] || result[:candidate_bytes],
-          source_skp_sha256: published[:source_skp_sha256], size_target: published[:size_target])
-      else
-        result
-      end
+      jcm_selected?(result) ? result.merge(required_loader: 'bomc-next-jcm-v1') : result
     end
 
     def export_all_profiles(model, output_path:, settings:, progress:)
@@ -259,11 +247,23 @@ module BOMEngine
     end
     private_class_method :write_all_status
 
-    def validate_experimental_profile!(profile, enabled)
-      raise ArgumentError, 'Experimental color-map capability must be Boolean' unless enabled == true || enabled == false
-      raise ArgumentError, 'Experimental color-map export is Exact-only' if enabled && profile != :exact
+    def resolve_jpeg_color_map(profile, requested)
+      unless requested.nil? || requested == true || requested == false
+        raise ArgumentError, 'JPEG color-map capability must be true, false, or nil'
+      end
+      raise ArgumentError, 'JPEG color-map export is Exact-only' if requested == true && profile != :exact
+      return false unless profile == :exact
+
+      requested.nil? ? true : requested
     end
-    private_class_method :validate_experimental_profile!
+    private_class_method :resolve_jpeg_color_map
+
+    def jcm_selected?(result)
+      encodings = result.dig(:metrics, :textures, :encodings) || {}
+      row = encodings[:jpeg_color_map] || encodings['jpeg_color_map']
+      row && (row[:count] || row['count']).to_i > 0
+    end
+    private_class_method :jcm_selected?
 
     def require_experimental_source!(source)
       unless source && source[:available] == true && source[:bytes].is_a?(Integer) && source[:bytes] > 0 &&
@@ -376,9 +376,6 @@ module BOMEngine
       menu.add_item('Sibambo BOMC Engine: Export BOMC 1.2...') do
         export_interactive
       end
-      menu.add_item('Sibambo BOMC Engine: Experimental Exact size candidate (JCM)...') do
-        export_compact_exact_interactive
-      end
       menu.add_item('About Sibambo BOMC Engine') do
         Core.show_about
       end
@@ -386,35 +383,34 @@ module BOMEngine
 
     def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE, diagnostics: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil)
       texture_directory = Dir.mktmpdir('bomc-textures')
+      effective_cache = candidate_cache
+      unless effective_cache
+        cache_directory = File.join(texture_directory, 'candidate-cache')
+        FileUtils.mkdir_p(cache_directory)
+        effective_cache = { directory: cache_directory, entries: {}, hits: 0, jpeg_quality: {}, jpeg_quality_hits: 0 }
+      end
       {
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
         on_yield: yield_callback,
         cancelled: -> { false },
         source_info: lambda do |model|
-          info = BOMCSizeGate.source_info(model.path.to_s)
-          require_experimental_source!(info) if allow_jpeg_color_map
-          info
+          BOMCSizeGate.source_info(model.path.to_s)
         end,
         snapshot: lambda do |model, checkpoint|
           graph = snapshot_model(model, texture_directory, checkpoint, profile: profile,
             allow_jpeg_color_map: allow_jpeg_color_map, prepared_color_maps: prepared_color_maps,
-            candidate_cache: candidate_cache)
+            candidate_cache: effective_cache)
           diagnostics[:graph] = graph if diagnostics
           graph
         end,
         compile: lambda do |graph, source, _path, checkpoint|
-          candidate = BOMCSizeGate.compile_candidate(
+          BOMCSizeGate.compile_candidate(
             graph,
             source_info: source,
             base_path: texture_directory,
             profile: profile,
             checkpoint: checkpoint
           )
-          if allow_jpeg_color_map
-            enforce_experimental_size!(candidate, source)
-            candidate = candidate.merge(experimental_size_source_info: source.dup)
-          end
-          candidate
         end,
         validate: lambda do |result, graph = nil|
           decoded = BOMCDecoder.decode(result.fetch(:bytes), allow_jpeg_color_map: allow_jpeg_color_map)
@@ -443,8 +439,7 @@ module BOMEngine
             publish_validated(
               candidate: candidate,
               report: validation[:report],
-              output_path: path,
-              source_info: candidate[:experimental_size_source_info]
+              output_path: path
             )
         end,
         cleanup: lambda do
