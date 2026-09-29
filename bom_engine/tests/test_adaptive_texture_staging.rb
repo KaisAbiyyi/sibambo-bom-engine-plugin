@@ -73,6 +73,7 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
   end
 
   def test_color_map_budget_reserves_unique_payloads_and_keeps_verified_fallback
+    omit('Exact JPEG color-map staging is Windows-only') unless RUBY_PLATFORM.match?(/mingw|mswin/i)
     with_codec do
       budget={remaining_pixels:2,hashes:{}}
       [0,0,1].each_with_index do |tint,index|
@@ -97,6 +98,7 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
   end
 
   def test_experimental_color_map_competes_with_complete_verified_webp_bytes
+    omit('Exact JPEG color-map staging is Windows-only') unless RUBY_PLATFORM.match?(/mingw|mswin/i)
     with_codec do
       Dir.mktmpdir do |dir|
         selected=stage_color_map(dir)
