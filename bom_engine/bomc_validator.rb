@@ -690,7 +690,7 @@ module BOMEngine
           [:r, :g, :b, :a].all? { |c| color[c].to_i == row.dig(:color, c).to_i } &&
           (material[:opacity].to_f - row[:opacity].to_f).abs <= (1.0 / 65_535.0 + 1.0e-12) &&
           material[:material_type].to_i == row[:material_type].to_i &&
-          material[:semantic_colorize_active] == row[:semantic_colorize_active] &&
+          (material[:semantic_colorize_active] == true) == (row[:semantic_colorize_active] == true) &&
           (!material[:semantic_colorize_active] || (
             material[:colorize_type].to_s == row[:colorize_type].to_s &&
             [:h,:l,:s].all? { |key| material.dig(:colorize_deltas,key).to_f == row.dig(:colorize_deltas,key).to_f } &&
@@ -714,7 +714,7 @@ module BOMEngine
           [:r, :g, :b, :a].all? { |channel| color[channel].to_i == row.dig(:color, channel).to_i } &&
           (material[:opacity].to_f - row[:opacity].to_f).abs <= (1.0 / 65_535.0 + 1.0e-12) &&
           material[:material_type].to_i == row[:material_type].to_i &&
-          material[:semantic_colorize_active] == row[:semantic_colorize_active] &&
+          (material[:semantic_colorize_active] == true) == (row[:semantic_colorize_active] == true) &&
           (!material[:semantic_colorize_active] || (
             material[:colorize_type].to_s == row[:colorize_type].to_s &&
             [:h,:l,:s].all? { |key| material.dig(:colorize_deltas,key).to_f == row.dig(:colorize_deltas,key).to_f } &&
