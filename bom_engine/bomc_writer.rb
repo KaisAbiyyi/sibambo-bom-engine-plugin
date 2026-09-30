@@ -497,7 +497,7 @@ module BOMEngine
         string_width = BOMC::Binary.index_width(@strings.length)
         texture_width = BOMC::Binary.index_width(@textures.length)
         materials = @model[:materials]
-        bytes = [1, string_width, texture_width, 0, materials.length].pack('CCCCV')
+        bytes = [2, string_width, texture_width, 0, materials.length].pack('CCCCV')
         bytes << pack_indices(materials.map { |material| string_reference(material[:name]) }, string_width)
         bytes << pack_indices(materials.map { |material| string_reference(material[:display_name]) }, string_width)
         bytes << materials.map do |material|
@@ -508,6 +508,13 @@ module BOMEngine
         bytes << pack_indices(materials.map { |material| material[:texture_index] }, texture_width)
         bytes << materials.map { |material| material[:texture] ? material[:texture][:width_m].to_f : 0.0 }.pack('e*')
         bytes << materials.map { |material| material[:texture] ? material[:texture][:height_m].to_f : 0.0 }.pack('e*')
+        bytes << materials.map { |material| Integer(material[:material_type] || (material[:texture] ? 1 : 0)) }.pack('C*')
+        bytes << materials.map { |material| material[:semantic_colorize_active] ? (material[:colorize_type].to_s == 'shift' ? 1 : 2) : 0 }.pack('C*')
+        bytes << materials.flat_map { |material| d=material[:colorize_deltas]||{}; [d[:h].to_f,d[:l].to_f,d[:s].to_f] }.pack('E*')
+        bytes << materials.map do |material|
+          hash=material[:semantic_colorize_active] ? material[:colorize_output_sha256].to_s : ''
+          hash.match?(/\A[0-9a-f]{64}\z/) ? [hash].pack('H*') : ("\0"*32)
+        end.join.b
         bytes
       end
 

@@ -418,10 +418,25 @@ module BOMEngine
             r: Integer(color[:r] || 0), g: Integer(color[:g] || 0), b: Integer(color[:b] || 0), a: Integer(color[:a] || 255)
           },
           opacity: material.key?(:opacity) ? material[:opacity].to_f : (material[:alpha] || 1.0).to_f,
+          material_type: Integer(material[:material_type] || (texture ? 1 : 0)),
+          colorize_type: material[:colorize_type]&.to_s,
+          colorize_deltas: normalize_colorize_deltas(material[:colorize_deltas]),
+          semantic_colorize_active: material[:semantic_colorize_active] == true,
+          colorize_output_sha256: material[:colorize_output_sha256],
           texture: normalize_texture(texture, base_path)
         }
       end
       private_class_method :canonical_material
+
+      def normalize_colorize_deltas(value)
+        return nil if value.nil?
+        if value.is_a?(Hash)
+          {h:(value[:h]||value['h']).to_f,l:(value[:l]||value['l']).to_f,s:(value[:s]||value['s']).to_f}
+        else
+          h,l,s=Array(value).first(3).map(&:to_f); {h:h,l:l,s:s}
+        end
+      end
+      private_class_method :normalize_colorize_deltas
 
       def normalize_texture(texture, base_path)
         return nil if texture.nil?

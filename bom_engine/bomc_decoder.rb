@@ -255,7 +255,7 @@ module BOMEngine
       def decode_materials(bytes, strings)
         cursor = Cursor.new(bytes)
         version, string_width, texture_width, reserved = cursor.read(4).unpack('CCCC')
-        raise 'BOMC invalid: material section header.' unless version == 1 && reserved.zero?
+        raise 'BOMC invalid: material section header.' unless [1,2].include?(version) && reserved.zero?
         count = cursor.read_u32
         names = cursor.read_indices(string_width, count)
         display_names = cursor.read_indices(string_width, count)
@@ -264,16 +264,22 @@ module BOMEngine
         textures = cursor.read_indices(texture_width, count)
         widths = cursor.read(count * 4).unpack('e*')
         heights = cursor.read(count * 4).unpack('e*')
+        material_types=version>=2 ? cursor.read(count).unpack('C*') : Array.new(count){|i| textures[i].nil? ? 0 : 1}
+        modes=version>=2 ? cursor.read(count).unpack('C*') : Array.new(count,0)
+        deltas=version>=2 ? cursor.read(count*24).unpack('E*') : Array.new(count*3,0.0)
+        hashes=version>=2 ? count.times.map{cursor.read(32).unpack1('H*')} : Array.new(count)
         cursor.finish!
         count.times.map do |index|
+          mode=modes[index]
           {
-            name: string_value(strings, names[index]),
-            display_name: string_value(strings, display_names[index]),
+            name: string_value(strings, names[index]), display_name: string_value(strings, display_names[index]),
             color: { r: colors[index * 4], g: colors[index * 4 + 1], b: colors[index * 4 + 2], a: colors[index * 4 + 3] },
-            opacity: opacity[index] / 65_535.0,
-            texture: textures[index],
-            texture_width_m: widths[index],
-            texture_height_m: heights[index]
+            opacity: opacity[index] / 65_535.0, texture: textures[index],
+            texture_width_m: widths[index], texture_height_m: heights[index],
+            material_type: material_types[index], semantic_colorize_active: mode != 0,
+            colorize_type: mode==1 ? 'shift' : mode==2 ? 'tint' : nil,
+            colorize_deltas: mode==0 ? nil : {h:deltas[index*3],l:deltas[index*3+1],s:deltas[index*3+2]},
+            colorize_output_sha256: mode==0 ? nil : hashes[index]
           }
         end
       end

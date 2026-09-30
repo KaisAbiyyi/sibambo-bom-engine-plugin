@@ -590,8 +590,9 @@ module BOMEngine
             verified = evidence_list.compact.any? do |outer|
               ev = outer.dig(:staging, :policy_revision) ? outer[:staging] : outer
               q = ev[:quality] || {}
-              ev[:policy_revision] && ev[:selected] == :native_jpeg_candidate &&
+              ev[:policy_revision] && [:native_jpeg_candidate, :semantic_colorized_native].include?(ev[:selected]) &&
                 ev[:profile].to_s == 'exact' && ev[:native_jpeg] == true &&
+                (ev[:selected] != :semantic_colorized_native || ev[:semantic_colorize_verified] == true) &&
                 ev[:selected_sha256].is_a?(String) && ev[:selected_sha256].match?(/\A[0-9a-f]{64}\z/) &&
                 ev[:selected_sha256] == tex[:sha256] && ev[:alpha_preserved] == true &&
                 q[:compatible] == true && q[:alpha_preserved] == true &&
@@ -688,6 +689,13 @@ module BOMEngine
           material[:display_name].to_s == row[:display_name].to_s &&
           [:r, :g, :b, :a].all? { |c| color[c].to_i == row.dig(:color, c).to_i } &&
           (material[:opacity].to_f - row[:opacity].to_f).abs <= (1.0 / 65_535.0 + 1.0e-12) &&
+          material[:material_type].to_i == row[:material_type].to_i &&
+          material[:semantic_colorize_active] == row[:semantic_colorize_active] &&
+          (!material[:semantic_colorize_active] || (
+            material[:colorize_type].to_s == row[:colorize_type].to_s &&
+            [:h,:l,:s].all? { |key| material.dig(:colorize_deltas,key).to_f == row.dig(:colorize_deltas,key).to_f } &&
+            material[:colorize_output_sha256].to_s == row[:colorize_output_sha256].to_s
+          )) &&
           has_src_tex == has_dec_tex
       end
     end
@@ -705,6 +713,13 @@ module BOMEngine
           material[:display_name].to_s == row[:display_name].to_s &&
           [:r, :g, :b, :a].all? { |channel| color[channel].to_i == row.dig(:color, channel).to_i } &&
           (material[:opacity].to_f - row[:opacity].to_f).abs <= (1.0 / 65_535.0 + 1.0e-12) &&
+          material[:material_type].to_i == row[:material_type].to_i &&
+          material[:semantic_colorize_active] == row[:semantic_colorize_active] &&
+          (!material[:semantic_colorize_active] || (
+            material[:colorize_type].to_s == row[:colorize_type].to_s &&
+            [:h,:l,:s].all? { |key| material.dig(:colorize_deltas,key).to_f == row.dig(:colorize_deltas,key).to_f } &&
+            material[:colorize_output_sha256].to_s == row[:colorize_output_sha256].to_s
+          )) &&
           source_texture == decoded_texture
       end
     end

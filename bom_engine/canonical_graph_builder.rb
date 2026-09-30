@@ -437,6 +437,13 @@ module BOMEngine
             material_type: material.materialType,
             attributes: Traversal.extract_dicts(material)
           }
+          if material.materialType.to_i == 2 && material.respond_to?(:colorize_deltas) && material.respond_to?(:colorize_type)
+            raw_mode=material.colorize_type
+            shift_constant=defined?(Sketchup::Material::COLORIZE_SHIFT) ? Sketchup::Material::COLORIZE_SHIFT : 0
+            h,l,saturation=Array(material.colorize_deltas).map(&:to_f)
+            item[:colorize_type]=raw_mode==shift_constant ? 'shift' : 'tint'
+            item[:colorize_deltas]={h:h,l:l,s:saturation}
+          end
           if texture
             item[:texture] = {
               filename: texture.filename.to_s,

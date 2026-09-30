@@ -664,6 +664,11 @@ module BOMEngine
       Array(graph[:materials]).each do |material|
         extracted = by_name[material[:name].to_s]
         next unless extracted && extracted[:texture]
+        material[:material_type]=extracted[:material_type] if extracted.key?(:material_type)
+        material[:colorize_type]=extracted[:colorize_type] if extracted[:colorize_type]
+        material[:colorize_deltas]=extracted[:colorize_deltas] if extracted[:colorize_deltas]
+        material[:semantic_colorize_active]=extracted[:semantic_colorize_active]==true
+        material[:colorize_output_sha256]=extracted[:colorize_output_sha256] if extracted[:colorize_output_sha256]
         staged_path = File.join(texture_directory, extracted[:texture][:filename].to_s)
         source_path = extracted[:texture][:source_path].to_s
         source_supported = File.file?(source_path) && supported_texture_path?(source_path)
@@ -683,10 +688,14 @@ module BOMEngine
           staging[:profile].to_s == prof.to_s && staging[:alpha_preserved] == true &&
           quality && quality[:compatible] == true && quality[:alpha_preserved] == true &&
           quality[:mean_squared_error] == 0.0 && quality[:max_channel_error] == 0
+        verified_semantic_native = staging && staging[:policy_revision] == BOMCTextureOptimizer::SEMANTIC_COLORIZE_REVISION &&
+          staging[:selected] == :semantic_colorized_native && staging[:semantic_colorize_verified] == true &&
+          quality && quality[:compatible] == true && quality[:alpha_preserved] == true &&
+          quality[:mean_squared_error] == 0.0 && quality[:max_channel_error] == 0
 
         # An extracted JPEG is eligible only after complete displayed-pixel
         # equality and the staged-file digest check above, not filename alone.
-        if prof == :exact && path.downcase.end_with?('.jpg', '.jpeg') && !source_supported && !verified_native_jpeg
+        if prof == :exact && path.downcase.end_with?('.jpg', '.jpeg') && !source_supported && !verified_native_jpeg && !verified_semantic_native
           png_fallback = File.join(texture_directory, "#{File.basename(staged_path, '.*')}.png")
           path = png_fallback if File.file?(png_fallback)
         end
