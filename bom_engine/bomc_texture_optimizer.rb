@@ -21,6 +21,8 @@ module BOMEngine
     CHECKPOINT_PIXELS = 32_768
     WEBP_QUALITIES = [80, 90, 95, 100].freeze
     MAX_ADAPTIVE_PIXELS = 32_000_000
+    MAX_PNG_REPACK_BYTES = 4 * 1024 * 1024
+    MAX_PNG_REPACK_PIXELS = 2_000_000
     POLICY_REVISION = 'adaptive-texture-7'.freeze
     SEMANTIC_COLORIZE_REVISION = 'exact-semantic-colorize-1'.freeze
     LOSSLESS_SEARCH_REVISION = 'exact-webp-m4q75-m6q100mt-1'.freeze
@@ -437,6 +439,14 @@ module BOMEngine
 
     def select_optimized_png(png_path, reference, baseline, loader, &checkpoint)
       attempts = Array(baseline[:attempts]).dup
+      frame = frame_for(reference)
+      pixels = frame[:width] * frame[:height]
+      source_bytes = File.size(png_path)
+      if source_bytes > MAX_PNG_REPACK_BYTES || pixels > MAX_PNG_REPACK_PIXELS
+        return baseline.merge(attempts: attempts + [{
+          codec: :png_repack, reason: :bounded_skip, source_bytes: source_bytes, pixels: pixels
+        }])
+      end
       path = png_path.sub(/\.png\z/i,'.optimized.png')
       optimized = BOMCPngOptimizer.optimize(source_path: png_path, output_path: path, checkpoint: checkpoint)
       return baseline.merge(attempts: attempts + [{codec: :png_repack, reason: :not_smaller_or_unsupported}]) unless optimized
