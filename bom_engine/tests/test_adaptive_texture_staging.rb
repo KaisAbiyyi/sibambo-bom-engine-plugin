@@ -23,6 +23,38 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
   end
   class Cancelled < StandardError; end
 
+  def test_exact_semantic_colorization_bypasses_baked_png_when_verified
+    Dir.mktmpdir do |dir|
+      source = Frame.new(1, 1, 32, 0, [115, 137, 98, 128].pack('C*'))
+      expected_rgb = BOMEngine::BOMCSketchupColorize.colorize_pixel(
+        115, 137, 98, 92.58741048890613, 0.13725490868091583, -0.11229892646129502, true
+      )
+      target = Frame.new(1, 1, 32, 0, (expected_rgb + [128]).pack('C*'))
+      texture = Object.new
+      texture.define_singleton_method(:image_rep) { |colorized| colorized ? target : source }
+      texture.define_singleton_method(:write) do |path, colorized|
+        raise 'semantic candidate must not bake a colorized PNG' if colorized
+        File.binwrite(path, 'n' * 512)
+        true
+      end
+
+      result = BOMEngine::BOMCTextureOptimizer.stage(
+        texture: texture, directory: dir, basename: 'semantic', source_path: 'embedded.png',
+        profile: :exact,
+        appearance: {
+          material_type: 2, colorize_type: 'shift',
+          colorize_deltas: { h: 92.58741048890613, l: 0.13725490868091583, s: -0.11229892646129502 }
+        },
+        image_rep_loader: ->(_path) { source }
+      )
+      assert_equal :semantic_colorized_native, result.dig(:evidence, :selected)
+      assert_equal true, result.dig(:evidence, :semantic_colorize_verified)
+      assert_equal 0.0, result.dig(:evidence, :quality, :mean_squared_error)
+      assert_false File.exist?(File.join(dir, 'semantic.png')),
+        'successful semantic representation must bypass the expensive colorized PNG write'
+    end
+  end
+
   def test_color_map_frame_conversion_preserves_padding_alpha_and_final_checkpoint
     [24, 32].each do |bits|
       bytes = +''.b
