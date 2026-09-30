@@ -42,11 +42,11 @@ module BOMEngine
 
       def test_ui_batch_selection
         auto = BOMCProcessing.from_ui(batch_mode: 'auto', batch_size: 8192)
-        assert(auto == BOMCProcessing.settings(:balanced), 'auto uses adaptive balanced scheduling, not CPU core count')
+        assert(auto == BOMCProcessing.settings(:interactive), 'auto uses adaptive 12 ms scheduling, not a fixed giant batch')
         manual = BOMCProcessing.from_ui(batch_mode: 'manual', batch_size: 8192)
-        assert(manual[:max_items] == 8192 && manual[:max_items_limit] == 8192,
-          'manual 8192 reaches the exporter as its adaptive item ceiling')
-        assert(manual[:max_ms] == 60.0, 'large manual batch uses the explicit 60 ms UI-slice budget')
+        assert(manual[:max_items] == 1024 && manual[:max_items_limit] == 8192,
+          'manual 8192 is a ceiling while the scheduler starts from a responsive target')
+        assert(manual[:max_ms] == 12.0, 'manual batches retain the 12 ms UI-slice budget')
         begin
           BOMCProcessing.from_ui(batch_mode: 'manual', batch_size: 3)
           raise 'unsupported size unexpectedly accepted'
@@ -87,7 +87,7 @@ module BOMEngine
         )
         controller.checkpoint(stage: :work, processed: 0, total: 100_000)
         controller.checkpoint(stage: :work, processed: 0, total: 100_000, force: true)
-        assert(controller.target_items == 256, 'forced stage notification does not falsely boost Auto target')
+        assert(controller.target_items == 1024, 'forced stage notification does not falsely boost Auto target')
         processed = 0
         12.times do
           processed += controller.target_items

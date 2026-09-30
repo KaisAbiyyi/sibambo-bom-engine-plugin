@@ -54,14 +54,14 @@
       <label><input type="radio" name="batch-mode" value="manual" onchange="refreshBatchMode()">Manual</label>
     </div>
     <div class="batch-controls">
-      <p class="hint" id="batch-description">Auto mulai 256 entitas/giliran; naik atau turun menurut waktu kerja, hingga batas aman 32768.</p>
+      <p class="hint" id="batch-description">Auto menargetkan slice sekitar 12 ms; perangkat lebih cepat otomatis memproses lebih banyak entitas per giliran.</p>
       <select class="select" id="batch-size" aria-label="Batas entitas per giliran" disabled>
         <option value="96">96</option><option value="128">128</option><option value="256">256</option>
         <option value="512" selected>512</option><option value="1024">1024</option>
         <option value="2048">2048</option><option value="4096">4096</option><option value="8192">8192</option>
       </select>
     </div>
-    <p class="hint" style="margin-top:8px">Manual menetapkan awal dan batas atas; batas waktu 24–60 ms tetap bisa menghentikan giliran lebih cepat. Batch besar dapat membuat UI kurang responsif.</p>
+    <p class="hint" style="margin-top:8px">Manual hanya menetapkan batas atas. Scheduler tetap memotong kerja sekitar 12 ms agar batch besar tidak membekukan UI; batch tidak menambah core/GPU untuk API SketchUp yang berjalan di thread UI.</p>
   </section>
 
   <div class="actions"><span class="footer-note">SHA di atas mengidentifikasi build, bukan sertifikasi model.</span><button class="button" type="button" onclick="sketchup.cancel()">Batal</button><button class="button button-primary" id="export-button" type="button" onclick="doExport()">Ekspor BOMC</button></div>
@@ -104,7 +104,7 @@
   function refreshBatchMode() {
     var manual = document.querySelector('input[name="batch-mode"]:checked').value === 'manual';
     document.getElementById('batch-size').disabled = !manual;
-    document.getElementById('batch-description').textContent = manual ? 'Pilih awal/batas atas entitas per giliran.' : 'Auto mulai 256 entitas/giliran; naik atau turun menurut waktu kerja, hingga batas aman 32768.';
+    document.getElementById('batch-description').textContent = manual ? 'Pilih batas atas entitas; scheduler tetap memotong kerja sekitar 12 ms.' : 'Auto menargetkan slice sekitar 12 ms; perangkat lebih cepat otomatis memproses lebih banyak entitas per giliran.';
   }
   function doExport() {
     var profile = selectedProfile();

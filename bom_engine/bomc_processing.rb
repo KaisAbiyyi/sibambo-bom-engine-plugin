@@ -7,6 +7,7 @@ module BOMEngine
     PRESETS = {
       light: { mode: :light, max_items: 64, max_ms: 10.0, min_items: 1, max_items_limit: 512 },
       balanced: { mode: :balanced, max_items: 256, max_ms: 24.0, min_items: 4, max_items_limit: 32_768 },
+      interactive: { mode: :interactive, max_items: 1_024, max_ms: 12.0, min_items: 16, max_items_limit: 32_768 },
       fast: { mode: :fast, max_items: 1_024, max_ms: 60.0, min_items: 16, max_items_limit: 8_192 }
     }.freeze
 
@@ -21,15 +22,17 @@ module BOMEngine
     UI_BATCH_SIZES = [96, 128, 256, 512, 1024, 2048, 4096, 8192].freeze
 
     def from_ui(batch_mode:, batch_size: nil)
-      return settings(:balanced) if batch_mode.to_s == 'auto'
+      return settings(:interactive) if batch_mode.to_s == 'auto'
       raise ArgumentError, 'Unknown batch mode' unless batch_mode.to_s == 'manual'
 
       size = Integer(batch_size)
       raise ArgumentError, 'Unsupported geometry batch size' unless UI_BATCH_SIZES.include?(size)
 
       settings(:custom, custom: {
-        max_items: size, max_items_limit: size, min_items: 1,
-        max_ms: size >= 4096 ? 60.0 : 24.0
+        max_items: [size, 1_024].min,
+        max_items_limit: size,
+        min_items: [16, size].min,
+        max_ms: 12.0
       })
     end
 

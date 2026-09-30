@@ -7,7 +7,7 @@ module BOMEngine
   class ConversionJob
     class Cancelled < StandardError; end
 
-    TIMER_INTERVAL_SECONDS = 0.04
+    TIMER_INTERVAL_SECONDS = 0.01
 
     class << self
       attr_reader :active
@@ -157,6 +157,9 @@ module BOMEngine
       texture_metrics = metrics[:textures] || {}
       encodings = texture_metrics[:encodings] || {}
       jcm = encodings[:jpeg_color_map] || encodings['jpeg_color_map'] || {}
+      semantic_rows = Array(texture_metrics[:evidence]).map do |outer|
+        outer && outer.dig(:staging, :policy_revision) ? outer[:staging] : outer
+      end.compact.select { |ev| ev[:selected] == :semantic_colorized_native }
       texture_encodings = encodings.map do |name, values|
         { name: name.to_s, count: (values[:count] || values['count']).to_i,
           bytes: (values[:bytes] || values['bytes']).to_i }
@@ -182,6 +185,8 @@ module BOMEngine
         texture_references: texture_metrics[:references],
         jcm_count: jcm[:count] || jcm['count'],
         jcm_bytes: jcm[:bytes] || jcm['bytes'],
+        semantic_colorize_count: semantic_rows.length,
+        semantic_colorize_bytes: semantic_rows.sum { |ev| ev[:candidate_bytes].to_i },
         texture_encodings: texture_encodings,
         top_sections: top_sections
       }
