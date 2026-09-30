@@ -59,6 +59,8 @@ module BOMEngine
         )
         assert(BOMCExtension::DEFAULT_PROFILE == :visual, 'visual profile is the preferred web-first default')
         assert(BOMCExtension::FORMAT_EXTENSION == '.bomc', 'compiled user-facing extension is stable')
+        assert(ConversionJob::TIMER_INTERVAL_SECONDS <= 0.001, 'cooperative runner resumes work without a 10 ms idle tax')
+        assert(ConversionJob::UI_PROGRESS_INTERVAL_SECONDS >= 0.05, 'HTML progress rendering is throttled independently from work scheduling')
         [:exact, :research, :visual].each do |profile|
           filename = BOMCExtension.normalize_output_path(
             'D:/exports/House__SIBAMBO-BOMC-v1.2.0__VISUAL.bomc', profile: profile

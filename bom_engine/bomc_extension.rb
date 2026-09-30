@@ -182,7 +182,7 @@ module BOMEngine
       yield_callback = progress || ->(_event) {}
       context = export_context(output_path, yield_callback, profile: profile, diagnostics: diagnostics,
         allow_jpeg_color_map: jcm_enabled, prepared_color_maps: prepared_color_maps,
-        candidate_cache: candidate_cache)
+        candidate_cache: candidate_cache, processing: processing)
       result = BOMCExportJob.run(
         model: model,
         output_path: output_path,
@@ -381,7 +381,7 @@ module BOMEngine
       end
     end
 
-    def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE, diagnostics: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil)
+    def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE, diagnostics: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil, processing: nil)
       texture_directory = Dir.mktmpdir('bomc-textures')
       effective_cache = candidate_cache
       unless effective_cache
@@ -399,7 +399,7 @@ module BOMEngine
         snapshot: lambda do |model, checkpoint|
           graph = snapshot_model(model, texture_directory, checkpoint, profile: profile,
             allow_jpeg_color_map: allow_jpeg_color_map, prepared_color_maps: prepared_color_maps,
-            candidate_cache: effective_cache)
+            candidate_cache: effective_cache, processing: processing)
           diagnostics[:graph] = graph if diagnostics
           graph
         end,
@@ -592,7 +592,7 @@ module BOMEngine
       result
     end
 
-    def snapshot_model(model, texture_directory, checkpoint, profile: DEFAULT_PROFILE, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil)
+    def snapshot_model(model, texture_directory, checkpoint, profile: DEFAULT_PROFILE, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil, processing: nil)
       texture_writer = begin
         Sketchup.create_texture_writer
       rescue StandardError
@@ -635,7 +635,10 @@ module BOMEngine
                       total: entity_total
                     )
                   end,
-                  batch_size: 1
+                  # Probe the adaptive controller frequently without paying a
+                  # callback on every entity. The controller still owns the
+                  # actual 12 ms / item slice decision.
+                  batch_size: 16
                 )
               else
                 { materials: extracted_materials, meshes: [], definitions: [], nodes: [], instances: [] }

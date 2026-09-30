@@ -7,7 +7,8 @@ module BOMEngine
   class ConversionJob
     class Cancelled < StandardError; end
 
-    TIMER_INTERVAL_SECONDS = 0.01
+    TIMER_INTERVAL_SECONDS = 0.001
+    UI_PROGRESS_INTERVAL_SECONDS = 0.10
 
     class << self
       attr_reader :active
@@ -39,6 +40,8 @@ module BOMEngine
       @timer_id = nil
       @started_at = nil
       @result_path = nil
+      @last_ui_progress_at = 0.0
+      @last_ui_stage = nil
       build_dialog
     end
 
@@ -132,8 +135,15 @@ module BOMEngine
 
     def update_progress(event)
       @result_path = event[:output_directory] || event['output_directory'] if @kind == :batch_export && (event[:output_directory] || event['output_directory'])
+      stage = event[:stage] || event['stage'] || 'Converting model'
+      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      force_ui = stage.to_s != @last_ui_stage.to_s || event[:force] == true || event['force'] == true
+      return unless force_ui || (now - @last_ui_progress_at) >= UI_PROGRESS_INTERVAL_SECONDS
+
+      @last_ui_progress_at = now
+      @last_ui_stage = stage
       data = {
-        stage: event[:stage] || event['stage'] || 'Converting model',
+        stage: stage,
         profile: event[:profile] || event['profile'],
         processed: event[:processed] || event['processed'] || 0,
         total: event[:total] || event['total'] || 0,
