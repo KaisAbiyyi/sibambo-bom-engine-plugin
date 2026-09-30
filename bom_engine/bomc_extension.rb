@@ -709,6 +709,10 @@ module BOMEngine
         material[:texture][:filename] = File.basename(path)
         material[:texture][:encoding_evidence] = {
           filename: File.basename(path),
+          material_type: extracted[:material_type],
+          colorize_type: extracted[:colorize_type],
+          semantic_colorize_active: extracted[:semantic_colorize_active] == true,
+          semantic_colorize_candidate: extracted[:material_type].to_i == 2,
           native_jpeg: !!verified_native_jpeg,
           selected: source_supported ? :source : :staged,
           source_path: source_path.empty? ? nil : source_path,

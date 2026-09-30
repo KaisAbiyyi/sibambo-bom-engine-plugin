@@ -168,6 +168,14 @@
         row('Encoding · ' + String(encoding.name || '').toUpperCase(),
           Number(encoding.count || 0).toLocaleString() + ' tekstur · ' + formatBytes(encoding.bytes || 0));
       });
+      (data.largest_textures || []).forEach(function(texture, index) {
+        var detail = formatBytes(texture.bytes || 0) + ' · ' +
+          Number(texture.width_px || 0).toLocaleString() + '×' + Number(texture.height_px || 0).toLocaleString();
+        detail += ' · ' + String(texture.selected || texture.media_type || 'unknown');
+        if (texture.semantic_colorize_candidate) detail += texture.semantic_colorize_active ? ' · semantic✓' : ' · semantic fallback';
+        if (texture.reason) detail += ' · ' + String(texture.reason);
+        row('Texture #' + (index + 1) + ' · ' + String(texture.media_type || '').toUpperCase(), detail);
+      });
       (data.top_sections || []).forEach(function(section, index) {
         row('Section #' + (index + 1) + ' · ' + String(section.name || ''), formatBytes(section.stored_bytes));
       });

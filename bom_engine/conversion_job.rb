@@ -198,6 +198,7 @@ module BOMEngine
         semantic_colorize_count: semantic_rows.length,
         semantic_colorize_bytes: semantic_rows.sum { |ev| ev[:candidate_bytes].to_i },
         texture_encodings: texture_encodings,
+        largest_textures: Array(texture_metrics[:largest]),
         top_sections: top_sections
       }
       data[:capture] = true if @kind == :capture

@@ -286,6 +286,7 @@ module BOMEngine
               deduplicated: @texture_reference_count - @textures.length,
               bytes: @texture_blob_bytes.bytesize,
               encodings: texture_encoding_metrics,
+              largest: largest_texture_metrics,
               evidence: @textures.map { |texture| texture[:encoding_evidence] }.compact
             },
             appearance: appearance_metrics,
@@ -355,6 +356,27 @@ module BOMEngine
           media = texture[:media_type] || :binary
           result[media][:count] += 1
           result[media][:bytes] += texture[:bytes].bytesize
+        end
+      end
+
+      def largest_texture_metrics
+        @textures.each_with_index.sort_by { |texture, index| [-texture[:bytes].bytesize, index] }.first(8).map do |texture, _index|
+          evidence = texture[:encoding_evidence] || {}
+          staging = evidence[:staging] || evidence['staging'] || {}
+          attempts = Array(staging[:attempts] || staging['attempts'])
+          {
+            bytes: texture[:bytes].bytesize,
+            media_type: (texture[:media_type] || :binary).to_s,
+            width_px: texture[:image_width_px].to_i,
+            height_px: texture[:image_height_px].to_i,
+            material_type: (evidence[:material_type] || evidence['material_type']).to_i,
+            colorize_type: evidence[:colorize_type] || evidence['colorize_type'],
+            semantic_colorize_candidate: evidence[:semantic_colorize_candidate] == true || evidence['semantic_colorize_candidate'] == true,
+            semantic_colorize_active: evidence[:semantic_colorize_active] == true || evidence['semantic_colorize_active'] == true,
+            selected: (staging[:selected] || staging['selected'] || evidence[:selected] || evidence['selected']).to_s,
+            reason: (staging[:reason] || staging['reason'] || evidence[:reason] || evidence['reason']).to_s,
+            rejected_reasons: attempts.map { |attempt| (attempt[:reason] || attempt['reason']).to_s }.reject(&:empty?).uniq.first(5)
+          }
         end
       end
 
