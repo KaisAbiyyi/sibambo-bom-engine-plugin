@@ -45,6 +45,13 @@ module BOMEngine
           material_type: mat.materialType,
           attributes:    defined?(Traversal) ? Traversal.extract_dicts(mat) : {}
         }
+        if mat.materialType.to_i == 2 && mat.respond_to?(:colorize_deltas) && mat.respond_to?(:colorize_type)
+          raw_mode=mat.colorize_type
+          shift_constant=defined?(Sketchup::Material::COLORIZE_SHIFT) ? Sketchup::Material::COLORIZE_SHIFT : 0
+          h,l,saturation=Array(mat.colorize_deltas).map(&:to_f)
+          entry[:colorize_type]=raw_mode==shift_constant ? 'shift' : 'tint'
+          entry[:colorize_deltas]={h:h,l:l,s:saturation}
+        end
 
         if mat.texture && !texture_dir.nil?
           tex       = mat.texture
@@ -91,12 +98,18 @@ module BOMEngine
                 allow_jpeg_color_map: allow_jpeg_color_map,
                 color_map_budget: color_map_budget,
                 prepared_color_maps: prepared_color_maps,
-                candidate_cache: candidate_cache
+                candidate_cache: candidate_cache,
+                appearance: {material_type: entry[:material_type], colorize_type: entry[:colorize_type],
+                  colorize_deltas: entry[:colorize_deltas]}
               ) do |_processed_pixels, _total_pixels|
                 checkpoint.call(stage: :snapshot_textures, processed: index, total: total) if checkpoint
               end
               entry[:texture][:filename] = staged[:filename]
               entry[:texture][:staging_evidence] = staged[:evidence]
+              if staged.dig(:evidence,:selected) == :semantic_colorized_native
+                entry[:semantic_colorize_active]=true
+                entry[:colorize_output_sha256]=staged.dig(:evidence,:output_pixel_sha256)
+              end
               written += 1 if File.file?(staged[:path])
             else
               out_path = File.join(texture_dir, tex_filename)

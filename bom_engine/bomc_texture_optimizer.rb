@@ -12,6 +12,7 @@ require_relative 'bomc_texture_encoder'
 require_relative 'bomc_candidate'
 require_relative 'bomc_jpeg_color_map'
 require_relative 'bomc_png_optimizer'
+require_relative 'bomc_sketchup_colorize'
 
 module BOMEngine
   module BOMCTextureOptimizer
@@ -20,7 +21,8 @@ module BOMEngine
     CHECKPOINT_PIXELS = 32_768
     WEBP_QUALITIES = [80, 90, 95, 100].freeze
     MAX_ADAPTIVE_PIXELS = 32_000_000
-    POLICY_REVISION = 'adaptive-texture-6'.freeze
+    POLICY_REVISION = 'adaptive-texture-7'.freeze
+    SEMANTIC_COLORIZE_REVISION = 'exact-semantic-colorize-1'.freeze
     LOSSLESS_SEARCH_REVISION = 'exact-webp-m4q75-m6q100mt-1'.freeze
     JCM_POLICY_REVISION = 'exact-jcm-2'.freeze
 
@@ -222,10 +224,17 @@ module BOMEngine
       )
     end
 
-    def stage(texture:, directory:, basename:, source_path:, profile: :visual, semantic_class: :class_b, policy: nil, image_rep_loader: nil, allow_jpeg_color_map: false, color_map_budget: nil, prepared_color_maps: nil, candidate_cache: nil, &checkpoint)
+    def stage(texture:, directory:, basename:, source_path:, profile: :visual, semantic_class: :class_b, policy: nil, image_rep_loader: nil, allow_jpeg_color_map: false, color_map_budget: nil, prepared_color_maps: nil, candidate_cache: nil, appearance: nil, &checkpoint)
       stage_started = monotonic_ms
       timings = {}
       png_path = File.join(directory, "#{basename}.png")
+      loader = image_rep_loader || lambda { |path| Sketchup::ImageRep.new(path) }
+      if profile.to_s == 'exact' && appearance && appearance[:material_type].to_i == 2
+        semantic=measure_phase(timings,:semantic_colorize) do
+          select_semantic_colorized_native(texture,directory,basename,source_path,appearance,loader,&checkpoint)
+        end
+        return stage_result(semantic,timings,stage_started) if semantic
+      end
       if allow_jpeg_color_map == true && profile.to_s == 'exact' && prepared_color_maps
         prepared = measure_phase(timings, :prepared_color_map) do
           prepared_color_maps.stage(texture: texture, directory: directory, basename: basename,
@@ -248,8 +257,6 @@ module BOMEngine
         native_jpeg: native_jpeg,
         reason: is_pixel_lossless ? :pixel_lossless_policy : :jpeg_not_evaluated
       }
-
-      loader = image_rep_loader || lambda { |path| Sketchup::ImageRep.new(path) }
 
       # Exact is a pixel contract, not a PNG-only container policy. Compete
       # lossless encodings, but never construct a lossy JPEG/WebP candidate.
@@ -343,6 +350,34 @@ module BOMEngine
         raise
       end
     end
+
+    def select_semantic_colorized_native(texture,directory,basename,source_path,appearance,loader,&checkpoint)
+      mode=appearance[:colorize_type].to_s; deltas=appearance[:colorize_deltas]
+      return nil unless ['shift','tint'].include?(mode) && deltas
+      uncolorized=texture.image_rep(false); colorized=texture.image_rep(true)
+      proof=BOMCSketchupColorize.verify(uncolorized:uncolorized,colorized:colorized,mode:mode,deltas:deltas,checkpoint:checkpoint)
+      return nil unless proof[:passed]
+      extension=File.extname(source_path.to_s).downcase; extension='.jpg' if extension=='.jpeg'
+      return nil unless ['.jpg','.png','.webp'].include?(extension)
+      path=File.join(directory,"#{basename}.semantic#{extension}")
+      return nil unless texture.write(path,false) && File.file?(path) && File.size(path)>0
+      base_quality=compare(uncolorized,loader.call(path),&checkpoint)
+      return nil unless base_quality[:compatible]==true && base_quality[:alpha_preserved]==true &&
+        base_quality[:max_channel_error]==0 && base_quality[:mean_squared_error]==0.0
+      media=extension=='.jpg' ? :jpeg : extension=='.webp' ? :webp : :png
+      bytes=File.size(path)
+      {path:path,selected: :semantic_colorized_native,policy_revision:SEMANTIC_COLORIZE_REVISION,profile: :exact,
+       candidate_media_type:media,candidate_bytes:bytes,staged_bytes:bytes,selected_sha256:Digest::SHA256.file(path).hexdigest,
+       native_jpeg:media==:jpeg,semantic_colorize_verified:true,material_type:2,colorize_type:mode,colorize_deltas:deltas,
+       base_pixel_sha256:proof[:base_pixel_sha256],output_pixel_sha256:proof[:output_pixel_sha256],alpha_preserved:true,
+       quality:{compatible:true,alpha_preserved:true,mean_squared_error:0.0,max_channel_error:0,psnr_db:Float::INFINITY},
+       base_quality:base_quality,reason: :verified_parametric_colorization,
+       attempts:[{codec: :semantic_colorized_native,reason: :accepted,bytes:bytes}]}
+    rescue StandardError => error
+      raise if cancellation_error?(error)
+      nil
+    end
+    private_class_method :select_semantic_colorized_native
 
     def select_native_jpeg(texture, png_path, reference, baseline, loader, &checkpoint)
       path = png_path.sub(/\.png\z/i, '.native.jpg')
