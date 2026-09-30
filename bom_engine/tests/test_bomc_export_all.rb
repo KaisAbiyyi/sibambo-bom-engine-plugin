@@ -35,7 +35,7 @@ class TestBOMCExportAll < Minitest::Test
       test = self
       with_export_stub(lambda do |_model, output_path:, profile:, progress:, settings:, candidate_cache:|
         calls << profile
-        test.assert_equal :balanced, settings[:mode]
+        test.assert_equal :interactive, settings[:mode]
         test.assert_same candidate_cache, test.instance_variable_get(:@first_cache) if test.instance_variable_defined?(:@first_cache)
         test.instance_variable_set(:@first_cache, candidate_cache)
         progress.call(stage: :SCAN_MODEL, processed: 1, total: 3)
