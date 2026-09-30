@@ -19,6 +19,7 @@ module BOMEngine
         test_ui_batch_selection
         test_dual_budget_and_adaptation
         test_auto_can_grow_past_2048_without_losing_time_backoff
+        test_stage_transition_resets_timing_and_target
         test_cancellation
         test_scheduling_does_not_change_work
         test_scheduling_does_not_change_bomc
@@ -34,6 +35,8 @@ module BOMEngine
         light = BOMCProcessing.settings(:light)
         assert(light == { mode: :light, max_items: 64, max_ms: 10.0, min_items: 1, max_items_limit: 512 }, 'Light preset has the literal public contract')
         assert(BOMCProcessing.settings(:balanced)[:max_ms] == 24.0, 'Balanced is the default 24 ms budget')
+        assert(BOMCProcessing.settings(:interactive)[:max_items_limit] == 8_192,
+          'interactive Auto has a bounded ceiling instead of runaway 32768-item growth')
         assert(BOMCProcessing.settings(:fast)[:max_ms] == 60.0, 'Fast uses a bounded 60 ms budget')
         custom = BOMCProcessing.settings(:custom, custom: { max_items: 99_999, max_ms: 999, min_items: -4, max_items_limit: 999_999 })
         assert(custom[:max_ms] == 100.0, 'Custom time budget is clamped to the responsiveness ceiling')
@@ -100,6 +103,32 @@ module BOMEngine
         controller.checkpoint(stage: :work, processed: processed + 1, total: 100_000)
         assert(events[-1][:reason] == :time && controller.target_items < old_target,
           'slow model work forces Auto to yield and lower the next batch target')
+      end
+
+      def test_stage_transition_resets_timing_and_target
+        now = 0.0
+        events = []
+        controller = BOMCProcessing::Controller.new(
+          settings: BOMCProcessing.from_ui(batch_mode: 'auto'),
+          clock: -> { now }, on_yield: ->(event) { events << event }, cancelled: -> { false }
+        )
+        controller.checkpoint(stage: :cheap, processed: 0, total: 100_000)
+        8.times do
+          now += 0.001
+          controller.checkpoint(stage: :cheap, processed: controller.target_items, total: 100_000)
+        end
+        cheap_target = controller.target_items
+        assert(cheap_target > 1_024, 'cheap stage can learn a larger target')
+
+        now += 0.050
+        controller.checkpoint(stage: :expensive, processed: 0, total: 100)
+        assert(controller.target_items == 1_024,
+          'new stage starts from the responsive initial target rather than inheriting a cheap-stage giant target')
+        event_count = events.length
+        now += 0.002
+        controller.checkpoint(stage: :expensive, processed: 1, total: 100)
+        assert(events.length == event_count,
+          'time spent before the new-stage checkpoint is not charged to the new stage slice')
       end
 
       def test_cancellation

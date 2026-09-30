@@ -233,7 +233,8 @@ module BOMEngine
       loader = image_rep_loader || lambda { |path| Sketchup::ImageRep.new(path) }
       if profile.to_s == 'exact' && appearance && appearance[:material_type].to_i == 2
         semantic=measure_phase(timings,:semantic_colorize) do
-          select_semantic_colorized_native(texture,directory,basename,source_path,appearance,loader,&checkpoint)
+          select_semantic_colorized_native(texture,directory,basename,source_path,appearance,loader,
+            semantic_class: semantic_class, candidate_cache: candidate_cache, &checkpoint)
         end
         return stage_result(semantic,timings,stage_started) if semantic
       end
@@ -353,28 +354,100 @@ module BOMEngine
       end
     end
 
-    def select_semantic_colorized_native(texture,directory,basename,source_path,appearance,loader,&checkpoint)
-      mode=appearance[:colorize_type].to_s; deltas=appearance[:colorize_deltas]
-      return nil unless ['shift','tint'].include?(mode) && deltas
-      uncolorized=texture.image_rep(false); colorized=texture.image_rep(true)
-      proof=BOMCSketchupColorize.verify(uncolorized:uncolorized,colorized:colorized,mode:mode,deltas:deltas,checkpoint:checkpoint)
+    def select_semantic_colorized_native(texture, directory, basename, source_path, appearance, loader,
+      semantic_class: :class_b, candidate_cache: nil, &checkpoint)
+      mode = appearance[:colorize_type].to_s
+      deltas = appearance[:colorize_deltas]
+      return nil unless ['shift', 'tint'].include?(mode) && deltas
+
+      uncolorized = texture.image_rep(false)
+      colorized = texture.image_rep(true)
+      proof = BOMCSketchupColorize.verify(
+        uncolorized: uncolorized, colorized: colorized, mode: mode,
+        deltas: deltas, checkpoint: checkpoint
+      )
       return nil unless proof[:passed]
-      extension=File.extname(source_path.to_s).downcase; extension='.jpg' if extension=='.jpeg'
-      return nil unless ['.jpg','.png','.webp'].include?(extension)
-      path=File.join(directory,"#{basename}.semantic#{extension}")
-      return nil unless texture.write(path,false) && File.file?(path) && File.size(path)>0
-      base_quality=compare(uncolorized,loader.call(path),&checkpoint)
-      return nil unless base_quality[:compatible]==true && base_quality[:alpha_preserved]==true &&
-        base_quality[:max_channel_error]==0 && base_quality[:mean_squared_error]==0.0
-      media=extension=='.jpg' ? :jpeg : extension=='.webp' ? :webp : :png
-      bytes=File.size(path)
-      {path:path,selected: :semantic_colorized_native,policy_revision:SEMANTIC_COLORIZE_REVISION,profile: :exact,
-       candidate_media_type:media,candidate_bytes:bytes,staged_bytes:bytes,selected_sha256:Digest::SHA256.file(path).hexdigest,
-       native_jpeg:media==:jpeg,semantic_colorize_verified:true,material_type:2,colorize_type:mode,colorize_deltas:deltas,
-       base_pixel_sha256:proof[:base_pixel_sha256],output_pixel_sha256:proof[:output_pixel_sha256],alpha_preserved:true,
-       quality:{compatible:true,alpha_preserved:true,mean_squared_error:0.0,max_channel_error:0,psnr_db:Float::INFINITY},
-       base_quality:base_quality,reason: :verified_parametric_colorization,
-       attempts:[{codec: :semantic_colorized_native,reason: :accepted,bytes:bytes}]}
+
+      preferred = File.extname(source_path.to_s).downcase
+      preferred = '.jpg' if preferred == '.jpeg'
+      extensions = []
+      extensions << preferred if ['.jpg', '.png', '.webp'].include?(preferred)
+      extensions << '.png' unless extensions.include?('.png')
+
+      attempts = []
+      verified = []
+      extensions.each do |extension|
+        path = File.join(directory, "#{basename}.semantic#{extension}")
+        begin
+          unless texture.write(path, false) && File.file?(path) && File.size(path) > 0
+            attempts << { codec: :semantic_native, extension: extension, reason: :unavailable }
+            next
+          end
+          quality = compare(uncolorized, loader.call(path), &checkpoint)
+          unless quality[:compatible] == true && quality[:alpha_preserved] == true &&
+              quality[:max_channel_error] == 0 && quality[:mean_squared_error] == 0.0
+            attempts << { codec: :semantic_native, extension: extension, reason: :base_pixel_mismatch,
+              bytes: File.size(path), quality: quality }
+            next
+          end
+          media = extension == '.jpg' ? :jpeg : extension == '.webp' ? :webp : :png
+          candidate = { path: path, candidate_media_type: media, candidate_bytes: File.size(path),
+            quality: quality, extension: extension }
+          verified << candidate
+          attempts << { codec: :semantic_native, extension: extension, reason: :accepted,
+            bytes: candidate[:candidate_bytes] }
+        rescue StandardError => error
+          raise if cancellation_error?(error)
+          attempts << { codec: :semantic_native, extension: extension, reason: :candidate_error,
+            error: "#{error.class}: #{error.message}" }
+        end
+      end
+      return nil if verified.empty?
+
+      best = verified.min_by { |candidate| candidate[:candidate_bytes] }
+      if best[:candidate_media_type] == :png
+        baseline = {
+          path: best[:path], selected: :semantic_base_png,
+          candidate_media_type: :png, candidate_bytes: best[:candidate_bytes],
+          quality: best[:quality], alpha_preserved: true, attempts: attempts
+        }
+        searched = adaptive_webp(
+          best[:path], uncolorized, baseline, loader, :exact, semantic_class, false,
+          pixel_lossless: true, expanded_lossless_search: true,
+          candidate_cache: candidate_cache, &checkpoint
+        )
+        if File.file?(searched[:path]) && File.size(searched[:path]) < best[:candidate_bytes] &&
+            searched.dig(:quality, :compatible) == true &&
+            searched.dig(:quality, :alpha_preserved) == true &&
+            searched.dig(:quality, :max_channel_error) == 0 &&
+            searched.dig(:quality, :mean_squared_error) == 0.0
+          best = {
+            path: searched[:path], candidate_media_type: :webp,
+            candidate_bytes: File.size(searched[:path]), quality: searched[:quality],
+            extension: '.webp'
+          }
+          attempts = Array(searched[:attempts])
+        end
+      end
+
+      media = best[:candidate_media_type]
+      bytes = best[:candidate_bytes]
+      {
+        path: best[:path], selected: :semantic_colorized_native,
+        policy_revision: SEMANTIC_COLORIZE_REVISION, profile: :exact,
+        candidate_media_type: media, candidate_bytes: bytes, staged_bytes: bytes,
+        selected_sha256: Digest::SHA256.file(best[:path]).hexdigest,
+        native_jpeg: media == :jpeg, semantic_colorize_verified: true,
+        semantic_base_encoding: media, material_type: 2,
+        colorize_type: mode, colorize_deltas: deltas,
+        base_pixel_sha256: proof[:base_pixel_sha256],
+        output_pixel_sha256: proof[:output_pixel_sha256],
+        alpha_preserved: true,
+        quality: { compatible: true, alpha_preserved: true, mean_squared_error: 0.0,
+          max_channel_error: 0, psnr_db: Float::INFINITY },
+        base_quality: best[:quality], reason: :verified_parametric_colorization,
+        attempts: attempts
+      }
     rescue StandardError => error
       raise if cancellation_error?(error)
       nil

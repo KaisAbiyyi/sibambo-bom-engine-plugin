@@ -41,8 +41,8 @@
       <label><input type="radio" name="batch-mode" value="manual" onchange="refreshBatchMode()">Manual</label>
     </div>
     <div class="batch-controls">
-      <p class="hint" id="batch-description">Auto: mulai 256, adaptif sampai 2048 entitas/giliran.</p>
-      <select class="select" id="batch-size" aria-label="Batas entitas per giliran" disabled>
+      <p class="hint" id="batch-description">Auto: adaptif per tahap dengan budget waktu; target tidak diwariskan dari tahap murah ke tahap berat.</p>
+      <select class="select" id="batch-size" aria-label="Ceiling entitas per giliran" disabled>
         <option value="96">96</option><option value="128">128</option><option value="256">256</option>
         <option value="512" selected>512</option><option value="1024">1024</option><option value="2048">2048</option>
         <option value="4096">4096</option><option value="8192">8192</option>

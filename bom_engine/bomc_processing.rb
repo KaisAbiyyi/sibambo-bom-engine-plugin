@@ -6,8 +6,8 @@ module BOMEngine
 
     PRESETS = {
       light: { mode: :light, max_items: 64, max_ms: 10.0, min_items: 1, max_items_limit: 512 },
-      balanced: { mode: :balanced, max_items: 256, max_ms: 24.0, min_items: 4, max_items_limit: 32_768 },
-      interactive: { mode: :interactive, max_items: 1_024, max_ms: 12.0, min_items: 16, max_items_limit: 32_768 },
+      balanced: { mode: :balanced, max_items: 256, max_ms: 24.0, min_items: 4, max_items_limit: 8_192 },
+      interactive: { mode: :interactive, max_items: 1_024, max_ms: 12.0, min_items: 16, max_items_limit: 8_192 },
       fast: { mode: :fast, max_items: 1_024, max_ms: 60.0, min_items: 16, max_items_limit: 8_192 }
     }.freeze
 
@@ -72,8 +72,11 @@ module BOMEngine
         @clock = clock
         @on_yield = on_yield
         @cancelled = cancelled
-        @target_items = Integer(@settings.fetch(:max_items))
+        @initial_target_items = Integer(@settings.fetch(:max_items))
+        @target_items = @initial_target_items
         @stage = nil
+        @stage_targets = {}
+        @stage_ms_per_item = {}
         @slice_started = nil
         @slice_processed = 0
       end
@@ -85,12 +88,9 @@ module BOMEngine
         current_stage = stage.to_sym
         current_processed = Integer(processed || 0)
         if @slice_started.nil?
-          @stage = current_stage
-          @slice_started = now
-          @slice_processed = current_processed
+          enter_stage(current_stage, current_processed, now)
         elsif @stage != current_stage || current_processed < @slice_processed
-          @stage = current_stage
-          @slice_processed = current_processed
+          enter_stage(current_stage, current_processed, now)
         end
 
         elapsed_ms = (now - @slice_started) * 1000.0
@@ -104,7 +104,7 @@ module BOMEngine
                  end
         return false unless reason
 
-        adapt_target(elapsed_ms) unless force
+        adapt_target(elapsed_ms, items) unless force
         total_value = Integer(total || 0)
         percent = total_value > 0 ? [current_processed.to_f * 100.0 / total_value, 100.0].min : 0.0
         @on_yield.call(
@@ -127,17 +127,39 @@ module BOMEngine
 
       private
 
-      def adapt_target(elapsed_ms)
+      def enter_stage(stage, processed, now)
+        @stage_targets[@stage] = @target_items if @stage
+        @stage = stage
+        @target_items = @stage_targets.fetch(stage, @initial_target_items)
+        @slice_started = now
+        @slice_processed = processed
+      end
+
+      def adapt_target(elapsed_ms, items)
         budget = @settings.fetch(:max_ms).to_f
         minimum = Integer(@settings.fetch(:min_items))
         maximum = Integer(@settings.fetch(:max_items_limit))
         candidate = @target_items
-        if elapsed_ms < budget * 0.6
-          candidate = (@target_items * 1.5).ceil
-        elsif elapsed_ms > budget && elapsed_ms > 0.0
+
+        if items > 0 && elapsed_ms > 0.0
+          sample = elapsed_ms / items.to_f
+          previous = @stage_ms_per_item[@stage]
+          estimate = previous ? (previous * 0.7 + sample * 0.3) : sample
+          @stage_ms_per_item[@stage] = estimate
+          desired = [(budget * 0.80 / estimate).floor, minimum].max
+          if elapsed_ms > budget
+            candidate = [(@target_items * budget / elapsed_ms).floor, desired].min
+          elsif elapsed_ms < budget * 0.60
+            candidate = [(@target_items * 1.5).ceil, desired].min
+          else
+            candidate = desired
+          end
+        elsif elapsed_ms > budget
           candidate = (@target_items * budget / elapsed_ms).floor
         end
+
         @target_items = [[candidate, minimum].max, maximum].min
+        @stage_targets[@stage] = @target_items
       end
     end
   end
