@@ -159,6 +159,11 @@
       } else if (String(data.profile || '').toLowerCase() === 'exact') {
         row('JCM Exact', '0 tekstur');
       }
+      if (data.semantic_colorize_count != null && Number(data.semantic_colorize_count) > 0) {
+        row('Semantic colorize', Number(data.semantic_colorize_count).toLocaleString() + ' tekstur native · ' + formatBytes(data.semantic_colorize_bytes || 0));
+      } else if (String(data.profile || '').toLowerCase() === 'exact') {
+        row('Semantic colorize', '0 tekstur');
+      }
       (data.texture_encodings || []).forEach(function(encoding) {
         row('Encoding · ' + String(encoding.name || '').toUpperCase(),
           Number(encoding.count || 0).toLocaleString() + ' tekstur · ' + formatBytes(encoding.bytes || 0));
