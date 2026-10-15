@@ -326,16 +326,29 @@ module BOMEngine
           end
           front_uv = decode_face_uv(front_uv_values, front_uv_offsets.fetch(face_index + 1), metadata['front_uv_loop_lengths'])
           back_uv = decode_face_uv(back_uv_values, back_uv_offsets.fetch(face_index + 1), metadata['back_uv_loop_lengths'])
-          EvolutionDocument.deep_copy(metadata).merge(
+          clean_metadata = EvolutionDocument.deep_copy(metadata).reject do |key, _|
+            %w[front_uv_loop_lengths back_uv_loop_lengths].include?(key)
+          end
+          face = clean_metadata.merge(
             'outer' => outer_indices.slice(outer_offsets.fetch(face_index)...outer_offsets.fetch(face_index + 1)),
             'holes' => holes,
             'triangles' => triangles.slice(triangle_offsets.fetch(face_index)...triangle_offsets.fetch(face_index + 1)),
             'normal' => normals.slice(face_index * 3, 3),
             'area_m2' => areas.fetch(face_index),
             'front_material_id' => material_id(materials, front_materials.fetch(face_index)),
-            'back_material_id' => material_id(materials, back_materials.fetch(face_index)),
-            'uv' => { 'front_outer' => front_uv[0], 'front_holes' => front_uv.drop(1), 'back_outer' => back_uv[0], 'back_holes' => back_uv.drop(1) }
+            'back_material_id' => material_id(materials, back_materials.fetch(face_index))
           )
+          uv = {}
+          unless Array(metadata['front_uv_loop_lengths']).empty?
+            uv['front_outer'] = front_uv[0]
+            uv['front_holes'] = front_uv.drop(1)
+          end
+          unless Array(metadata['back_uv_loop_lengths']).empty?
+            uv['back_outer'] = back_uv[0]
+            uv['back_holes'] = back_uv.drop(1)
+          end
+          face['uv'] = uv unless uv.empty?
+          face
         end
         edges = Array(mesh['edge_metadata']).each_with_index.map do |metadata, edge_index|
           EvolutionDocument.deep_copy(metadata).merge('vertices' => edge_vertices.slice(edge_index * 2, 2))

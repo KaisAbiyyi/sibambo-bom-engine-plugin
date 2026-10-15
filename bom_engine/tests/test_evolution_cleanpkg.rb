@@ -64,4 +64,60 @@ class TestEvolutionCleanPKG < Test::Unit::TestCase
       assert_equal(-4.0, decoded.dig(:graph, 'transforms', 2, 12))
     end
   end
+
+  def test_missing_uv_remains_absent_during_readback_validation
+    graph = EvolutionFixture.graph
+    graph[:meshes][0][:faces][0].delete(:uv)
+    document = BOMEngine::EvolutionDocument.prepare(
+      graph,
+      engine: :e3,
+      profile: :research,
+      source_tree_sha256: 'e' * 64,
+      historical_baseline_sha: 'f' * 40
+    )
+
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, 'no-uv.cleanpkg')
+      BOMEngine::EvolutionCleanPKGWriter.write(path, document)
+      decoded = BOMEngine::EvolutionValidator.read(path, engine: :e3)
+      assert_false decoded.dig(:graph, 'meshes', 0, 'faces', 0).key?('uv')
+      assert_nothing_raised do
+        BOMEngine::EvolutionValidator.validate_file!(path, engine: :e3, expected_profile: :research, source_document: document)
+      end
+    end
+  end
+
+  def test_one_sided_uv_key_shape_survives_readback_validation
+    {
+      front: %w[front_outer front_holes],
+      back: %w[back_outer back_holes]
+    }.each do |side, expected_keys|
+      graph = EvolutionFixture.graph
+      face = graph[:meshes][0][:faces][0]
+      original = face.fetch(:uv)
+      face[:uv] = if side == :front
+                    { front_outer: original[:front_outer], front_holes: original[:front_holes] }
+                  else
+                    { back_outer: original[:back_outer], back_holes: original[:back_holes] }
+                  end
+      document = BOMEngine::EvolutionDocument.prepare(
+        graph,
+        engine: :e3,
+        profile: :research,
+        source_tree_sha256: 'e' * 64,
+        historical_baseline_sha: 'f' * 40
+      )
+
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "#{side}-uv.cleanpkg")
+        BOMEngine::EvolutionCleanPKGWriter.write(path, document)
+        decoded = BOMEngine::EvolutionValidator.read(path, engine: :e3)
+        decoded_uv = decoded.dig(:graph, 'meshes', 0, 'faces', 0, 'uv')
+        assert_equal expected_keys, decoded_uv.keys
+        assert_nothing_raised do
+          BOMEngine::EvolutionValidator.validate_file!(path, engine: :e3, expected_profile: :research, source_document: document)
+        end
+      end
+    end
+  end
 end
