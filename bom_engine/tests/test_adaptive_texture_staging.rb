@@ -87,6 +87,33 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
     end
   end
 
+  def test_portable_staging_disables_semantic_native_and_bakes_displayed_pixels
+    Dir.mktmpdir do |dir|
+      source = Frame.new(1, 1, 32, 0, [115, 137, 98, 128].pack('C*'))
+      target = Frame.new(1, 1, 32, 0, [20, 40, 60, 128].pack('C*'))
+      writes = []
+      texture = Object.new
+      texture.define_singleton_method(:image_rep) { |colorized| colorized ? target : source }
+      texture.define_singleton_method(:write) do |path, colorized|
+        writes << colorized
+        File.binwrite(path, colorized ? ('p' * 20_000) : ('n' * 512))
+        true
+      end
+
+      result = BOMEngine::BOMCTextureOptimizer.stage(
+        texture: texture, directory: dir, basename: 'portable', source_path: 'embedded.png',
+        profile: :exact, allow_semantic_colorize: false,
+        appearance: {
+          material_type: 2, colorize_type: 'shift',
+          colorize_deltas: { h: 90.0, l: 0.1, s: -0.1 }
+        },
+        image_rep_loader: ->(_path) { target }
+      )
+      assert_equal true, writes.first, 'portable capture must stage displayed/colorized pixels first'
+      assert_not_equal :semantic_colorized_native, result.dig(:evidence, :selected)
+    end
+  end
+
   def test_color_map_frame_conversion_preserves_padding_alpha_and_final_checkpoint
     [24, 32].each do |bits|
       bytes = +''.b

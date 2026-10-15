@@ -14,11 +14,14 @@ module EvolutionLineupInstaller
   RETIRED_LOADERS = %w[sibambo_evolution_lab_loader.rb sibambo_e4_jcm_8b5d7b07a2ea6094.rb].freeze
   ENGINE_IDS = %w[e1-json e2-canonical-gzip e3-cleanpkg e4-bomc].freeze
 
-  def self.install(package_dir:, plugins_dir:)
+  def self.install(package_dir:, plugins_dir:, copy_tree: nil)
     package = File.realpath(package_dir)
     plugins = File.realpath(plugins_dir)
     manifest = JSON.parse(File.read(File.join(package, 'manifest.json')))
-    raise 'Wrong package schema' unless manifest['schemaVersion'] == 'sibambo-evolution-lineup-package-v1'
+    package_schema = manifest['schemaVersion']
+    unless %w[sibambo-evolution-lineup-package-v1 sibambo-evolution-lineup-package-v2].include?(package_schema)
+      raise 'Wrong package schema'
+    end
     raise 'This installer accepts candidate packages only' unless manifest['certified'] == false
     rbz = File.join(package, manifest.fetch('package'))
     raise 'Package archive checksum mismatch' unless Digest::SHA256.file(rbz).hexdigest == manifest.fetch('packageSha256')
@@ -50,6 +53,12 @@ module EvolutionLineupInstaller
       raise 'E4 source identity mismatch' unless engines.last.fetch('sha') == manifest.fetch('e4SourceTreeSha256')
       e4_build_sha_path = File.join(source_folder, 'engine_e4_bomc', 'bom_engine', 'BUILD_SHA.txt')
       raise 'Packaged E4 build identity is missing or mismatched' unless File.file?(e4_build_sha_path) && File.read(e4_build_sha_path).strip == manifest.fetch('e4SourceTreeSha256')
+      if package_schema == 'sibambo-evolution-lineup-package-v2'
+        raise 'Every Evolution slot must expose Visual/Research/Exact' unless engines.all? { |engine| engine.fetch('profiles') == %w[visual research exact] }
+        shared_build_sha_path = File.join(source_folder, 'runtime', 'bom_engine', 'BUILD_SHA.txt')
+        raise 'Packaged shared runtime identity is missing or mismatched' unless File.file?(shared_build_sha_path) && File.read(shared_build_sha_path).strip == manifest.fetch('sharedSourceTreeSha256')
+        raise 'Shared runtime and E4 identities diverged' unless manifest.fetch('sharedSourceTreeSha256') == manifest.fetch('e4SourceTreeSha256')
+      end
 
       backup = nil
       moved_folder = false
@@ -76,7 +85,8 @@ module EvolutionLineupInstaller
           moved_loader = true
         end
 
-        FileUtils.cp_r(source_folder, destination_folder)
+        copier = copy_tree || ->(source, destination) { FileUtils.cp_r(source, destination) }
+        copier.call(source_folder, destination_folder)
         installed_new_folder = true
         source_tree = EvolutionLabBuilder.compute_tree_sha(source_folder)
         installed_tree = EvolutionLabBuilder.compute_tree_sha(destination_folder)

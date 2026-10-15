@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sibambo.dev/schemas/evolution/evolution-fidelity-v1.schema.json",
+  "title": "Sibambo Evolution fidelity metadata",
+  "type": "object",
+  "required": ["contract", "engine", "profile", "source_tree_sha256", "historical_baseline_sha"],
+  "properties": {
+    "contract": { "const": "sibambo-evolution-fidelity-v1" },
+    "engine": { "enum": ["e1", "e2", "e3"] },
+    "profile": { "enum": ["visual", "research", "exact"] },
+    "source_tree_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "historical_baseline_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+  },
+  "additionalProperties": false
+}

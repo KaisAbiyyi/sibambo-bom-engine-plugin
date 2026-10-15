@@ -2,7 +2,6 @@
 
 require 'json'
 require_relative 'lineup_dialog'
-require_relative 'historical_preflight'
 
 module SibamboHistory
   module EvolutionLab
@@ -18,12 +17,11 @@ module SibamboHistory
         raise "File engine tidak ditemukan: #{entry}" unless File.file?(entry)
         require entry
         target = slot.fetch('moduleName').split('::').inject(Object) { |scope, name| scope.const_get(name) }
-        target.load_engine
+        runtime = target.load_engine
         if slot.fetch('kind') == 'bomc_three_profile'
-          target::BOMCExtension.export_interactive
+          runtime::BOMCExtension.export_interactive
         else
           LineupDialog.show(slot: slot, model: model, target: target) do |settings|
-            HistoricalPreflight.validate!(model, kind: slot.fetch('kind'))
             target.export_current_model(model, settings)
           end
         end
@@ -41,7 +39,7 @@ module SibamboHistory
         end
         active_menu.add_separator
         active_menu.add_item('Tentang Evolution') do
-          UI.messagebox('Empat generasi BOM Engine. E1–E3 adalah snapshot historis; E4 adalah kandidat kode terbaru. Belum tersertifikasi lintas model.', MB_OK)
+          UI.messagebox('Empat format Evolution memakai capture runtime kandidat yang sama. E1–E3 menyimpan commit historis hanya sebagai baseline identitas. Belum tersertifikasi lintas model.', MB_OK)
         end
       end
     end

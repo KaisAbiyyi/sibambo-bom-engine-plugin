@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sibambo.dev/schemas/evolution/cleanpkg-1.1.0.schema.json",
+  "title": "Sibambo Evolution CleanPKG 1.1.0 Manifest",
+  "type": "object",
+  "required": ["format", "evolution", "buffers"],
+  "properties": {
+    "format": {
+      "type": "object",
+      "required": ["identifier", "version"],
+      "properties": {
+        "identifier": { "const": "bom_engine_clean_package" },
+        "version": { "const": "1.1.0" }
+      }
+    },
+    "evolution": { "$ref": "evolution-fidelity-v1.schema.json" }
+  },
+  "additionalProperties": true
+}

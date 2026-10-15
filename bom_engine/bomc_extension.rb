@@ -397,9 +397,9 @@ module BOMEngine
           BOMCSizeGate.source_info(model.path.to_s)
         end,
         snapshot: lambda do |model, checkpoint|
-          graph = snapshot_model(model, texture_directory, checkpoint, profile: profile,
+          graph = capture_graph(model, texture_directory: texture_directory, checkpoint: checkpoint, profile: profile,
             allow_jpeg_color_map: allow_jpeg_color_map, prepared_color_maps: prepared_color_maps,
-            candidate_cache: effective_cache, processing: processing)
+            candidate_cache: effective_cache, processing: processing, texture_representation: :bomc)
           diagnostics[:graph] = graph if diagnostics
           graph
         end,
@@ -592,7 +592,25 @@ module BOMEngine
       result
     end
 
-    def snapshot_model(model, texture_directory, checkpoint, profile: DEFAULT_PROFILE, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil, processing: nil)
+    def capture_graph(model, texture_directory:, checkpoint:, profile: DEFAULT_PROFILE, processing: nil,
+      texture_representation: :bomc, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil)
+      representation = texture_representation.to_sym
+      unless [:bomc, :portable].include?(representation)
+        raise ArgumentError, "Unsupported texture representation: #{texture_representation}"
+      end
+      portable = representation == :portable
+      snapshot_model(model, texture_directory, checkpoint, profile: profile,
+        allow_jpeg_color_map: portable ? false : allow_jpeg_color_map,
+        allow_semantic_colorize: !portable,
+        prepared_color_maps: portable ? nil : prepared_color_maps,
+        candidate_cache: candidate_cache,
+        processing: processing,
+        texture_representation: representation)
+    end
+
+    def snapshot_model(model, texture_directory, checkpoint, profile: DEFAULT_PROFILE, allow_jpeg_color_map: false,
+      allow_semantic_colorize: true, prepared_color_maps: nil, candidate_cache: nil, processing: nil,
+      texture_representation: :bomc)
       texture_writer = begin
         Sketchup.create_texture_writer
       rescue StandardError
@@ -608,6 +626,8 @@ module BOMEngine
         profile: profile,
         material_classes: material_classes,
         allow_jpeg_color_map: allow_jpeg_color_map,
+        allow_semantic_colorize: allow_semantic_colorize,
+        record_reference_pixel_hash: texture_representation.to_sym == :portable,
         prepared_color_maps: prepared_color_maps,
         candidate_cache: candidate_cache
       )
@@ -643,7 +663,8 @@ module BOMEngine
               else
                 { materials: extracted_materials, meshes: [], definitions: [], nodes: [], instances: [] }
               end
-      attach_staged_textures(graph, extracted_materials, texture_directory, profile: profile)
+      attach_staged_textures(graph, extracted_materials, texture_directory, profile: profile,
+        texture_representation: texture_representation)
     end
     private_class_method :snapshot_model
 
@@ -660,7 +681,7 @@ module BOMEngine
     end
     private_class_method :validate_compiled_result
 
-    def attach_staged_textures(graph, extracted_materials, texture_directory, profile: DEFAULT_PROFILE)
+    def attach_staged_textures(graph, extracted_materials, texture_directory, profile: DEFAULT_PROFILE, texture_representation: :bomc)
       by_name = {}
       Array(extracted_materials).each { |material| by_name[material[:name].to_s] = material }
       prof = normalize_profile(profile)
@@ -674,7 +695,7 @@ module BOMEngine
         material[:colorize_output_sha256]=extracted[:colorize_output_sha256] if extracted[:colorize_output_sha256]
         staged_path = File.join(texture_directory, extracted[:texture][:filename].to_s)
         source_path = extracted[:texture][:source_path].to_s
-        source_supported = File.file?(source_path) && supported_texture_path?(source_path)
+        source_supported = texture_representation.to_sym == :bomc && File.file?(source_path) && supported_texture_path?(source_path)
         staging = extracted[:texture][:staging_evidence]
         if staging && staging[:policy_revision]
           unless File.file?(staged_path) && Digest::SHA256.file(staged_path).hexdigest == staging[:selected_sha256]

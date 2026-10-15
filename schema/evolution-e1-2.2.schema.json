@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sibambo.dev/schemas/evolution/e1-2.2.schema.json",
+  "title": "Sibambo Evolution E1 2.2",
+  "type": "object",
+  "required": ["schema_version", "format", "profile", "evolution", "assets", "entities"],
+  "properties": {
+    "schema_version": { "const": "2.2" },
+    "format": { "const": "sibambo-evolution-e1" },
+    "profile": { "enum": ["visual", "research", "exact"] },
+    "evolution": { "$ref": "evolution-fidelity-v1.schema.json" },
+    "assets": { "type": "array" },
+    "entities": { "type": "array" }
+  },
+  "additionalProperties": true
+}

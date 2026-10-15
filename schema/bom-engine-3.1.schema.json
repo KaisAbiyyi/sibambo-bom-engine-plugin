@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sibambo.dev/schemas/bom-engine/3.1.0/schema.json",
+  "title": "BOM Engine Canonical 3.1.0",
+  "type": "object",
+  "required": ["format", "evolution", "materials", "transforms", "meshes", "definitions", "nodes", "assets"],
+  "properties": {
+    "format": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "BOM Engine Canonical" },
+        "version": { "const": "3.1.0" }
+      }
+    },
+    "evolution": { "$ref": "evolution-fidelity-v1.schema.json" },
+    "assets": { "type": "array" }
+  },
+  "additionalProperties": true
+}

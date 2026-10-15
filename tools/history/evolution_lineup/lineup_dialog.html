@@ -6,12 +6,7 @@
   <title>Sibambo BOM Engine Evolution</title>
   <link rel="stylesheet" href="bomc_theme.css">
   <style>
-    [hidden] { display: none !important; }
-    .generation { color: var(--maroon); font-weight: 750; letter-spacing: .08em; font-size: 11px; }
     .settings-grid { display: grid; gap: 12px; }
-    .check-row { display: flex; gap: 9px; align-items: flex-start; font-size: 13px; cursor: pointer; }
-    .check-row input { margin-top: 3px; accent-color: var(--maroon); }
-    .format-detail { margin-top: 10px; }
     .batch-select { width: 100%; }
   </style>
 </head>
@@ -19,88 +14,47 @@
   <main class="shell">
     <div class="brand"><span class="brand-name">Sibambo BOM Engine Evolution</span><span class="build" id="build"></span></div>
     <h1 id="title">Memuat engine…</h1>
-    <p class="intro">Pilih pengaturan untuk model SketchUp yang sedang terbuka. Ini engine historis untuk perbandingan, belum tersertifikasi untuk rilis.</p>
-
-    <section class="section">
+    <p class="intro">E1–E3 memakai capture runtime yang sama dengan E4 kandidat. Pilih profil fidelity untuk model SketchUp yang sedang terbuka.</p>
+    <section class="section settings-grid">
+      <label class="field-label" for="profile">PROFILE</label>
+      <select id="profile" class="select batch-select"><option value="visual">Visual</option><option value="research">Research</option><option value="exact">Exact</option></select>
       <label class="field-label" for="output">OUTPUT FILE</label>
       <div class="path-row"><input id="output" class="text-input" type="text" spellcheck="false"><button class="button" id="browse" type="button">Browse</button></div>
       <p class="path-note" id="path-note"></p>
     </section>
-
-    <section class="section" id="format-section">
-      <div class="section-head"><h2>Pengaturan format</h2></div>
-      <div class="settings-grid" id="tiered" hidden>
-        <label class="field-label" for="level">Tingkat detail JSON
-          <select id="level" class="select batch-select"><option value="visual">Visual</option><option value="standard">Standard</option><option value="full" selected>Full</option></select>
-        </label>
-        <label class="check-row"><input type="checkbox" id="edges"><span>Sertakan edges</span></label>
-        <label class="check-row"><input type="checkbox" id="textures"><span>Ekspor file tekstur (hanya Full)</span></label>
-        <label class="check-row"><input type="checkbox" id="pretty"><span>JSON mudah dibaca (lebih besar)</span></label>
-      </div>
-      <div class="settings-grid" id="canonical" hidden>
-        <p class="note">Canonical JSON v3 selalu dikompresi Gzip. Engine menambahkan identitas versinya pada nama file.</p>
-        <label class="check-row"><input type="checkbox" id="canonical-textures"><span>Ekspor file tekstur pendamping</span></label>
-        <label class="check-row"><input type="checkbox" id="canonical-pretty"><span>JSON mudah dibaca sebelum kompresi</span></label>
-      </div>
-      <div class="settings-grid" id="cleanpkg" hidden><p class="note">CleanPKG memakai container biner dan seluruh model. Tidak ada profil Visual/Research/Exact pada generasi ini.</p></div>
-    </section>
-
     <section class="section">
       <div class="section-head"><h2>Batch pemrosesan</h2></div>
-      <label class="field-label" for="batch">Entitas per giliran</label>
-      <select id="batch" class="select batch-select">
-        <option>96</option><option>128</option><option>256</option><option selected>512</option>
-        <option>1024</option><option>2048</option><option>4096</option><option>8192</option>
-      </select>
-      <p class="hint format-detail">Batch lebih besar bisa lebih cepat, tetapi SketchUp bisa terasa kurang responsif.</p>
+      <select id="batch" class="select batch-select"><option>96</option><option>128</option><option>256</option><option selected>512</option><option>1024</option><option>2048</option><option>4096</option><option>8192</option></select>
     </section>
-
-    <div class="actions"><span class="footer-note">Kandidat perbandingan • belum certified</span><button class="button" id="cancel" type="button">Batal</button><button class="button button-primary" id="export" type="button">Export</button></div>
+    <div class="actions"><span class="footer-note">Kandidat • belum certified</span><button class="button" id="cancel" type="button">Batal</button><button class="button button-primary" id="export" type="button">Export</button></div>
   </main>
   <script>
     let config = null;
     const byId = id => document.getElementById(id);
+    const extension = engine => engine === 'e1' ? '.json' : engine === 'e2' ? '.json.gz' : '.cleanpkg';
+    function normalizePath() {
+      if (!config) return;
+      const profile = byId('profile').value.toUpperCase();
+      const engine = config.engine.toUpperCase();
+      let path = byId('output').value.trim();
+      path = path.replace(/__E[1-3]__(?:VISUAL|RESEARCH|EXACT)(?:\.json(?:\.gz)?|\.cleanpkg)$/i, '').replace(/(?:\.json(?:\.gz)?|\.cleanpkg)$/i, '');
+      if (path) byId('output').value = `${path}__${engine}__${profile}${extension(config.engine)}`;
+    }
     function setConfig(next) {
       config = next;
       byId('title').textContent = next.title;
-      byId('build').textContent = 'SHA ' + next.sha.slice(0, 12);
+      byId('build').textContent = `TREE ${next.sha.slice(0, 12)} · v${next.formatVersion}`;
       byId('output').value = next.output_path;
-      byId('tiered').hidden = next.kind !== 'tiered_json';
-      byId('canonical').hidden = next.kind !== 'canonical_v3';
-      byId('cleanpkg').hidden = next.kind !== 'cleanpkg';
-      byId('path-note').textContent = next.kind === 'canonical_v3'
-        ? 'Nama file ini harus tetap memakai akhiran versi dan .json.gz; exporter tidak menulis persis ke nama lain.'
-        : 'File yang sudah ada dengan nama sama dapat tertimpa oleh exporter historis.';
-      updateLevel();
+      byId('path-note').textContent = 'Artifact dan .provenance.json dipublikasikan sebagai satu pasangan setelah readback validation.';
     }
     function setPath(value) { byId('output').value = value; }
-    function normalizeCanonicalPath() {
-      if (!config || config.kind !== 'canonical_v3') return;
-      const suffix = '__SBE-2026.07.16-01_canonical.json.gz';
-      const path = byId('output').value.trim();
-      if (!path) return;
-      const base = path.replace(/\.(?:json|bome)(?:\.gz)?$/i, '')
-        .replace(/_(?:visual|standard|full|canonical)$/i, '')
-        .replace(/__SBE-2026\.07\.16-01$/, '');
-      byId('output').value = base + suffix;
-    }
-    function updateLevel() {
-      const full = byId('level').value === 'full';
-      byId('textures').disabled = !full;
-      if (!full) byId('textures').checked = false;
-    }
-    byId('level').addEventListener('change', updateLevel);
-    byId('output').addEventListener('blur', normalizeCanonicalPath);
-    byId('browse').addEventListener('click', () => window.sketchup.browse());
+    byId('profile').addEventListener('change', normalizePath);
+    byId('output').addEventListener('blur', normalizePath);
+    byId('browse').addEventListener('click', () => window.sketchup.browse(byId('profile').value));
     byId('cancel').addEventListener('click', () => window.sketchup.cancel());
     byId('export').addEventListener('click', () => {
-      if (!config) return;
-      normalizeCanonicalPath();
-      window.sketchup.export(JSON.stringify({
-        output_path: byId('output').value.trim(), batch_size: Number(byId('batch').value),
-        export_level: byId('level').value, export_textures: config.kind === 'tiered_json' ? byId('textures').checked : byId('canonical-textures').checked,
-        include_edges: byId('edges').checked, pretty_print: config.kind === 'tiered_json' ? byId('pretty').checked : byId('canonical-pretty').checked
-      }));
+      normalizePath();
+      window.sketchup.export(JSON.stringify({ output_path: byId('output').value.trim(), batch_size: Number(byId('batch').value), profile: byId('profile').value }));
     });
     window.setConfig = setConfig;
     window.setPath = setPath;

@@ -4,6 +4,7 @@ require 'json'
 require 'fileutils'
 require 'digest'
 require 'open3'
+require 'rbconfig'
 require 'time'
 begin
   require 'zip'
@@ -1761,7 +1762,7 @@ module EvolutionLabBuilder
     all_ok = true
     ruby_files = Dir.glob(File.join(staged_dir, '**', '*.rb'))
     ruby_files.each do |rb_path|
-      stdout, stderr, status = Open3.capture3("ruby -c \"#{rb_path}\"")
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, '-c', rb_path)
       rel = rb_path.sub(staged_dir, '')
       if status.success?
         # Syntax OK

@@ -51,11 +51,10 @@ module BOMEngine
     private_class_method :stage_result
 
     def reference_pixel_sha256(image_rep)
-      frame = frame_for(image_rep)
-      digest = Digest::SHA256.new
-      digest.update([frame[:width], frame[:height], frame[:channels], frame[:stride]].pack('L<4'))
-      digest.update(frame[:data])
-      digest.hexdigest
+      # Hash normalized displayed RGBA rather than SketchUp's native row layout.
+      # This keeps the evidence stable across RGB/BGRA representations and row
+      # padding while still binding it to the pixels the user actually sees.
+      Digest::SHA256.hexdigest(color_map_rgba(image_rep))
     end
     private_class_method :reference_pixel_sha256
 
@@ -226,12 +225,12 @@ module BOMEngine
       )
     end
 
-    def stage(texture:, directory:, basename:, source_path:, profile: :visual, semantic_class: :class_b, policy: nil, image_rep_loader: nil, allow_jpeg_color_map: false, color_map_budget: nil, prepared_color_maps: nil, candidate_cache: nil, appearance: nil, &checkpoint)
+    def stage(texture:, directory:, basename:, source_path:, profile: :visual, semantic_class: :class_b, policy: nil, image_rep_loader: nil, allow_jpeg_color_map: false, allow_semantic_colorize: true, record_reference_pixel_hash: false, color_map_budget: nil, prepared_color_maps: nil, candidate_cache: nil, appearance: nil, &checkpoint)
       stage_started = monotonic_ms
       timings = {}
       png_path = File.join(directory, "#{basename}.png")
       loader = image_rep_loader || lambda { |path| Sketchup::ImageRep.new(path) }
-      if profile.to_s == 'exact' && appearance && appearance[:material_type].to_i == 2
+      if allow_semantic_colorize && profile.to_s == 'exact' && appearance && appearance[:material_type].to_i == 2
         semantic=measure_phase(timings,:semantic_colorize) do
           select_semantic_colorized_native(texture,directory,basename,source_path,appearance,loader,
             semantic_class: semantic_class, candidate_cache: candidate_cache, &checkpoint)
@@ -249,6 +248,7 @@ module BOMEngine
       raise 'SketchUp could not stage the lossless PNG texture' unless written && File.file?(png_path)
 
       reference = measure_phase(timings, :reference_image_rep) { texture.image_rep(true) }
+      reference_pixel_hash = measure_phase(timings, :reference_pixel_sha256) { reference_pixel_sha256(reference) } if record_reference_pixel_hash
       native_jpeg = native_jpeg_path?(source_path)
       is_pixel_lossless = (policy == :pixel_lossless || profile.to_s.downcase.to_sym == :exact)
 
@@ -260,6 +260,7 @@ module BOMEngine
         native_jpeg: native_jpeg,
         reason: is_pixel_lossless ? :pixel_lossless_policy : :jpeg_not_evaluated
       }
+      evidence[:reference_pixel_sha256] = reference_pixel_hash if reference_pixel_hash
 
       # Exact is a pixel contract, not a PNG-only container policy. Compete
       # lossless encodings, but never construct a lossy JPEG/WebP candidate.

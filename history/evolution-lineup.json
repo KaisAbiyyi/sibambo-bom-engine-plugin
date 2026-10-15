@@ -1,42 +1,57 @@
 {
-  "schemaVersion": "sibambo-evolution-lineup-v1",
-  "selectionBasis": "Curated distinct historical engine generations; not a measured performance ranking or certification.",
+  "schemaVersion": "sibambo-evolution-lineup-v2",
+  "selectionBasis": "Four format generations on one current fidelity capture runtime; historical commits are retained only as baseline identities. This is not certification or a performance ranking.",
   "slots": [
     {
       "id": "e1-json",
+      "engine": "e1",
       "order": 1,
-      "title": "E1 — JSON Visual / Standard / Full",
+      "title": "E1 — World-expanded JSON 2.2",
       "kind": "tiered_json",
+      "formatVersion": "2.2",
+      "source": "working-tree",
       "historyVersion": "SBE-2026.05.11-02",
-      "reason": "Most capable original-era JSON exporter with three detail levels.",
-      "state": "uncertified"
+      "profiles": ["visual", "research", "exact"],
+      "reason": "Modern E1 world-expanded tree writer on the shared current capture runtime.",
+      "state": "development"
     },
     {
       "id": "e2-canonical-gzip",
+      "engine": "e2",
       "order": 2,
-      "title": "E2 — Canonical JSON v3 + Gzip",
+      "title": "E2 — Canonical JSON 3.1 + Gzip",
       "kind": "canonical_v3",
+      "formatVersion": "3.1.0",
+      "source": "working-tree",
       "historyVersion": "SBE-2026.07.16-01",
-      "reason": "Canonical graph and compressed JSON generation.",
-      "state": "uncertified"
+      "profiles": ["visual", "research", "exact"],
+      "reason": "Modern canonical DAG writer on the shared current capture runtime.",
+      "state": "development"
     },
     {
       "id": "e3-cleanpkg",
+      "engine": "e3",
       "order": 3,
-      "title": "E3 — CleanPKG Binary Container",
+      "title": "E3 — CleanPKG 1.1 Float64",
       "kind": "cleanpkg",
+      "formatVersion": "1.1.0",
+      "source": "working-tree",
       "historyVersion": "SBE-2026.08.12-01",
-      "reason": "Distinct binary package generation before BOMC.",
-      "state": "uncertified"
+      "profiles": ["visual", "research", "exact"],
+      "reason": "Modern sectioned binary writer with Float64 fidelity on the shared current capture runtime.",
+      "state": "development"
     },
     {
       "id": "e4-bomc",
+      "engine": "e4",
       "order": 4,
       "title": "E4 — BOMC 1.2 (Current Candidate)",
       "kind": "bomc_three_profile",
+      "formatVersion": "1.2",
       "source": "working-tree",
       "baseProducerSha": "bd6782691ef8ba98f9d3baab698bc1cd961ce393",
-      "reason": "Current evolved bd67826-based engine; Visual, Research and Exact profiles plus Export All.",
+      "profiles": ["visual", "research", "exact"],
+      "reason": "Current BOMC writer on the same shared current capture runtime.",
       "state": "development"
     }
   ]

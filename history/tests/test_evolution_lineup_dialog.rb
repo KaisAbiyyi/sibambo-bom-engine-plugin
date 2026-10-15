@@ -4,51 +4,52 @@ require 'test/unit'
 require_relative '../../tools/history/evolution_lineup/lineup_dialog'
 
 class TestEvolutionLineupDialog < Test::Unit::TestCase
-  Tiered = { 'kind' => 'tiered_json' }.freeze
-  Canonical = { 'kind' => 'canonical_v3' }.freeze
-  Cleanpkg = { 'kind' => 'cleanpkg' }.freeze
+  Tiered = { 'engine' => 'e1', 'kind' => 'tiered_json', 'profiles' => %w[visual research exact] }.freeze
+  Canonical = { 'engine' => 'e2', 'kind' => 'canonical_v3', 'profiles' => %w[visual research exact] }.freeze
+  Cleanpkg = { 'engine' => 'e3', 'kind' => 'cleanpkg', 'profiles' => %w[visual research exact] }.freeze
 
-  module CanonicalCore
-    def self.canonical_output_path(path, compressed)
-      base = path.sub(/\.json(?:\.gz)?\z/i, '').sub(/_canonical\z/i, '').sub(/__SBE-2026\.07\.16-01\z/, '')
-      base + '__SBE-2026.07.16-01_canonical.json' + (compressed ? '.gz' : '')
+  module CanonicalTarget
+    def self.normalize_output_path(path, profile)
+      engine = if path.downcase.end_with?('.cleanpkg') then 'E3'
+               elsif path.downcase.end_with?('.json.gz') then 'E2'
+               else 'E1'
+               end
+      extension = engine == 'E1' ? '.json' : engine == 'E2' ? '.json.gz' : '.cleanpkg'
+      base = path.sub(/__E[1-3]__(?:VISUAL|RESEARCH|EXACT)(?:\.json(?:\.gz)?|\.cleanpkg)\z/i, '')
+                 .sub(/(?:\.json(?:\.gz)?|\.cleanpkg)\z/i, '')
+      "#{base}__#{engine}__#{profile.to_s.upcase}#{extension}"
     end
   end
-  module CanonicalTarget
-    Core = CanonicalCore
-  end
 
-  def test_shared_batch_is_validated_for_every_historical_format
+  def test_shared_batch_and_profile_are_validated_for_every_active_format
     cases = [
-      [Tiered, { output_path: 'C:/x/model.json', export_level: 'full' }],
-      [Canonical, { output_path: 'C:/x/model__SBE-2026.07.16-01_canonical.json.gz' }],
-      [Cleanpkg, { output_path: 'C:/x/model.cleanpkg' }]
+      [Tiered, { output_path: 'C:/x/model__E1__EXACT.json' }],
+      [Canonical, { output_path: 'C:/x/model__E2__EXACT.json.gz' }],
+      [Cleanpkg, { output_path: 'C:/x/model__E3__EXACT.cleanpkg' }]
     ]
     cases.each do |slot, raw|
-      settings = SibamboHistory::EvolutionLab::LineupDialog.validated_settings(slot, raw.merge(batch_size: 8_192), CanonicalTarget)
+      settings = SibamboHistory::EvolutionLab::LineupDialog.validated_settings(slot, raw.merge(batch_size: 8_192, profile: 'exact'), CanonicalTarget)
       assert_equal 8_192, settings.fetch(:batch_size)
+      assert_equal :exact, settings.fetch(:profile)
       assert_raise(ArgumentError) do
-        SibamboHistory::EvolutionLab::LineupDialog.validated_settings(slot, raw.merge(batch_size: 8_193), CanonicalTarget)
+        SibamboHistory::EvolutionLab::LineupDialog.validated_settings(slot, raw.merge(batch_size: 8_193, profile: 'exact'), CanonicalTarget)
       end
     end
   end
 
-  def test_json_level_and_gzip_are_not_shared_with_wrong_engine
-    tiered = SibamboHistory::EvolutionLab::LineupDialog.validated_settings(
-      Tiered, { output_path: 'C:/x/model.json', batch_size: 512, export_level: 'visual', export_textures: true }, CanonicalTarget
+  def test_profile_and_output_name_must_match_active_writer_contract
+    exact = SibamboHistory::EvolutionLab::LineupDialog.validated_settings(
+      Canonical, { output_path: 'C:/x/model__E2__EXACT.json.gz', batch_size: 512, profile: 'exact' }, CanonicalTarget
     )
-    assert_equal 'visual', tiered[:export_level]
-    assert_equal false, tiered[:export_textures]
-
-    canonical_path = 'C:/x/model__SBE-2026.07.16-01_canonical.json.gz'
-    canonical = SibamboHistory::EvolutionLab::LineupDialog.validated_settings(
-      Canonical, { output_path: canonical_path, batch_size: 512 }, CanonicalTarget
-    )
-    assert_equal canonical_path, canonical[:output_path]
-    assert_equal true, canonical[:compress_output]
+    assert_equal :exact, exact[:profile]
     assert_raise(ArgumentError) do
       SibamboHistory::EvolutionLab::LineupDialog.validated_settings(
-        Canonical, { output_path: 'C:/x/model.json', batch_size: 512 }, CanonicalTarget
+        Canonical, { output_path: 'C:/x/model__E2__VISUAL.json.gz', batch_size: 512, profile: 'exact' }, CanonicalTarget
+      )
+    end
+    assert_raise(ArgumentError) do
+      SibamboHistory::EvolutionLab::LineupDialog.validated_settings(
+        Canonical, { output_path: 'C:/x/model__E2__STANDARD.json.gz', batch_size: 512, profile: 'standard' }, CanonicalTarget
       )
     end
   end

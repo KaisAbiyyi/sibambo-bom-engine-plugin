@@ -11,7 +11,7 @@ module BOMEngine
     # @param tw          [Sketchup::TextureWriter]
     # @param texture_dir [String, nil] output directory; nil means skip texture export
     # @return            [Array<Hash>] material descriptors
-    def self.extract(model, tw, texture_dir, checkpoint: nil, optimize_textures: false, profile: :visual, semantic_class: :class_b, material_classes: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil)
+    def self.extract(model, tw, texture_dir, checkpoint: nil, optimize_textures: false, profile: :visual, semantic_class: :class_b, material_classes: nil, allow_jpeg_color_map: false, allow_semantic_colorize: true, record_reference_pixel_hash: false, prepared_color_maps: nil, candidate_cache: nil)
       Dir.mkdir(texture_dir) if texture_dir && !Dir.exist?(texture_dir)
       written = 0
       materials = model.materials.to_a
@@ -96,6 +96,8 @@ module BOMEngine
                 profile: profile,
                 semantic_class: mat_class,
                 allow_jpeg_color_map: allow_jpeg_color_map,
+                allow_semantic_colorize: allow_semantic_colorize,
+                record_reference_pixel_hash: record_reference_pixel_hash,
                 color_map_budget: color_map_budget,
                 prepared_color_maps: prepared_color_maps,
                 candidate_cache: candidate_cache,
