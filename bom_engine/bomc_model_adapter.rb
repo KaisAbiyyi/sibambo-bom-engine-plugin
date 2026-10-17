@@ -22,6 +22,7 @@ module BOMEngine
 
       def from_canonical(graph, base_path: nil, checkpoint: nil)
         payload = symbolize_if_needed(graph)
+        trusted_capture_digest = graph.class.name.to_s == 'BOMEngine::CaptureIR' && graph.respond_to?(:source_digest)
         raw_materials = Array(payload[:materials])
         raw_tags = Array(payload[:tags])
         raw_definitions = Array(payload[:definitions])
@@ -35,7 +36,7 @@ module BOMEngine
 
         materials = raw_materials.each_with_index.map do |material, index|
           notify(checkpoint, :compile_metadata, index + 1, raw_materials.length)
-          canonical_material(material, base_path)
+          canonical_material(material, base_path, trust_capture_digest: trusted_capture_digest)
         end
         tags = raw_tags.each_with_index.map do |tag, index|
           notify(checkpoint, :compile_metadata, index + 1, raw_tags.length)
@@ -406,7 +407,7 @@ module BOMEngine
       end
       private_class_method :index_primitive_ids
 
-      def canonical_material(material, base_path)
+      def canonical_material(material, base_path, trust_capture_digest: false)
         color = material[:color] || {}
         texture = material[:texture]
         {
@@ -423,7 +424,7 @@ module BOMEngine
           colorize_deltas: normalize_colorize_deltas(material[:colorize_deltas]),
           semantic_colorize_active: material[:semantic_colorize_active] == true,
           colorize_output_sha256: material[:colorize_output_sha256],
-          texture: normalize_texture(texture, base_path)
+          texture: normalize_texture(texture, base_path, trust_capture_digest: trust_capture_digest)
         }
       end
       private_class_method :canonical_material
@@ -438,7 +439,7 @@ module BOMEngine
       end
       private_class_method :normalize_colorize_deltas
 
-      def normalize_texture(texture, base_path)
+      def normalize_texture(texture, base_path, trust_capture_digest: false)
         return nil if texture.nil?
 
         bytes = texture[:bytes]
@@ -453,6 +454,16 @@ module BOMEngine
         return nil if bytes.nil?
 
         content = bytes.b
+        supplied_length = texture[:byte_length]
+        if supplied_length && Integer(supplied_length) != content.bytesize
+          raise ArgumentError, 'Captured texture byte length mismatch'
+        end
+        supplied_sha256 = texture[:sha256].to_s.downcase
+        digest = if trust_capture_digest && supplied_sha256.match?(/\A[0-9a-f]{64}\z/)
+                   supplied_sha256
+                 else
+                   Digest::SHA256.hexdigest(content)
+                 end
         if content.start_with?(BOMCJpegColorMap::MAGIC)
           map = BOMCJpegColorMap.parse(content)
           unless map[:width] == texture[:image_width_px] && map[:height] == texture[:image_height_px]
@@ -461,7 +472,7 @@ module BOMEngine
         end
         {
           bytes: content,
-          sha256: Digest::SHA256.hexdigest(content),
+          sha256: digest,
           media_type: texture_media_type(texture, content),
           image_width_px: Integer(texture[:image_width_px] || 0),
           image_height_px: Integer(texture[:image_height_px] || 0),

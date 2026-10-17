@@ -2,6 +2,7 @@
 # Extracts all materials from the model, including texture metadata.
 # BOMC texture staging is evidence-gated and remains independent of geometry.
 
+require 'digest'
 require_relative 'bomc_texture_optimizer'
 require_relative 'performance_trace'
 
@@ -110,6 +111,14 @@ module BOMEngine
               end
               entry[:texture][:filename] = staged[:filename]
               entry[:texture][:staging_evidence] = staged[:evidence]
+              selected_bytes = File.binread(staged[:path]).b.freeze
+              selected_sha256 = staged.dig(:evidence, :selected_sha256).to_s.downcase
+              unless selected_sha256.match?(/\A[0-9a-f]{64}\z/)
+                selected_sha256 = Digest::SHA256.hexdigest(selected_bytes)
+              end
+              entry[:texture][:bytes] = selected_bytes
+              entry[:texture][:byte_length] = selected_bytes.bytesize
+              entry[:texture][:sha256] = selected_sha256.freeze
               PerformanceTrace.increment(:textures_staged, 1)
               if staged.dig(:evidence,:selected) == :semantic_colorized_native
                 entry[:semantic_colorize_active]=true

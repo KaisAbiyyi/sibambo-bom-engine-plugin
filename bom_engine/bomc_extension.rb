@@ -15,6 +15,7 @@ require_relative 'bomc_size_gate'
 require_relative 'bomc_writer'
 require_relative 'bomc_validator'
 require_relative 'conversion_job'
+require_relative 'capture_ir'
 require_relative 'performance_trace'
 
 if defined?(Sketchup) && defined?(UI)
@@ -413,11 +414,15 @@ module BOMEngine
         source_info: lambda do |model|
           BOMCSizeGate.source_info(model.path.to_s)
         end,
-        snapshot: lambda do |model, checkpoint|
+        snapshot: lambda do |model, checkpoint, source_info = nil|
+          if effective_cache && source_info && source_info[:sha256]
+            effective_cache[:scope_digest] = source_info[:sha256].to_s
+          end
           graph = PerformanceTrace.stage(:capture_graph) do
             capture_graph(model, texture_directory: texture_directory, checkpoint: checkpoint, profile: profile,
               allow_jpeg_color_map: allow_jpeg_color_map, prepared_color_maps: prepared_color_maps,
-              candidate_cache: effective_cache, processing: processing, texture_representation: :bomc)
+              candidate_cache: effective_cache, processing: processing, texture_representation: :bomc,
+              source_info: source_info)
           end
           diagnostics[:graph] = graph if diagnostics
           graph
@@ -620,7 +625,8 @@ module BOMEngine
     end
 
     def capture_graph(model, texture_directory:, checkpoint:, profile: DEFAULT_PROFILE, processing: nil,
-      texture_representation: :bomc, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil)
+      texture_representation: :bomc, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil,
+      source_info: nil)
       representation = texture_representation.to_sym
       unless [:bomc, :portable].include?(representation)
         raise ArgumentError, "Unsupported texture representation: #{texture_representation}"
@@ -632,17 +638,26 @@ module BOMEngine
         prepared_color_maps: portable ? nil : prepared_color_maps,
         candidate_cache: candidate_cache,
         processing: processing,
-        texture_representation: representation)
+        texture_representation: representation,
+        source_info: source_info)
     end
 
     def snapshot_model(model, texture_directory, checkpoint, profile: DEFAULT_PROFILE, allow_jpeg_color_map: false,
       allow_semantic_colorize: true, prepared_color_maps: nil, candidate_cache: nil, processing: nil,
-      texture_representation: :bomc)
+      texture_representation: :bomc, source_info: nil)
       texture_writer = begin
         Sketchup.create_texture_writer
       rescue StandardError
         nil
       end
+      effective_cache = candidate_cache
+      unless effective_cache
+        cache_directory = File.join(texture_directory, '.candidate-cache')
+        FileUtils.mkdir_p(cache_directory)
+        effective_cache = { directory: cache_directory, entries: {}, hits: 0, jpeg_quality: {}, jpeg_quality_hits: 0 }
+      end
+      effective_cache[:scope_digest] = source_info[:sha256].to_s if source_info && source_info[:sha256]
+
       material_classes = PerformanceTrace.stage(:material_classification) { compute_material_classes(model) }
       extracted_materials = PerformanceTrace.stage(:material_extraction, sample_resources: true) do
         MaterialExtractor.extract(
@@ -657,7 +672,7 @@ module BOMEngine
           allow_semantic_colorize: allow_semantic_colorize,
           record_reference_pixel_hash: texture_representation.to_sym == :portable,
           prepared_color_maps: prepared_color_maps,
-          candidate_cache: candidate_cache
+          candidate_cache: effective_cache
         )
       end
       entity_total = model.entities.respond_to?(:length) ? model.entities.length : 0
@@ -698,6 +713,26 @@ module BOMEngine
         attach_staged_textures(graph, extracted_materials, texture_directory, profile: profile,
           texture_representation: texture_representation)
       end
+      texture_evidence = Array(graph[:materials]).map do |material|
+        texture = material[:texture]
+        next unless texture
+
+        {
+          material_id: material[:id],
+          filename: texture[:filename],
+          byte_length: texture[:byte_length],
+          sha256: texture[:sha256],
+          displayed_rgba_sha256: texture[:displayed_rgba_sha256],
+          encoding_evidence: texture[:encoding_evidence]
+        }
+      end.compact
+      CaptureIR.wrap(
+        graph,
+        source_info: source_info,
+        profile: profile,
+        texture_representation: texture_representation,
+        texture_evidence: texture_evidence
+      )
     end
     private_class_method :snapshot_model
 
@@ -731,7 +766,18 @@ module BOMEngine
         source_supported = texture_representation.to_sym == :bomc && File.file?(source_path) && supported_texture_path?(source_path)
         staging = extracted[:texture][:staging_evidence]
         if staging && staging[:policy_revision]
-          unless File.file?(staged_path) && Digest::SHA256.file(staged_path).hexdigest == staging[:selected_sha256]
+          captured_staged_bytes = extracted[:texture][:bytes]
+          captured_staged_sha = extracted[:texture][:sha256].to_s.downcase
+          expected_staged_sha = staging[:selected_sha256].to_s.downcase
+          staged_valid = if captured_staged_bytes.is_a?(String) && captured_staged_sha.match?(/\A[0-9a-f]{64}\z/)
+                           File.file?(staged_path) && captured_staged_bytes.bytesize == File.size(staged_path) &&
+                             captured_staged_sha == expected_staged_sha
+                         else
+                           # Compatibility path for direct/legacy callers which did not
+                           # originate from MaterialExtractor's detached capture payload.
+                           File.file?(staged_path) && Digest::SHA256.file(staged_path).hexdigest == expected_staged_sha
+                         end
+          unless staged_valid
             raise 'Checked staged texture changed or is missing.'
           end
           # The original external path can be stale or contain uncolorized pixels.
@@ -758,11 +804,28 @@ module BOMEngine
         end
 
         next unless File.file?(path)
+        if path == staged_path && extracted[:texture][:bytes].is_a?(String)
+          texture_bytes = extracted[:texture][:bytes]
+          texture_sha256 = extracted[:texture][:sha256].to_s.downcase
+        else
+          texture_bytes = File.binread(path).b.freeze
+          texture_sha256 = Digest::SHA256.hexdigest(texture_bytes).freeze
+        end
         material[:texture] ||= {}
         material[:texture][:source_path] = path
         material[:texture][:filename] = File.basename(path)
+        material[:texture][:bytes] = texture_bytes
+        material[:texture][:byte_length] = texture_bytes.bytesize
+        material[:texture][:sha256] = texture_sha256
+        displayed_rgba_sha256 = staging && (
+          staging[:output_pixel_sha256] || staging[:reference_pixel_sha256] || staging[:displayed_rgba_sha256]
+        )
+        material[:texture][:displayed_rgba_sha256] = displayed_rgba_sha256 if displayed_rgba_sha256
         material[:texture][:encoding_evidence] = {
           filename: File.basename(path),
+          byte_length: texture_bytes.bytesize,
+          sha256: texture_sha256,
+          displayed_rgba_sha256: displayed_rgba_sha256,
           material_type: extracted[:material_type],
           colorize_type: extracted[:colorize_type],
           semantic_colorize_active: extracted[:semantic_colorize_active] == true,

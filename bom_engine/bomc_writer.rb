@@ -143,9 +143,10 @@ module BOMEngine
         @export_cache = export_cache
 
         @source_digest = if graph.is_a?(Hash)
+                           capture_sha = graph.respond_to?(:source_digest) ? graph.source_digest : nil
                            src = graph[:source] || graph['source']
                            src_sha = src.is_a?(Hash) ? (src[:sha256] || src['sha256'] || src[:source_digest] || src['source_digest']) : nil
-                           graph[:source_digest] || graph['source_digest'] || src_sha || Digest::SHA256.hexdigest(begin graph.inspect rescue graph.to_s end)
+                           capture_sha || graph[:source_digest] || graph['source_digest'] || src_sha || Digest::SHA256.hexdigest(begin graph.inspect rescue graph.to_s end)
                          else
                            Digest::SHA256.hexdigest(graph.to_s)
                          end

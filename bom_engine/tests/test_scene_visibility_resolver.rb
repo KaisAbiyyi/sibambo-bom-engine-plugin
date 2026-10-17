@@ -148,6 +148,35 @@ module BOMEngine
       assert_operator receipt.dig(:counters, :scene_tag_visibility_queries).to_i, :>=, 4
     end
 
+    def test_multiple_scenes_build_capture_context_and_index_once
+      layer = MockLayer.new('ARCH', visible: true, persistent_id: '101')
+      pages = 4.times.map { |index| MockPage.new("SCENE_#{index}", persistent_id: "page_#{index}") }
+      model = MockModel.new(pages: pages, layers: [layer])
+      nodes = [
+        { id: 'node:root', kind: 'root' },
+        { id: 'node:1', kind: 'component_instance', persistent_id: '1001' }
+      ]
+      definitions = [{ id: 'def:root' }]
+      meshes = [{ id: 'mesh:1', faces: [{ id: 'face:1', persistent_id: '2001' }], edges: [] }]
+      trace = PerformanceTrace.new(enabled: true)
+
+      scenes = nil
+      PerformanceTrace.with(trace) do
+        scenes = SceneVisibilityResolver.resolve_scenes(
+          model,
+          nodes: nodes,
+          definitions: definitions,
+          meshes: meshes
+        )
+      end
+      receipt = trace.finish(status: :success)
+
+      assert_equal 4, scenes.length
+      assert_equal 1, receipt.dig(:counters, :scene_capture_context_builds)
+      assert_equal 1, receipt.dig(:counters, :scene_capture_index_builds)
+      assert_equal 2, receipt.dig(:counters, :scene_capture_index_nodes)
+    end
+
     def test_pers_vs_str_tag_isolation
       layer_arch = MockLayer.new('ARCH', visible: true, persistent_id: '101')
       layer_struct = MockLayer.new('STRUCT', visible: true, persistent_id: '102')

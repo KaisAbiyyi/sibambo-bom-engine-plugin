@@ -21,6 +21,7 @@ module BOMEngine
 
     def prepare(graph, engine:, profile:, source_tree_sha256:, historical_baseline_sha:)
       PerformanceTrace.stage(:graph_detach) do
+        trusted_capture = graph.class.name.to_s == 'BOMEngine::CaptureIR' && graph.respond_to?(:source_digest)
         normalized_profile = normalize_profile(profile)
         normalized_engine = normalize_engine(engine)
         assets = {}
@@ -45,12 +46,12 @@ module BOMEngine
           'graph' => portable_graph,
           'assets' => assets.values.sort_by { |asset| asset.fetch('id') }
         }
-        validate!(document)
+        validate!(document, verify_asset_digests: !trusted_capture)
         document
       end
     end
 
-    def validate!(document)
+    def validate!(document, verify_asset_digests: true)
       raise ArgumentError, 'Evolution document must be a Hash' unless document.is_a?(Hash)
       raise ArgumentError, 'Wrong Evolution contract' unless document['contract'] == CONTRACT
       normalize_engine(document.fetch('engine'))
@@ -66,7 +67,9 @@ module BOMEngine
         bytes = asset.fetch('bytes')
         raise ArgumentError, "Evolution asset #{id} has no bytes" unless bytes.is_a?(String)
         raise ArgumentError, "Evolution asset #{id} byte length mismatch" unless bytes.bytesize == asset.fetch('byte_length')
-        raise ArgumentError, "Evolution asset #{id} SHA-256 mismatch" unless Digest::SHA256.hexdigest(bytes) == asset.fetch('sha256')
+        if verify_asset_digests
+          raise ArgumentError, "Evolution asset #{id} SHA-256 mismatch" unless Digest::SHA256.hexdigest(bytes) == asset.fetch('sha256')
+        end
       end
 
       walk = lambda do |value, path|
@@ -179,18 +182,29 @@ module BOMEngine
       source_path = texture[:source_path] || texture['source_path']
       texture.each do |raw_key, child|
         key = raw_key.to_s
-        next if key == 'source_path'
+        next if key == 'source_path' || key == 'bytes'
         result[key] = deep_portable(child, assets: assets, path: path + [key])
       end
-      return result if source_path.to_s.empty?
-      raise ArgumentError, "Portable texture does not exist: #{source_path}" unless File.file?(source_path)
+      bytes = texture[:bytes] || texture['bytes']
+      if bytes.nil?
+        return result if source_path.to_s.empty?
+        raise ArgumentError, "Portable texture does not exist: #{source_path}" unless File.file?(source_path)
+        bytes = File.binread(source_path)
+      end
+      raise ArgumentError, 'Portable texture bytes must be a String' unless bytes.is_a?(String)
 
-      bytes = File.binread(source_path)
-      sha = Digest::SHA256.hexdigest(bytes)
-      extension = normalized_extension(source_path)
+      expected_length = texture[:byte_length] || texture['byte_length']
+      if expected_length && Integer(expected_length) != bytes.bytesize
+        raise ArgumentError, 'Portable texture byte length mismatch'
+      end
+      supplied_sha = (texture[:sha256] || texture['sha256']).to_s.downcase
+      sha = supplied_sha.match?(/\A[0-9a-f]{64}\z/) ? supplied_sha : Digest::SHA256.hexdigest(bytes)
+      filename = texture[:filename] || texture['filename'] || source_path
+      extension = normalized_extension(filename)
       id = "#{ASSET_PREFIX}#{sha}#{extension}"
       staging = texture[:staging_evidence] || texture['staging_evidence'] || {}
-      pixel_sha = staging[:reference_pixel_sha256] || staging['reference_pixel_sha256'] ||
+      pixel_sha = texture[:displayed_rgba_sha256] || texture['displayed_rgba_sha256'] ||
+        staging[:reference_pixel_sha256] || staging['reference_pixel_sha256'] ||
         staging[:output_pixel_sha256] || staging['output_pixel_sha256']
       asset = {
         'id' => id,

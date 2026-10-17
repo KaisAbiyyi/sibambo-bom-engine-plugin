@@ -33,9 +33,10 @@ module BOMEngine
         @texture_writer = texture_writer
         @scene_scope = (@settings[:scene_scope] || 'all').to_s
         @preserve_hidden_geometry = @settings[:preserve_hidden_geometry] == true
-        @scenes = PerformanceTrace.stage(:canonical_initial_scene_visibility) do
-          SceneVisibilityResolver.resolve_scenes(@model)
+        @scene_context = PerformanceTrace.stage(:canonical_initial_scene_visibility) do
+          SceneVisibilityResolver.prepare_capture_context(@model)
         end
+        @exportable_cache = {}
         @definitions = []
         @definition_index = {}
         @meshes = []
@@ -48,6 +49,15 @@ module BOMEngine
         @tag_ids = {}
         @attached_labels = Hash.new { |hash, key| hash[key] = [] }
         @skipped = Hash.new(0)
+        @statistics = {
+          component_instances: 0,
+          group_instances: 0,
+          faces: 0,
+          unique_vertices: 0,
+          labeled_nodes: 0,
+          label_role_nodes: 0,
+          geometry_fallback_nodes: 0
+        }
         @progress = progress
         @batch_size = [batch_size.to_i, 1].max
         @work_count = 0
@@ -70,7 +80,7 @@ module BOMEngine
           )
         end
         root_transform_id = intern_transform(parent_transform || Geom::Transformation.new)
-        @nodes.unshift(
+        root_node = {
           id: 'node:root',
           kind: 'root',
           name: root_definition[:name],
@@ -82,13 +92,13 @@ module BOMEngine
           source_identity: model_source_identity,
           attributes: {},
           semantic: SemanticLabeler.empty_semantic
-        )
+        }
+        @nodes.unshift(root_node)
+        record_node_statistics(root_node)
 
         checkpoint('Finalizing canonical graph', force: true)
         scenes = PerformanceTrace.stage(:canonical_scene_visibility, sample_resources: true) { build_scenes }
-        clip_planes = PerformanceTrace.stage(:clip_plane_collection) do
-          SceneVisibilityResolver.collect_model_clip_planes(@model)
-        end
+        clip_planes = @scene_context[:clip_planes]
         statistics = PerformanceTrace.stage(:canonical_statistics) { build_statistics(identity_transform_id) }
         PerformanceTrace.increment(:canonical_work_items, @work_count)
         result = {
@@ -141,6 +151,7 @@ module BOMEngine
         existing = @definition_index[id]
         return existing unless existing.nil?
 
+        captured_entities = capture_entities(entities)
         definition = {
           id: id,
           kind: kind,
@@ -149,21 +160,21 @@ module BOMEngine
           source_identity: source_identity,
           mesh_id: nil,
           node_ids: [],
-          bounds_m: bounds_for_entities(entities),
+          bounds_m: bounds_for_entities(entities, captured_entities),
           attributes: attributes || {}
         }
         @definition_index[id] = definition
         @definitions << definition
 
-        mesh = build_mesh(id, entities)
+        mesh = build_mesh(id, captured_entities)
         if mesh
           definition[:mesh_id] = mesh[:id]
           @meshes << mesh
         end
 
-        each_entity(entities) do |entity|
-          case entity
-          when Sketchup::Group
+        captured_entities.each do |kind, entity|
+          case kind
+          when :group
             child_definition_id = group_definition_id(entity)
             build_definition(
               id: child_definition_id,
@@ -174,9 +185,9 @@ module BOMEngine
               attributes: Traversal.extract_dicts(entity.definition)
             )
             node = build_instance_node(entity, id, child_definition_id, 'group_instance')
-            @nodes << node
+            append_node(node)
             definition[:node_ids] << node[:id]
-          when Sketchup::ComponentInstance
+          when :component_instance
             component_definition = entity.definition
             child_definition_id = component_definition_id(component_definition)
             build_definition(
@@ -191,16 +202,16 @@ module BOMEngine
             node = build_instance_node(entity, id, child_definition_id, 'component_instance')
             node[:definition_name] = component_definition.name
             node[:dynamic_attributes] = Traversal.extract_dynamic_attrs(entity)
-            @nodes << node
+            append_node(node)
             definition[:node_ids] << node[:id]
-          when Sketchup::Image
+          when :image
             node = build_image_node(entity, id)
-            @nodes << node
+            append_node(node)
             definition[:node_ids] << node[:id]
-          when Sketchup::Text
+          when :text
             node = build_text_node(entity, id)
             if node
-              @nodes << node
+              append_node(node)
               definition[:node_ids] << node[:id]
             end
           end
@@ -209,19 +220,20 @@ module BOMEngine
         definition
       end
 
-      def build_mesh(definition_id, entities)
+      def build_mesh(definition_id, captured_entities)
         positions = []
         position_index = {}
+        bounds_accumulator = new_bounds_accumulator
         faces = []
         edges = []
 
-        each_entity(entities) do |entity|
-          case entity
-          when Sketchup::Face
-            faces << build_face(entity, positions, position_index)
-          when Sketchup::Edge
+        captured_entities.each do |kind, entity|
+          case kind
+          when :face
+            faces << build_face(entity, positions, position_index, bounds_accumulator)
+          when :edge
             next unless @settings[:include_edges]
-            edges << build_edge(entity, positions, position_index)
+            edges << build_edge(entity, positions, position_index, bounds_accumulator)
           end
         end
 
@@ -234,27 +246,37 @@ module BOMEngine
           positions_m: positions,
           faces: faces,
           edges: edges,
-          bounds_m: bounds_from_positions(positions)
+          bounds_m: bounds_from_accumulator(bounds_accumulator)
         }
+      ensure
+        unless faces.nil?
+          @statistics[:faces] += faces.length
+          @statistics[:unique_vertices] += positions.length / 3 if positions
+        end
       end
 
-      def build_face(face, positions, position_index)
-        outer = face.outer_loop.vertices.map do |vertex|
+      def build_face(face, positions, position_index, bounds_accumulator = nil)
+        outer_loop = face.outer_loop
+        loops = face.loops
+        outer_vertices = outer_loop.vertices
+        hole_vertex_rows = loops.reject(&:outer?).map(&:vertices)
+        outer = outer_vertices.map do |vertex|
           checkpoint('Reading face vertices')
-          intern_position(vertex.position, positions, position_index)
+          intern_position(vertex.position, positions, position_index, bounds_accumulator)
         end
-        holes = face.loops.reject(&:outer?).map do |loop|
-          loop.vertices.map do |vertex|
+        holes = hole_vertex_rows.map do |vertices|
+          vertices.map do |vertex|
             checkpoint('Reading face vertices')
-            intern_position(vertex.position, positions, position_index)
+            intern_position(vertex.position, positions, position_index, bounds_accumulator)
           end
         end
+        face_mesh = face.mesh
         result = {
           id: "face:#{safe_persistent_id(face)}",
           source_identity: entity_source_identity(face),
           outer: outer,
           holes: holes,
-          triangles: build_face_triangles(face, positions, position_index),
+          triangles: build_face_triangles(face_mesh, positions, position_index, bounds_accumulator),
           front_material_id: material_id(face.material),
           back_material_id: material_id(face.back_material),
           front_appearance_required: true,
@@ -269,20 +291,19 @@ module BOMEngine
           attributes: Traversal.extract_dicts(face),
           _entity: face
         }
-        uv = build_face_uv(face)
+        uv = build_face_uv(face, outer_vertices: outer_vertices, hole_vertex_rows: hole_vertex_rows)
         result[:uv] = uv unless uv.nil?
         result
       end
 
-      def build_face_triangles(face, positions, position_index)
-        mesh = face.mesh
+      def build_face_triangles(mesh, positions, position_index, bounds_accumulator = nil)
         return [] unless mesh && mesh.respond_to?(:polygons)
 
         mesh.polygons.each_with_object([]) do |polygon, triangles|
           checkpoint('Triangulating faces')
           indices = polygon.map do |point_index|
             point = mesh.point_at(point_index.abs)
-            point ? intern_position(point, positions, position_index) : nil
+            point ? intern_position(point, positions, position_index, bounds_accumulator) : nil
           end.compact
           triangles.concat(indices) if indices.length == 3
         end
@@ -291,13 +312,13 @@ module BOMEngine
         []
       end
 
-      def build_edge(edge, positions, position_index)
+      def build_edge(edge, positions, position_index, bounds_accumulator = nil)
         {
           id: "edge:#{safe_persistent_id(edge)}",
           source_identity: entity_source_identity(edge),
           vertices: [
-            intern_position(edge.start.position, positions, position_index),
-            intern_position(edge.end.position, positions, position_index)
+            intern_position(edge.start.position, positions, position_index, bounds_accumulator),
+            intern_position(edge.end.position, positions, position_index, bounds_accumulator)
           ],
           tag_id: tag_id(edge.layer),
           hidden: edge.hidden?,
@@ -307,22 +328,24 @@ module BOMEngine
         }
       end
 
-      def build_face_uv(face)
+      def build_face_uv(face, outer_vertices: nil, hole_vertex_rows: nil)
         return nil if @texture_writer.nil?
 
         front = textured_material?(face.material)
         back = textured_material?(face.back_material)
         return nil unless front || back
 
+        outer_vertices ||= face.outer_loop.vertices
+        hole_vertex_rows ||= face.loops.reject(&:outer?).map(&:vertices)
         helper = face.get_UVHelper(front, back, @texture_writer)
         uv = {}
         if front
-          uv[:front_outer] = uv_loop(face.outer_loop, helper, :front)
-          uv[:front_holes] = face.loops.reject(&:outer?).map { |loop| uv_loop(loop, helper, :front) }
+          uv[:front_outer] = uv_vertices(outer_vertices, helper, :front)
+          uv[:front_holes] = hole_vertex_rows.map { |vertices| uv_vertices(vertices, helper, :front) }
         end
         if back
-          uv[:back_outer] = uv_loop(face.outer_loop, helper, :back)
-          uv[:back_holes] = face.loops.reject(&:outer?).map { |loop| uv_loop(loop, helper, :back) }
+          uv[:back_outer] = uv_vertices(outer_vertices, helper, :back)
+          uv[:back_holes] = hole_vertex_rows.map { |vertices| uv_vertices(vertices, helper, :back) }
         end
         uv
       rescue StandardError => error
@@ -334,8 +357,8 @@ module BOMEngine
         !material.nil? && material.respond_to?(:texture) && !material.texture.nil?
       end
 
-      def uv_loop(loop, helper, side)
-        loop.vertices.map do |vertex|
+      def uv_vertices(vertices, helper, side)
+        vertices.map do |vertex|
           checkpoint('Reading texture coordinates')
           uvq = side == :front ? helper.get_front_UVQ(vertex.position) : helper.get_back_UVQ(vertex.position)
           uvq.z.to_f.zero? ? [0.0, 0.0] : [(uvq.x / uvq.z).round(9), (uvq.y / uvq.z).round(9)]
@@ -493,7 +516,15 @@ module BOMEngine
       end
 
       def build_scenes
-        scenes = SceneVisibilityResolver.resolve_scenes(@model, nodes: @nodes, definitions: @definitions, meshes: @meshes)
+        capture_index = SceneVisibilityResolver.build_capture_index(nodes: @nodes, definitions: @definitions, meshes: @meshes)
+        scenes = SceneVisibilityResolver.resolve_scenes(
+          @model,
+          nodes: @nodes,
+          definitions: @definitions,
+          meshes: @meshes,
+          capture_context: @scene_context,
+          capture_index: capture_index
+        )
         @nodes.each { |node| node.delete(:_entity) }
         @meshes.each do |mesh|
           Array(mesh[:faces]).each { |face| face.delete(:_entity) }
@@ -516,41 +547,45 @@ module BOMEngine
       end
 
       def build_statistics(identity_transform_id)
-        component_instances = 0
-        group_instances = 0
-        @nodes.each do |node|
-          checkpoint('Calculating export statistics')
-          component_instances += 1 if node[:kind] == 'component_instance'
-          group_instances += 1 if node[:kind] == 'group_instance'
-        end
-        faces = 0
-        unique_vertices = 0
-        @meshes.each do |mesh|
-          checkpoint('Calculating export statistics')
-          faces += mesh[:faces].length
-          unique_vertices += mesh[:positions_m].length / 3
-        end
-        semantic_nodes = @nodes.map { |node| node[:semantic] }.compact
         {
           definitions: @definitions.length,
           meshes: @meshes.length,
           nodes: @nodes.length,
-          component_instances: component_instances,
-          group_instances: group_instances,
-          faces: faces,
-          unique_vertices: unique_vertices,
+          component_instances: @statistics[:component_instances],
+          group_instances: @statistics[:group_instances],
+          faces: @statistics[:faces],
+          unique_vertices: @statistics[:unique_vertices],
           materials: @materials.length,
           tags: @tags.length,
           transforms: @transforms.length,
-          labeled_nodes: semantic_nodes.count { |semantic| !semantic[:label].nil? },
-          label_role_nodes: semantic_nodes.count { |semantic| !semantic[:role].nil? },
-          geometry_fallback_nodes: semantic_nodes.count { |semantic| semantic[:classification_policy] == SemanticLabeler::GEOMETRY_FALLBACK_POLICY },
+          labeled_nodes: @statistics[:labeled_nodes],
+          label_role_nodes: @statistics[:label_role_nodes],
+          geometry_fallback_nodes: @statistics[:geometry_fallback_nodes],
           identity_transform_id: identity_transform_id,
           skipped: @skipped.sort.to_h
         }
       end
 
-      def intern_position(point, positions, index)
+      def append_node(node)
+        @nodes << node
+        record_node_statistics(node)
+        node
+      end
+
+      def record_node_statistics(node)
+        @statistics[:component_instances] += 1 if node[:kind] == 'component_instance'
+        @statistics[:group_instances] += 1 if node[:kind] == 'group_instance'
+        semantic = node[:semantic]
+        return if semantic.nil?
+
+        @statistics[:labeled_nodes] += 1 unless semantic[:label].nil?
+        @statistics[:label_role_nodes] += 1 unless semantic[:role].nil?
+        if semantic[:classification_policy] == SemanticLabeler::GEOMETRY_FALLBACK_POLICY
+          @statistics[:geometry_fallback_nodes] += 1
+        end
+      end
+
+      def intern_position(point, positions, index, bounds_accumulator = nil)
         values = point_array(point)
         key = values.freeze
         existing = index[key]
@@ -558,6 +593,7 @@ module BOMEngine
 
         position_id = positions.length / 3
         positions.concat(values)
+        expand_bounds_accumulator(bounds_accumulator, values) if bounds_accumulator
         index[key] = position_id
         position_id
       end
@@ -567,7 +603,7 @@ module BOMEngine
           converted = [12, 13, 14].include?(index) ? value.to_f * Constants::IN_TO_M : value.to_f
           converted.round(9)
         end
-        key = matrix.map { |value| format('%.9f', value) }.join(',')
+        key = matrix.pack('G*')
         existing = @transform_index[key]
         return existing unless existing.nil?
 
@@ -588,12 +624,49 @@ module BOMEngine
         end
       end
 
+      def capture_entities(entities)
+        captured = []
+        entities.each do |entity|
+          checkpoint('Converting model entities')
+          unless valid_exportable_entity?(entity)
+            @skipped['hidden_or_invalid_entity'] += 1
+            next
+          end
+          kind = case entity
+                 when Sketchup::Face then :face
+                 when Sketchup::Edge then :edge
+                 when Sketchup::Group then :group
+                 when Sketchup::ComponentInstance then :component_instance
+                 when Sketchup::Image then :image
+                 when Sketchup::Text then :text
+                 else :other
+                 end
+          captured << [kind, entity]
+        end
+        PerformanceTrace.increment(:canonical_captured_entities, captured.length)
+        captured
+      end
+
       def valid_exportable_entity?(entity)
         return false unless Traversal.valid_entity?(entity)
         # Exact retains the source universe; scene visibility is carried on
         # faces/nodes and applied by the reader, not used to drop source data.
         return true if @preserve_hidden_geometry
-        return false unless SceneVisibilityResolver.exportable_universe?(entity, @scenes, model: @model, scope: @scene_scope)
+        cache_key = entity.object_id
+        visible = @exportable_cache[cache_key]
+        if visible.nil?
+          visible = SceneVisibilityResolver.exportable_universe?(
+            entity,
+            nil,
+            model: @model,
+            scope: @scene_scope,
+            capture_context: @scene_context
+          )
+          @exportable_cache[cache_key] = visible
+        else
+          PerformanceTrace.increment(:canonical_exportable_cache_hits, 1)
+        end
+        return false unless visible
         if @scene_scope == 'active'
           return false unless Traversal.exportable_entity?(entity)
         end
@@ -602,12 +675,13 @@ module BOMEngine
         false
       end
 
-      def bounds_for_entities(entities)
+      def bounds_for_entities(entities, captured_entities = nil)
         parent = entities.respond_to?(:parent) ? entities.parent : nil
         return bounds_hash(parent.bounds) if parent && parent.respond_to?(:bounds)
 
         points = []
-        entities.each do |entity|
+        rows = captured_entities || entities.map { |entity| [nil, entity] }
+        rows.each do |_kind, entity|
           checkpoint('Calculating definition bounds')
           next unless entity.respond_to?(:bounds)
           bounds = entity.bounds
@@ -618,6 +692,32 @@ module BOMEngine
         bounds_from_point_objects(points)
       rescue StandardError
         empty_bounds
+      end
+
+      def new_bounds_accumulator
+        {
+          min: [Float::INFINITY, Float::INFINITY, Float::INFINITY],
+          max: [-Float::INFINITY, -Float::INFINITY, -Float::INFINITY],
+          populated: false
+        }
+      end
+
+      def expand_bounds_accumulator(bounds, vector)
+        bounds[:populated] = true
+        3.times do |axis|
+          bounds[:min][axis] = vector[axis] if vector[axis] < bounds[:min][axis]
+          bounds[:max][axis] = vector[axis] if vector[axis] > bounds[:max][axis]
+        end
+      end
+
+      def bounds_from_accumulator(bounds)
+        return empty_bounds unless bounds && bounds[:populated]
+
+        {
+          min: bounds[:min].map { |value| value.round(9) },
+          max: bounds[:max].map { |value| value.round(9) },
+          size: 3.times.map { |axis| (bounds[:max][axis] - bounds[:min][axis]).round(9) }
+        }
       end
 
       def bounds_hash(bounds)

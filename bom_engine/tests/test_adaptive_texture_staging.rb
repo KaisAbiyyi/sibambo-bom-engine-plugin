@@ -330,21 +330,25 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
       Dir.mktmpdir('jpeg-quality-cache') do |root|
         cache_dir = File.join(root, 'cache')
         Dir.mkdir(cache_dir)
-        cache = { directory: cache_dir, entries: {}, hits: 0 }
+        cache = { directory: cache_dir, entries: {}, hits: 0, scope_digest: 'a' * 64 }
         first = nil
         Dir.mktmpdir('visual', root) { |dir| first = stage(dir, profile: :visual, candidate_cache: cache, &loader) }
         assert_equal 1, jpeg_decodes
         second = nil
         Dir.mktmpdir('research', root) { |dir| second = stage(dir, profile: :research, candidate_cache: cache, &loader) }
-        assert_equal 1, jpeg_decodes, 'identical verified JPEG and reference pixels avoid a second image decode'
+        assert_equal 2, jpeg_decodes, 'quality proof is profile-scoped and research must remeasure visual evidence'
+        Dir.mktmpdir('research-repeat', root) do |dir|
+          repeated = stage(dir, profile: :research, candidate_cache: cache, &loader)
+          assert_equal second.dig(:evidence, :attempts, 0, :quality), repeated.dig(:evidence, :attempts, 0, :quality)
+        end
+        assert_equal 2, jpeg_decodes, 'same source/profile/reference may reuse verified quality evidence'
         assert_operator cache.fetch(:jpeg_quality_hits, 0), :>, 0
-        assert_equal first.dig(:evidence, :attempts, 0, :quality), second.dig(:evidence, :attempts, 0, :quality)
         Dir.mktmpdir('changed', root) do |dir|
           BOMEngine::BOMCTextureOptimizer.stage(texture: Texture.new(frame(1)), directory: dir,
             basename: 'changed', source_path: 'texture.png', profile: :research,
             candidate_cache: cache, image_rep_loader: loader)
         end
-        assert_equal 2, jpeg_decodes, 'changed reference pixels require a fresh quality measurement'
+        assert_equal 3, jpeg_decodes, 'changed reference pixels require a fresh quality measurement'
       end
     end
   end
@@ -355,7 +359,7 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
       Dir.mktmpdir('quality-cache-test') do |root|
         cache_dir = File.join(root, 'cache')
         Dir.mkdir(cache_dir)
-        cache = { directory: cache_dir, entries: {}, hits: 0 }
+        cache = { directory: cache_dir, entries: {}, hits: 0, scope_digest: 'b' * 64 }
         first = nil
         Dir.mktmpdir('first', root) do |dir|
           first = BOMEngine::BOMCTextureOptimizer.stage(texture: Texture.new(frame(0)),
@@ -384,6 +388,33 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
             'identical staged bytes must not bypass remeasurement when SketchUp reference pixels differ'
           assert_operator decode_calls, :>, after_first
         end
+      end
+    end
+  end
+
+  def test_quality_cache_does_not_cross_source_scope
+    decode_calls = 0
+    with_codec(on_decode: -> { decode_calls += 1 }) do
+      Dir.mktmpdir('quality-scope-test') do |root|
+        cache_dir = File.join(root, 'cache')
+        Dir.mkdir(cache_dir)
+        cache = { directory: cache_dir, entries: {}, hits: 0, scope_digest: 'c' * 64 }
+        Dir.mktmpdir('first', root) do |dir|
+          BOMEngine::BOMCTextureOptimizer.stage(texture: Texture.new(frame(0)), directory: dir,
+            basename: 'material', source_path: 'texture.png', profile: :exact,
+            candidate_cache: cache, image_rep_loader: ->(_path) { frame(0) })
+        end
+        first_decodes = decode_calls
+        assert_operator first_decodes, :>, 0
+
+        cache[:scope_digest] = 'd' * 64
+        Dir.mktmpdir('second-source', root) do |dir|
+          BOMEngine::BOMCTextureOptimizer.stage(texture: Texture.new(frame(0)), directory: dir,
+            basename: 'material', source_path: 'texture.png', profile: :exact,
+            candidate_cache: cache, image_rep_loader: ->(_path) { frame(0) })
+        end
+        assert_operator decode_calls, :>, first_decodes,
+          'identical pixels from a different source scope must not reuse fidelity evidence'
       end
     end
   end

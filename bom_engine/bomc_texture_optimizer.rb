@@ -45,6 +45,10 @@ module BOMEngine
     private_class_method :measure_phase
 
     def stage_result(evidence, timings, started)
+      path = evidence[:path]
+      if path && File.file?(path) && !evidence[:selected_sha256].to_s.match?(/\A[0-9a-f]{64}\z/i)
+        evidence = evidence.merge(selected_sha256: Digest::SHA256.file(path).hexdigest)
+      end
       evidence = evidence.merge(timings_ms: timings.merge(total: (monotonic_ms - started).round(3)))
       { path: evidence[:path], filename: File.basename(evidence[:path]),
         evidence: evidence.reject { |key, _value| key == :path } }
@@ -58,6 +62,73 @@ module BOMEngine
       Digest::SHA256.hexdigest(color_map_rgba(image_rep))
     end
     private_class_method :reference_pixel_sha256
+
+    def evidence_scope_digest(candidate_cache)
+      digest = candidate_cache && candidate_cache[:scope_digest].to_s.downcase
+      digest if digest && digest.match?(/\A[0-9a-f]{64}\z/)
+    end
+    private_class_method :evidence_scope_digest
+
+    def colorization_identity(appearance)
+      return 'none' unless appearance.is_a?(Hash) && appearance[:material_type].to_i == 2
+
+      deltas = appearance[:colorize_deltas] || {}
+      [
+        appearance[:colorize_type].to_s,
+        deltas[:h] || deltas['h'],
+        deltas[:l] || deltas['l'],
+        deltas[:s] || deltas['s']
+      ].map(&:to_s).join(':')
+    end
+    private_class_method :colorization_identity
+
+    def evidence_cache_key(candidate_cache:, reference_sha256:, width:, height:, profile:, semantic_class:,
+      candidate_sha256:, appearance: nil)
+      scope = evidence_scope_digest(candidate_cache)
+      reference = reference_sha256.to_s.downcase
+      candidate = candidate_sha256.to_s.downcase
+      return nil unless scope && reference.match?(/\A[0-9a-f]{64}\z/) && candidate.match?(/\A[0-9a-f]{64}\z/)
+
+      Digest::SHA256.hexdigest([
+        scope,
+        reference,
+        Integer(width),
+        Integer(height),
+        profile.to_s.downcase,
+        semantic_class.to_s.downcase,
+        POLICY_REVISION,
+        LOSSLESS_SEARCH_REVISION,
+        SEMANTIC_COLORIZE_REVISION,
+        JCM_POLICY_REVISION,
+        colorization_identity(appearance),
+        candidate
+      ].join("\0"))
+    rescue ArgumentError, TypeError
+      nil
+    end
+    private_class_method :evidence_cache_key
+
+    def fetch_cached_quality(candidate_cache, key)
+      return nil unless candidate_cache && key
+      quality = candidate_cache.fetch(:texture_evidence, {})[key]
+      unless quality.is_a?(Hash)
+        PerformanceTrace.increment(:texture_evidence_cache_misses, 1)
+        return nil
+      end
+
+      candidate_cache[:quality_hits] = candidate_cache.fetch(:quality_hits, 0) + 1
+      PerformanceTrace.increment(:texture_evidence_cache_hits, 1)
+      quality.dup
+    end
+    private_class_method :fetch_cached_quality
+
+    def store_cached_quality(candidate_cache, key, quality)
+      return unless candidate_cache && key && quality.is_a?(Hash) && quality[:compatible]
+
+      candidate_cache[:texture_evidence] ||= {}
+      candidate_cache[:texture_evidence][key] = quality.dup.freeze
+    end
+    private_class_method :store_cached_quality
 
     def native_jpeg_path?(path)
       ['.jpg', '.jpeg'].include?(File.extname(path.to_s).downcase)
@@ -283,7 +354,8 @@ module BOMEngine
         evidence = measure_phase(timings, :webp_search) do
           adaptive_webp(png_path, reference, evidence, loader, profile,
             semantic_class, native_jpeg, pixel_lossless: true,
-            expanded_lossless_search: profile.to_s.downcase.to_sym == :exact, candidate_cache: candidate_cache, &checkpoint)
+            expanded_lossless_search: profile.to_s.downcase.to_sym == :exact,
+            candidate_cache: candidate_cache, appearance: appearance, &checkpoint)
         end
         if allow_jpeg_color_map == true && profile.to_s == 'exact' && native_jpeg
           evidence = measure_phase(timings, :color_map_evaluation) do
@@ -300,15 +372,23 @@ module BOMEngine
             reference.save_file(jpeg_path)
             if File.file?(jpeg_path)
               jpeg_quality = nil
-              if candidate_cache
-                key = [reference_pixel_sha256(reference), Digest::SHA256.file(jpeg_path).hexdigest].join(':')
-                jpeg_quality = candidate_cache.fetch(:jpeg_quality, {})[key]&.dup
-                candidate_cache[:jpeg_quality_hits] = candidate_cache.fetch(:jpeg_quality_hits, 0) + 1 if jpeg_quality
-              end
+              reference_sha = candidate_cache ? reference_pixel_sha256(reference) : nil
+              candidate_sha = candidate_cache ? Digest::SHA256.file(jpeg_path).hexdigest : nil
+              evidence_key = evidence_cache_key(
+                candidate_cache: candidate_cache,
+                reference_sha256: reference_sha,
+                width: reference.width,
+                height: reference.height,
+                profile: profile,
+                semantic_class: semantic_class,
+                candidate_sha256: candidate_sha,
+                appearance: appearance
+              )
+              jpeg_quality = fetch_cached_quality(candidate_cache, evidence_key)
+              candidate_cache[:jpeg_quality_hits] = candidate_cache.fetch(:jpeg_quality_hits, 0) + 1 if jpeg_quality
               candidate = loader.call(jpeg_path) unless jpeg_quality
               jpeg_quality ||= compare(reference, candidate, &checkpoint)
-              candidate_cache[:jpeg_quality] ||= {} if candidate_cache
-              candidate_cache[:jpeg_quality][key] = jpeg_quality.dup if candidate_cache && jpeg_quality[:compatible]
+              store_cached_quality(candidate_cache, evidence_key, jpeg_quality)
               select(
                 staged_path: png_path,
                 candidate_path: jpeg_path,
@@ -334,7 +414,7 @@ module BOMEngine
 
       evidence = measure_phase(timings, :webp_search) do
         adaptive_webp(png_path, reference, evidence, loader, profile, semantic_class, native_jpeg,
-          candidate_cache: candidate_cache, &checkpoint)
+          candidate_cache: candidate_cache, appearance: appearance, &checkpoint)
       end
       stage_result(evidence, timings, stage_started)
     rescue StandardError => error
@@ -461,7 +541,7 @@ module BOMEngine
         searched = adaptive_webp(
           best[:path], uncolorized, baseline, loader, :exact, semantic_class, false,
           pixel_lossless: true, expanded_lossless_search: true,
-          candidate_cache: candidate_cache, &checkpoint
+          candidate_cache: candidate_cache, appearance: appearance, &checkpoint
         )
         if File.file?(searched[:path]) && File.size(searched[:path]) < best[:candidate_bytes] &&
             searched.dig(:quality, :compatible) == true &&
@@ -700,7 +780,7 @@ module BOMEngine
     # candidate is encoded from the original PNG, never from another candidate.
     # Choose the smallest measured candidate satisfying the unchanged contract.
     def adaptive_webp(png_path, reference, baseline, loader, profile, semantic_class, native_jpeg,
-      pixel_lossless: false, expanded_lossless_search: false, candidate_cache: nil, &checkpoint)
+      pixel_lossless: false, expanded_lossless_search: false, candidate_cache: nil, appearance: nil, &checkpoint)
       attempts = Array(baseline[:attempts]).dup
       attempts << baseline.reject { |key, _| key == :path || key == :attempts }
       best = if baseline[:path] == png_path
@@ -776,13 +856,20 @@ module BOMEngine
               next
             end
             entry = cache_key && candidate_cache.fetch(:entries)[cache_key]
-            cached_quality = if cache_hit && entry && entry[:quality_reference_sha256] == reference_sha256 &&
-                entry[:quality_candidate_sha256] == entry[:sha256] && entry[:quality].is_a?(Hash)
-                               entry[:quality].dup
-                             end
+            candidate_sha256 = entry && entry[:sha256]
+            evidence_key = evidence_cache_key(
+              candidate_cache: candidate_cache,
+              reference_sha256: reference_sha256,
+              width: reference.width,
+              height: reference.height,
+              profile: profile,
+              semantic_class: semantic_class,
+              candidate_sha256: candidate_sha256,
+              appearance: appearance
+            )
+            cached_quality = fetch_cached_quality(candidate_cache, evidence_key)
             attempt[:quality_cache_hit] = !cached_quality.nil?
             if cached_quality
-              candidate_cache[:quality_hits] = candidate_cache.fetch(:quality_hits, 0) + 1
               measured = cached_quality
             else
               decoded = measure_phase(attempt[:timings_ms], :decode) do
@@ -794,11 +881,7 @@ module BOMEngine
               end
               candidate_image = measure_phase(attempt[:timings_ms], :candidate_image_rep) { loader.call(decoded_path) }
               measured = measure_phase(attempt[:timings_ms], :pixel_compare) { compare(reference, candidate_image, &checkpoint) }
-              if entry && measured[:compatible]
-                entry[:quality_reference_sha256] = reference_sha256
-                entry[:quality_candidate_sha256] = entry[:sha256]
-                entry[:quality] = measured.dup
-              end
+              store_cached_quality(candidate_cache, evidence_key, measured)
             end
             reason = if !measured[:compatible]
                        :decode_incompatible
@@ -831,7 +914,8 @@ module BOMEngine
       json_safe_evidence(best.merge(attempts: attempts, policy_revision: POLICY_REVISION,
         lossless_search_revision: LOSSLESS_SEARCH_REVISION,
         semantic_class: semantic_class, profile: profile, encoder_sha256: caps[:sha256],
-        source_sha256: source_sha256, webp_setup_timings_ms: search_timings,
+        source_sha256: source_sha256, displayed_rgba_sha256: reference_sha256,
+        webp_setup_timings_ms: search_timings,
         selected_sha256: Digest::SHA256.file(best[:path]).hexdigest))
     end
     private_class_method :adaptive_webp

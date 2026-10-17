@@ -4,6 +4,7 @@ require 'test/unit'
 require 'tmpdir'
 require 'digest'
 require_relative '../evolution_document'
+require_relative '../capture_ir'
 
 class TestEvolutionDocument < Test::Unit::TestCase
   def test_prepare_detaches_texture_bytes_and_deduplicates_by_hash
@@ -32,6 +33,60 @@ class TestEvolutionDocument < Test::Unit::TestCase
       json_assets = BOMEngine::EvolutionDocument.json_asset_table(document)
       assert_equal ['portable-pixels'].pack('m0'), json_assets.first['data_base64']
     end
+  end
+
+  def test_prepare_consumes_capture_owned_texture_bytes_without_staging_file
+    bytes = 'capture-owned-portable-pixels'.b.freeze
+    sha = Digest::SHA256.hexdigest(bytes)
+    graph = {
+      materials: [{
+        id: 'm1',
+        texture: {
+          source_path: 'Z:/missing/capture-texture.png',
+          filename: 'capture-texture.png',
+          bytes: bytes,
+          byte_length: bytes.bytesize,
+          sha256: sha,
+          displayed_rgba_sha256: 'c' * 64
+        }
+      }],
+      meshes: [], definitions: [], nodes: [], transforms: [], scenes: [], clip_planes: []
+    }
+
+    document = BOMEngine::EvolutionDocument.prepare(
+      graph, engine: :e3, profile: :exact,
+      source_tree_sha256: 'a' * 64, historical_baseline_sha: 'b' * 40
+    )
+
+    asset = document.fetch('assets').first
+    assert_equal bytes, asset.fetch('bytes')
+    assert_equal sha, asset.fetch('sha256')
+    assert_equal bytes.bytesize, asset.fetch('byte_length')
+    assert_equal 'c' * 64, asset.fetch('displayed_rgba_sha256')
+    assert_nil document.dig('graph', 'materials', 0, 'texture', 'bytes')
+    assert_nil document.dig('graph', 'materials', 0, 'texture', 'source_path')
+  end
+
+  def test_prepare_trusts_capture_ir_digest_without_rehashing_texture_bytes
+    bytes = 'capture-owned-portable-pixels'.b.freeze
+    sha = Digest::SHA256.hexdigest(bytes)
+    ir = BOMEngine::CaptureIR.wrap({
+      materials: [{ id: 'm1', texture: {
+        filename: 'capture.png', bytes: bytes, byte_length: bytes.bytesize, sha256: sha
+      } }],
+      meshes: [], definitions: [], nodes: [], transforms: [], scenes: [], clip_planes: []
+    }, source_info: { sha256: 'd' * 64 }, profile: :exact, texture_representation: :portable)
+
+    digest_class = Digest::SHA256.singleton_class
+    original = Digest::SHA256.method(:hexdigest)
+    digest_class.define_method(:hexdigest) { |_value| raise 'capture texture was rehashed' }
+    document = BOMEngine::EvolutionDocument.prepare(
+      ir, engine: :e1, profile: :exact,
+      source_tree_sha256: 'a' * 64, historical_baseline_sha: 'b' * 40
+    )
+    assert_equal sha, document.dig('assets', 0, 'sha256')
+  ensure
+    digest_class.define_method(:hexdigest, original) if digest_class && original
   end
 
   def test_prepare_normalizes_only_proven_lossless_infinite_psnr

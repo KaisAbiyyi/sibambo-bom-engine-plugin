@@ -63,7 +63,10 @@ module BOMEngine
         advance.call(:INITIALIZE)
         source = PerformanceTrace.stage(:source_info) { context.fetch(:source_info).call(model) }
         advance.call(:SCAN_MODEL)
-        graph = PerformanceTrace.stage(:snapshot) { context.fetch(:snapshot).call(model, checkpoint) }
+        graph = PerformanceTrace.stage(:snapshot) do
+          snapshot = context.fetch(:snapshot)
+          snapshot.arity == 2 ? snapshot.call(model, checkpoint) : snapshot.call(model, checkpoint, source)
+        end
         advance.call(:BUILD_INSTANCES)
         result = PerformanceTrace.stage(:compile) { context.fetch(:compile).call(graph, source, output_path, checkpoint) }
         advance.call(:SIZE_GATE, result[:candidate_bytes])

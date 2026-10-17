@@ -7,6 +7,7 @@ require 'securerandom'
 require 'tmpdir'
 require 'time'
 require_relative 'bomc_extension'
+require_relative 'bomc_size_gate'
 require_relative 'evolution_document'
 require_relative 'evolution_tree_writer'
 require_relative 'evolution_canonical_writer'
@@ -180,6 +181,7 @@ module BOMEngine
       PerformanceTrace.with(trace) do
         source_tree = PerformanceTrace.stage(:source_tree_hash) { source_tree_sha256 }
         performance_metadata[:source_tree_sha256] = source_tree
+        source_info = BOMCSizeGate.source_info(model.respond_to?(:path) ? model.path.to_s : '')
         guard = ModelRevisionGuard.new(model, active_model: active_model).attach
         parent = File.dirname(File.expand_path(output_path))
         FileUtils.mkdir_p(parent)
@@ -198,7 +200,8 @@ module BOMEngine
               checkpoint: checkpoint,
               profile: profile,
               processing: processing,
-              texture_representation: :portable
+              texture_representation: :portable,
+              source_info: source_info
             )
           end
           guard.check!
@@ -219,7 +222,8 @@ module BOMEngine
           validation = EvolutionValidator.validate_file!(candidate, engine: engine, expected_profile: profile, source_document: document)
           guard.check!
           sidecar = PerformanceTrace.stage(:provenance_build) do
-            build_provenance(model, candidate, engine: engine, profile: profile, source_tree_sha256: source_tree, format: info.fetch(:format), writer_id: info.fetch(:id))
+            build_provenance(model, candidate, engine: engine, profile: profile, source_tree_sha256: source_tree,
+              format: info.fetch(:format), writer_id: info.fetch(:id), source_info: source_info)
           end
           performance_metadata[:source_model] = sidecar[:model]
           performance_metadata[:artifact] = sidecar[:artifact]
@@ -275,10 +279,10 @@ module BOMEngine
       end
     end
 
-    def build_provenance(model, artifact_path, engine:, profile:, source_tree_sha256:, format:, writer_id:)
+    def build_provenance(model, artifact_path, engine:, profile:, source_tree_sha256:, format:, writer_id:, source_info: nil)
       bytes = File.size(artifact_path)
       sha = Digest::SHA256.file(artifact_path).hexdigest
-      model_record = model_source_record(model)
+      model_record = model_source_record(model, source_info: source_info)
       now = Time.now.utc.iso8601
       {
         schema: 'sibambo-research-provenance-v1',
@@ -295,7 +299,7 @@ module BOMEngine
       }
     end
 
-    def model_source_record(model)
+    def model_source_record(model, source_info: nil)
       path = model.respond_to?(:path) ? model.path.to_s : ''
       id = if model.respond_to?(:guid) && !model.guid.to_s.empty?
              model.guid.to_s
@@ -305,7 +309,10 @@ module BOMEngine
              "sketchup-model-#{model.object_id}"
            end
       record = { id: id }
-      if !path.empty? && File.file?(path)
+      if source_info && source_info[:available]
+        record[:sourceSha256] = source_info[:sha256]
+        record[:sourceBytes] = source_info[:bytes]
+      elsif !path.empty? && File.file?(path)
         record[:sourceSha256] = Digest::SHA256.file(path).hexdigest
         record[:sourceBytes] = File.size(path)
       end
