@@ -44,6 +44,33 @@ class DialogHtmlTest < Minitest::Test
     assert result['processed']
   end
 
+  def test_progress_dialog_rejects_stale_and_out_of_order_events
+    result = render('conversion_dialog.html', <<~JS)
+      initializeConversion({job_id:11,sequence:1,state:'capturing',output_path:'D:/one.bomc'});
+      updateProgress({job_id:11,sequence:3,state:'compiling',stage:'new stage',processed:3,total:10});
+      updateProgress({job_id:11,sequence:2,state:'capturing',stage:'old stage',processed:2,total:10});
+      initializeConversion({job_id:12,sequence:1,state:'capturing',output_path:'D:/two.bomc'});
+      updateProgress({job_id:12,sequence:2,state:'validating',stage:'current generation',processed:1,total:1});
+      completeConversion({job_id:11,sequence:99,state:'completed',path:'D:/one.bomc'});
+      window.qa={stage:document.getElementById('stage').textContent,path:document.getElementById('path').textContent,bodyClass:document.body.className};
+    JS
+    assert_includes result['stage'], 'current generation'
+    assert_equal 'D:/two.bomc', result['path']
+    refute_equal 'done', result['bodyClass']
+  end
+
+  def test_progress_dialog_heartbeat_distinguishes_atomic_wait_from_long_stall
+    result = render('conversion_dialog.html', <<~JS)
+      initializeConversion({job_id:21,sequence:1,state:'compiling',output_path:'D:/work.bomc'});
+      refreshBackendHeartbeat(performance.now()+2000);
+      const atomicText=document.getElementById('backend-state').textContent;
+      refreshBackendHeartbeat(performance.now()+11000);
+      window.qa={atomicText:atomicText,stalledText:document.getElementById('backend-state').textContent};
+    JS
+    assert_includes result['atomicText'], 'host/atomic call'
+    assert_includes result['stalledText'], 'Belum ada checkpoint'
+  end
+
   def test_capture_completion_reports_three_files_and_pending_audit
     result = render('conversion_dialog.html', <<~JS, label: 'capture-complete')
       initializeConversion({title:'Preview',output_path:'D:/results/capture-1',batch_size:8192,capture:true});

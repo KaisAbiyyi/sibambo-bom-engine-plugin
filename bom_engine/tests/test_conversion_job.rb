@@ -59,6 +59,7 @@ end
 
 require_relative '../conversion_job'
 require_relative '../performance_trace'
+require_relative '../bomc_export_job'
 
 def assert(condition, message)
   raise "FAIL: #{message}" unless condition
@@ -85,6 +86,14 @@ assert(metrics[:generation_id] == first_generation && metrics[:slice_count].to_i
   'cooperative slice metrics stay associated with their job generation')
 assert(metrics[:max_slice_ms].is_a?(Numeric) && metrics[:max_tick_delay_ms].is_a?(Numeric),
   'conversion job records slice duration and UI timer delay')
+assert(job.state_history.map { |row| row[:state] } == [:created, :capturing, :compiling, :validating, :publishing, :completed],
+  'successful conversion follows the explicit generation-owned lifecycle')
+assert(metrics[:event_sequence].to_i >= 2 && metrics[:coalesced_ui_event_count].to_i >= 1,
+  'rapid checkpoint events are sequenced and coalesced before UI delivery')
+event_scripts = scripts.select { |script| script.include?('updateProgress') || script.include?('completeConversion') }
+event_sequences = event_scripts.map { |script| script[/"sequence":(\d+)/, 1].to_i }
+assert(event_sequences == event_sequences.sort.uniq,
+  'all delivered progress/result events use one strictly monotonic sequence')
 
 require 'tmpdir'
 Dir.mktmpdir('conversion-job-performance') do |dir|
@@ -128,6 +137,8 @@ Dir.mktmpdir('capture-failure') do |capture_dir|
   script = UI::HtmlDialog.last.scripts.find { |item| item.include?('failConversion') }
   assert(script.include?('"capture":true'), 'failed capture is distinguished from single-file export')
   assert(script.include?(File.basename(capture_dir)), 'failed capture points to its preserved diagnostics')
+  assert(failed_job.state == :failed && failed_job.state_history.last[:state] == :failed,
+    'failed work terminates the state machine without entering completed')
 end
 
 Dir.mktmpdir('all-profile-result') do |parent|
@@ -167,5 +178,57 @@ assert(BOMEngine::ConversionJob.active.nil?, 'cancelled job releases global acti
 assert(cancelled_job.generation_id > first_generation, 'later jobs use a new generation instead of reusing stale progress metrics')
 assert(cancelled_job.performance_metrics[:generation_id] == cancelled_job.generation_id,
   'cancelled job metrics cannot be mistaken for an earlier generation')
+assert(cancelled_job.state_history.map { |row| row[:state] } == [:created, :capturing, :cancelling, :cancelled],
+  'cancel transitions cannot pass through success publication states')
+
+close_job = BOMEngine::ConversionJob.start(title: 'Close conversion', output_path: 'C:/tmp/close.json') do |progress|
+  progress.call(stage: 'Waiting', processed: 1, total: 2)
+  progress.call(stage: 'Waiting', processed: 2, total: 2)
+end
+UI::HtmlDialog.last.invoke('close')
+UI.tick while close_job.running?
+assert(close_job.state == :cancelled && BOMEngine::ConversionJob.active.nil?,
+  'closing an active dialog routes through cancellation and releases the generation')
+
+slow_job = BOMEngine::ConversionJob.start(title: 'Chunkable slow stage', output_path: 'C:/tmp/slow.json') do |progress|
+  5.times do |index|
+    sleep 0.02
+    progress.call(phase: :compiling, stage: 'Synthetic chunk', processed: index + 1, total: 5)
+  end
+  { path: 'C:/tmp/slow.json', bytes: 5, validation: {} }
+end
+UI.tick while slow_job.running?
+slow_metrics = slow_job.performance_metrics
+assert(slow_metrics[:max_slice_ms] < 100.0,
+  'cooperatively chunkable slow work stays inside the 100 ms main-thread ceiling')
+assert(slow_metrics[:checkpoint_count] == 5 && slow_metrics[:state_history].any? { |row| row[:state] == :compiling },
+  'slow-stage checkpoints keep backend phase and heartbeat telemetry current')
+assert(slow_metrics[:ui_update_count].to_i >= 2,
+  'cooperatively chunkable slow work still delivers bounded progress updates')
+
+publish_calls = 0
+publish_cancel_job = BOMEngine::ConversionJob.start(title: 'Cancel before publication', output_path: 'C:/tmp/publish.bomc') do |progress|
+  context = {
+    clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
+    on_yield: progress,
+    cancelled: -> { false },
+    source_info: ->(_model) { { path: 'model.skp', bytes: 100, available: true } },
+    snapshot: ->(_model, _checkpoint) { { marker: 'detached' } },
+    compile: ->(_graph, _source, output, _checkpoint) { { path: output, bytes: 'compiled'.b, candidate_bytes: 8, savings_bytes: 92, status: :pass, strategy: :standard, metrics: {} } },
+    validate: ->(_result, _graph) { { passed: true, report: { passed: true } } },
+    publish: ->(_candidate, _validation, path) { publish_calls += 1; { path: path } },
+    cleanup: -> {}
+  }
+  BOMEngine::BOMCExportJob.run(
+    model: Struct.new(:path).new('model.skp'), output_path: 'C:/tmp/publish.bomc',
+    settings: BOMEngine::BOMCProcessing.settings(:balanced), context: context
+  )
+end
+while publish_cancel_job.running?
+  UI.tick
+  publish_cancel_job.cancel if publish_cancel_job.running? && publish_cancel_job.state == :publishing
+end
+assert(publish_calls == 0 && publish_cancel_job.state == :cancelled,
+  'cancelling at the publication boundary prevents stale or partial publication')
 
 puts 'Conversion Job Tests: ALL PASSED'

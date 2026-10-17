@@ -41,12 +41,13 @@ module BOMEngine
 
       def test_ordered_state_machine
         stages = []
+        phases = []
         source_reads = 0
         cleared = 0
         graph = { coverage: { unaccounted: 0 }, marker: 'detached' }
         context = {
           clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
-          on_yield: ->(event) { stages << event[:stage] },
+          on_yield: ->(event) { stages << event[:stage]; phases << event[:phase] },
           cancelled: -> { false },
           source_info: ->(_model) { source_reads += 1; { path: 'model.skp', bytes: 1_000, available: true } },
           snapshot: ->(_model, _checkpoint) { graph },
@@ -68,6 +69,11 @@ module BOMEngine
         )
         ordered_unique = stages.each_with_object([]) { |stage, list| list << stage unless list[-1] == stage }
         assert(ordered_unique == BOMCExportJob::STAGES, 'state events follow the complete public stage order')
+        phase_by_stage = stages.zip(phases).to_h
+        assert(phase_by_stage[:SCAN_MODEL] == :capturing && phase_by_stage[:ENCODE_POSITIONS] == :compiling,
+          'snapshot and compiler stages are assigned to distinct lifecycle phases')
+        assert(phase_by_stage[:VALIDATE] == :validating && phase_by_stage[:PUBLISH] == :publishing && phase_by_stage[:DONE] == :publishing,
+          'validation and publication stages map to their explicit lifecycle phases')
         assert(source_reads == 1, 'saved source path and size are captured exactly once')
         assert(result[:status] == :pass && result[:savings_bytes] == 300, 'strict size-gate result propagates to completion')
         assert(cleared == 1, 'detached graph reference is cleared in ensure')

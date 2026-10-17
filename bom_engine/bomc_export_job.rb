@@ -11,7 +11,7 @@ module BOMEngine
       :SNAPSHOT_ENTITIES, :CLASSIFY, :BUILD_COVERAGE, :BUILD_DEFINITIONS,
       :BUILD_INSTANCES, :COMPILE_METADATA, :ENCODE_POSITIONS, :ENCODE_TOPOLOGY,
       :ENCODE_NORMALS, :ENCODE_UV, :ENCODE_TRANSFORMS, :ENCODE_TEXTURES,
-      :COMPRESS_SECTIONS, :WRITE_CONTAINER, :SIZE_GATE, :VALIDATE, :DONE
+      :COMPRESS_SECTIONS, :WRITE_CONTAINER, :SIZE_GATE, :VALIDATE, :PUBLISH, :DONE
     ].freeze
 
     SNAPSHOT_STAGES = STAGES[1, 8].freeze
@@ -79,12 +79,12 @@ module BOMEngine
             end
           end
         end
-        advance.call(:DONE, result[:candidate_bytes], result[:savings_bytes])
-
         if context[:publish]
+          advance.call(:PUBLISH, result[:candidate_bytes], result[:savings_bytes])
           published = PerformanceTrace.stage(:publish) { context[:publish].call(result, validation, output_path) }
           result = result.merge(published: published)
         end
+        advance.call(:DONE, result[:candidate_bytes], result[:savings_bytes])
 
         container_bytes = result[:bytes] if result[:bytes].is_a?(String)
         result = result.merge(
@@ -150,6 +150,7 @@ module BOMEngine
         candidate_bytes: candidate_bytes,
         source_bytes: source_bytes,
         savings_bytes: savings_bytes,
+        phase: phase_for_stage(stage),
         force: true
       )
     end
@@ -160,5 +161,15 @@ module BOMEngine
       value.to_s.upcase.to_sym
     end
     private_class_method :normalize_stage
+
+    def phase_for_stage(stage)
+      index = STAGES.index(stage).to_i
+      return :capturing if index <= STAGES.index(:BUILD_INSTANCES)
+      return :compiling if index <= STAGES.index(:SIZE_GATE)
+      return :validating if stage == :VALIDATE
+
+      :publishing
+    end
+    private_class_method :phase_for_stage
   end
 end

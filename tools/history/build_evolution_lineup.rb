@@ -167,14 +167,22 @@ module EvolutionLineupBuilder
             def self.export_current_model(model, settings)
               runtime = load_engine
               processing = runtime::BOMCProcessing.from_ui(batch_mode: 'manual', batch_size: settings.fetch(:batch_size))
-              runtime::EvolutionExporter.export(
-                model,
-                engine: ENGINE,
-                profile: settings.fetch(:profile),
+              runtime::ConversionJob.start(
+                title: "Sibambo Evolution — \#{ENGINE.upcase} \#{settings.fetch(:profile).to_s.upcase}",
                 output_path: settings.fetch(:output_path),
-                processing: processing,
-                active_model: -> { Sketchup.active_model }
-              )
+                batch_size: settings.fetch(:batch_size),
+                kind: :export
+              ) do |progress|
+                runtime::EvolutionExporter.export(
+                  model,
+                  engine: ENGINE,
+                  profile: settings.fetch(:profile),
+                  output_path: settings.fetch(:output_path),
+                  processing: processing,
+                  progress: progress,
+                  active_model: -> { Sketchup.active_model }
+                )
+              end
             end
           end
         end

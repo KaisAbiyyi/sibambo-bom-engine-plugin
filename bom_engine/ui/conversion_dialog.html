@@ -51,7 +51,7 @@
   <p class="path-note" id="path"></p>
   <div class="track" id="track" role="progressbar" aria-label="Kemajuan ekspor"><div class="bar" id="bar"></div></div>
   <div id="stage" role="status">Menyiapkan model…</div>
-  <div class="meta"><span id="processed" hidden></span><span id="percent" hidden></span><span id="elapsed">0 detik</span></div>
+  <div class="meta"><span id="processed" hidden></span><span id="percent" hidden></span><span id="elapsed">0 detik</span><span id="backend-state">Backend menunggu</span></div>
   <div class="meta"><span id="source" hidden></span><span id="candidate" hidden></span></div>
   <div id="result" hidden><div class="result-title" id="result-title"></div><div id="result-rows"></div></div>
   <p class="note" id="outcome-note" hidden></p>
@@ -64,6 +64,11 @@
 <script>
   var isCapture = false;
   var isBatchExport = false;
+  var activeJobId = null;
+  var lastSequence = -1;
+  var backendState = 'created';
+  var lastAcceptedEventAt = performance.now();
+  var heartbeatTimer = null;
   function el(id) { return document.getElementById(id); }
   function formatBytes(value) {
     var n = Number(value);
@@ -85,7 +90,41 @@
     el('bar').style.width = '35%';
     el('track').removeAttribute('aria-valuenow');
   }
+  function eventNumber(data) {
+    var value = Number(data && data.sequence);
+    return Number.isFinite(value) ? value : lastSequence + 1;
+  }
+  function acceptEvent(data, initialize) {
+    data = data || {};
+    var jobId = data.job_id == null ? (activeJobId == null ? 'legacy' : activeJobId) : String(data.job_id);
+    var sequence = eventNumber(data);
+    if (initialize === true) {
+      activeJobId = jobId;
+      lastSequence = sequence;
+    } else {
+      if (activeJobId == null || String(activeJobId) !== jobId || sequence <= lastSequence) return false;
+      lastSequence = sequence;
+    }
+    backendState = String(data.state || backendState || 'capturing').toLowerCase();
+    lastAcceptedEventAt = performance.now();
+    renderBackendState(lastAcceptedEventAt);
+    return true;
+  }
+  function renderBackendState(now) {
+    var status = el('backend-state');
+    if (!status) return;
+    if (backendState === 'completed') { status.textContent = 'Backend selesai'; return; }
+    if (backendState === 'cancelled') { status.textContent = 'Backend dibatalkan'; return; }
+    if (backendState === 'failed') { status.textContent = 'Backend gagal'; return; }
+    if (backendState === 'cancelling') { status.textContent = 'Membatalkan…'; return; }
+    var age = Math.max(0, Number(now == null ? performance.now() : now) - lastAcceptedEventAt);
+    if (age > 10000) status.textContent = 'Belum ada checkpoint · backend sibuk atau macet';
+    else if (age > 1500) status.textContent = 'Menunggu checkpoint · host/atomic call';
+    else status.textContent = 'Backend aktif · ' + backendState;
+  }
+  function refreshBackendHeartbeat(now) { renderBackendState(now); }
   function initializeConversion(data) {
+    if (!acceptEvent(data, true)) return;
     isCapture = data.capture === true;
     isBatchExport = data.batch_export === true;
     el('title').textContent = isCapture ? 'Menyiapkan capture' : isBatchExport ? 'Menyiapkan 3 profil' : 'Menyiapkan ekspor';
@@ -94,8 +133,11 @@
     el('path').textContent = data.output_path || '';
     el('build-label').textContent = isCapture ? 'PREVIEW · belum tersertifikasi' : isBatchExport ? 'Export All · 3 profil' : 'Ekspor BOMC';
     resetProgressFacts();
+    if (heartbeatTimer != null) clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(refreshBackendHeartbeat, 500);
   }
   function updateProgress(data) {
+    if (!acceptEvent(data, false)) return false;
     var stage = String(data.stage || 'Memproses model').replaceAll('_', ' ').toLowerCase();
     var profile = data.profile ? String(data.profile).toUpperCase() + ' · ' : '';
     el('stage').textContent = profile + stage;
@@ -114,8 +156,10 @@
     el('elapsed').textContent = Number(data.elapsed_seconds || 0).toFixed(1) + ' detik';
     if (data.source_bytes != null) { el('source').textContent = 'SKP ' + formatBytes(data.source_bytes); el('source').hidden = false; }
     if (data.candidate_bytes != null) { el('candidate').textContent = 'Kandidat ' + formatBytes(data.candidate_bytes); el('candidate').hidden = false; }
+    if (backendState === 'cancelling') { el('stage').textContent = 'Menghentikan proses dengan aman…'; el('cancel').disabled = true; }
+    return true;
   }
-  function setCancelling() { el('stage').textContent = 'Menghentikan proses dengan aman…'; el('cancel').disabled = true; }
+  function setCancelling(data) { data = data || {}; data.state = 'cancelling'; return updateProgress(data); }
   function finish(status, title, detail) {
     document.body.className = status;
     el('status-icon').textContent = status === 'done' ? '✓' : '!';
@@ -123,6 +167,7 @@
     el('processed').hidden = true; el('percent').hidden = true; el('source').hidden = true; el('candidate').hidden = true;
   }
   function completeConversion(data) {
+    if (!acceptEvent(data, false)) return false;
     var capture = data.capture === true;
     var batch = data.batch_export === true;
     finish('done', capture ? 'Capture tersimpan' : batch ? 'Tiga profil selesai' : 'Ekspor selesai',
@@ -186,8 +231,10 @@
     }
     el('outcome-note').hidden = false;
     el('open').style.display = 'inline-block';
+    return true;
   }
   function failConversion(data) {
+    if (!acceptEvent(data, false)) return false;
     var batch = data.batch_export === true;
     var partial = batch && data.partial_result === true;
     finish('failed', 'Proses gagal', data.capture ? 'Capture tidak lengkap. Hasil awal dan diagnostik tetap ada di folder.' :
@@ -198,9 +245,11 @@
       batch ? (partial ? 'Periksa export-status.json dan export-error.log. Hasil parsial bukan ekspor tiga profil yang sukses.' : 'Perbaiki penyebab kegagalan sebelum mencoba lagi; file lama tetap aman.') : 'File lama tidak dinyatakan terganti; lihat log kesalahan.';
     el('outcome-note').hidden = false;
     el('open').style.display = data.capture || partial ? 'inline-block' : 'none';
+    return true;
   }
   function cancelledConversion(data) {
     data = data || {};
+    if (!acceptEvent(data, false)) return false;
     var batch = data.batch_export === true;
     var partial = batch && data.partial_result === true;
     finish('cancelled', 'Proses dibatalkan', data.capture || partial ? 'Hasil profil sebelumnya mungkin masih ada.' : 'File baru tidak dinyatakan berhasil.');
@@ -209,7 +258,9 @@
     el('outcome-note').textContent = data.capture || partial ? 'Periksa folder hasil dan status tiap profil sebelum memakai hasil parsial.' : 'Tidak ada sertifikasi yang diberikan.';
     el('outcome-note').hidden = false;
     el('open').style.display = data.capture || partial ? 'inline-block' : 'none';
+    return true;
   }
+  window.refreshBackendHeartbeat = refreshBackendHeartbeat;
   window.onload = function() { sketchup.ready(); };
 </script>
 </body>

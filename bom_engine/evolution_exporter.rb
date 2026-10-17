@@ -188,7 +188,7 @@ module BOMEngine
           FileUtils.mkdir_p(texture_dir)
           checkpoint = lambda do |event = {}|
             guard.check!
-            progress.call(event) if progress
+            progress.call(event.merge(phase: :capturing)) if progress
           end
           checkpoint.call(stage: :capture, processed: 0, total: 1, force: true)
           graph = PerformanceTrace.stage(:evolution_capture) do
@@ -202,6 +202,7 @@ module BOMEngine
             )
           end
           guard.check!
+          progress.call(phase: :compiling, stage: :graph_detach, processed: 0, total: 2, force: true) if progress
           document = EvolutionDocument.prepare(
             graph,
             engine: engine,
@@ -210,9 +211,11 @@ module BOMEngine
             historical_baseline_sha: HISTORICAL_BASELINES.fetch(engine)
           )
           candidate = File.join(job_dir, "candidate#{info.fetch(:extension)}")
+          progress.call(phase: :compiling, stage: :evolution_writer, processed: 1, total: 2, force: true) if progress
           PerformanceTrace.stage(:evolution_writer, details: { engine: engine }) do
             info.fetch(:writer).write(candidate, document)
           end
+          progress.call(phase: :validating, stage: :evolution_readback, processed: 0, total: 1, force: true) if progress
           validation = EvolutionValidator.validate_file!(candidate, engine: engine, expected_profile: profile, source_document: document)
           guard.check!
           sidecar = PerformanceTrace.stage(:provenance_build) do
@@ -224,6 +227,7 @@ module BOMEngine
           File.binwrite(sidecar_candidate, JSON.pretty_generate(sidecar) + "\n")
           guard.check!
           sidecar_path = "#{output_path}.provenance.json"
+          progress.call(phase: :publishing, stage: :publication, processed: 0, total: 1, force: true) if progress
           PerformanceTrace.stage(:publication) do
             publish_pair(candidate, sidecar_candidate, output_path, sidecar_path)
           end

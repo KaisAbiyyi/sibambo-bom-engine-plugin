@@ -69,8 +69,9 @@ module BOMEngine
         )
         controller.checkpoint(stage: :scan, processed: 0, total: 200)
         now = 0.011
-        controller.checkpoint(stage: :scan, processed: 1, total: 200)
+        controller.checkpoint(stage: :scan, processed: 1, total: 200, phase: :capturing)
         assert(events.length == 1 && events[0][:reason] == :time, 'elapsed-time budget yields before the item target')
+        assert(events[0][:phase] == :capturing, 'controller preserves lifecycle phase on yielded checkpoints')
         assert(controller.target_items < 64, 'over-budget slice proportionally reduces the next item target')
 
         now = 0.012
