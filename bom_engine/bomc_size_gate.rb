@@ -110,6 +110,11 @@ module BOMEngine
 
       info = source_info || { available: false, bytes: nil }
       cache = export_cache || BOMCExportCache::Cache.new
+      source_digest = info[:sha256].to_s.downcase
+      unless source_digest.match?(/\A[0-9a-f]{64}\z/)
+        capture_digest = graph.respond_to?(:source_digest) ? graph.source_digest.to_s.downcase : ''
+        source_digest = capture_digest.match?(/\A[0-9a-f]{64}\z/) ? capture_digest : BOMCExportCache::Cache.stable_source_digest(graph)
+      end
 
       if contract.profile == :exact
         result = BOMCWriter.pack(
@@ -120,7 +125,8 @@ module BOMEngine
           sparse: true,
           compact_directory: true,
           checkpoint: checkpoint,
-          export_cache: cache
+          export_cache: cache,
+          source_digest: source_digest
         )
         candidate_size = result[:bytes].bytesize
         publish_result(output_path, result, candidate_size, checkpoint, nil) if output_path
@@ -156,6 +162,9 @@ module BOMEngine
                     end
       preferred_target = contract.preferred_ratio && info[:available] ? (Integer(info[:bytes]) * contract.preferred_ratio).floor : hard_target
       effective_target = target_bytes ? Integer(target_bytes) : (preferred_target || hard_target || 0)
+      normalized_model = nil
+      prepared_candidates = nil
+      prepared_solver_result = nil
 
       strategies.each_with_index do |strategy, index|
         result = BOMCWriter.pack(
@@ -170,8 +179,15 @@ module BOMEngine
           compression_level: strategy[:compression_level],
           minimal_metadata: strategy[:minimal_metadata],
           checkpoint: checkpoint,
-          export_cache: cache
+          export_cache: cache,
+          normalized_model: normalized_model,
+          source_digest: source_digest,
+          candidate_groups: strategy[:minimal_metadata] ? prepared_candidates : nil,
+          solver_result: strategy[:minimal_metadata] ? prepared_solver_result : nil
         )
+        normalized_model ||= result[:normalized_source]
+        prepared_candidates ||= result[:prepared_candidates]
+        prepared_solver_result ||= result[:solver_result]
         coverage = result.dig(:metrics, :coverage) || {}
         unless coverage[:unaccounted].to_i.zero?
           raise 'BOMC export refused: detached graph contains unaccounted geometry.'
@@ -276,7 +292,12 @@ module BOMEngine
         candidate_bytes: candidate_size,
         force: true
       )
-      publish(output_path, result[:bytes], hard_budget_bytes: hard_budget_bytes)
+      publish(
+        output_path,
+        result[:bytes],
+        hard_budget_bytes: hard_budget_bytes,
+        expected_sha256: result[:sha256]
+      )
       invoke_checkpoint(
         checkpoint,
         stage: :write_container,
@@ -288,11 +309,18 @@ module BOMEngine
     end
     private_class_method :publish_result
 
-    def publish(path, bytes, hard_budget_bytes: nil)
+    def publish(path, bytes, hard_budget_bytes: nil, expected_sha256: nil)
       temporary_path = "#{path}.#{Process.pid}.part"
+      digest = Digest::SHA256.new
       begin
         File.open(temporary_path, 'wb') do |file|
-          file.write(bytes)
+          offset = 0
+          while offset < bytes.bytesize
+            chunk = bytes.byteslice(offset, [1024 * 1024, bytes.bytesize - offset].min)
+            file.write(chunk)
+            digest.update(chunk)
+            offset += chunk.bytesize
+          end
           file.flush
           file.fsync rescue nil
         end
@@ -303,6 +331,10 @@ module BOMEngine
             actual_bytes: actual_bytes,
             hard_budget_bytes: hard_budget_bytes
           )
+        end
+        emitted_sha256 = digest.hexdigest
+        if expected_sha256 && emitted_sha256 != expected_sha256
+          raise IOError, 'Published BOMC digest does not match the compiled candidate.'
         end
         FileUtils.mv(temporary_path, path, force: true)
       ensure

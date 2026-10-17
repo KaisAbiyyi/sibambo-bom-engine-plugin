@@ -103,6 +103,30 @@ class TestProfilePublication < Test::Unit::TestCase
     end
   end
 
+  def test_validator_accepts_compiler_normalized_source_without_rematerializing_raw_input
+    candidate = BOMEngine::BOMCSizeGate.compile_candidate(@graph, profile: :exact)
+    decoded = BOMEngine::BOMCDecoder.decode(candidate.fetch(:bytes))
+    report = BOMEngine::BOMCValidator.validate_profile!(
+      source: Object.new,
+      normalized_source: candidate.fetch(:normalized_source),
+      decoded: decoded,
+      profile: :exact
+    )
+    assert_equal true, report[:passed]
+  end
+
+  def test_streaming_error_accumulator_preserves_exact_p95_and_rms
+    values = (1..101).to_a.reverse.map(&:to_f)
+    accumulator = BOMEngine::BOMCValidator::ErrorAccumulator.new(max_count: values.length)
+    values.each { |value| accumulator.add(value) }
+    result = accumulator.summary
+    expected_p95 = values.sort[(values.length * 0.95).ceil - 1]
+    expected_rms = Math.sqrt(values.inject(0.0) { |sum, value| sum + value * value } / values.length)
+    assert_equal 101.0, result[:max]
+    assert_equal expected_p95, result[:p95]
+    assert_in_delta expected_rms, result[:rms], 1.0e-12
+  end
+
   def test_exact_decoded_jpeg_requires_matching_lossless_digest_evidence
     decoded = BOMEngine::BOMCDecoder.decode(BOMEngine::BOMCWriter.pack(@graph, profile: :exact)[:bytes])
     digest = Digest::SHA256.hexdigest('jpeg-payload')
@@ -528,6 +552,19 @@ class TestProfilePublication < Test::Unit::TestCase
       # Verify no stray .part files left
       part_files = Dir.glob(File.join(dir, '*.part'))
       assert part_files.empty?, "Stray .part files must be cleaned up (found: #{part_files})"
+
+      # Emission-time digest verification must also fail before replacing the
+      # committed destination and must clean the staged file.
+      tampered_digest = candidate.merge(sha256: '0' * 64)
+      assert_raise(IOError) do
+        BOMEngine::BOMCExtension.publish_validated(
+          candidate: tampered_digest,
+          report: { passed: true, failures: [] },
+          output_path: destination
+        )
+      end
+      assert_equal initial_content, File.read(destination), 'Digest mismatch must preserve the committed destination'
+      assert Dir.glob(File.join(dir, '*.part')).empty?, 'Digest mismatch must clean the staged file'
 
       # Now verify passing publication succeeds and overwrites cleanly
       passing_report = { passed: true, failures: [] }

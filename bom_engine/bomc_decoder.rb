@@ -65,11 +65,11 @@ module BOMEngine
           definitions = decode_definitions(section_bytes(BOMC::SECTION_DEFINITIONS), strings)
           instances = decode_instances(section_bytes(BOMC::SECTION_INSTANCES), strings)
           transforms = decode_codec_section(section_bytes(BOMC::SECTION_TRANSFORMS), BOMC::TransformCodec)
-          definitions.each_with_index do |definition, definition_index|
-            definition[:nodes] = []
-            instances.each_with_index do |instance, instance_index|
-              definition[:nodes] << instance_index if instance[:owner_definition] == definition_index
-            end
+          definitions.each { |definition| definition[:nodes] = [] }
+          instances.each_with_index do |instance, instance_index|
+            owner = instance[:owner_definition]
+            definition = owner.nil? ? nil : definitions[owner]
+            definition[:nodes] << instance_index if definition
           end
           debug = @sections[BOMC::SECTION_DEBUG] ? decode_debug(section_bytes(BOMC::SECTION_DEBUG), strings) : {}
         end

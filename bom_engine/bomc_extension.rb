@@ -130,14 +130,26 @@ module BOMEngine
       FileUtils.mkdir_p(directory) unless Dir.exist?(directory)
 
       part_path = "#{output_path}.#{Process.pid}.part"
+      emitted_digest = Digest::SHA256.new
       begin
         File.open(part_path, 'wb') do |file|
-          file.write(bytes)
+          offset = 0
+          while offset < bytes.bytesize
+            chunk = bytes.byteslice(offset, [1024 * 1024, bytes.bytesize - offset].min)
+            file.write(chunk)
+            emitted_digest.update(chunk)
+            offset += chunk.bytesize
+          end
           file.flush
           file.fsync rescue nil
         end
         written_bytes = File.size(part_path)
         raise IOError, 'Staged BOMC byte count does not match the validated candidate.' unless written_bytes == bytes.bytesize
+        emitted_sha256 = emitted_digest.hexdigest
+        expected_sha256 = candidate.is_a?(Hash) ? (candidate[:sha256] || candidate['sha256']) : nil
+        if expected_sha256 && expected_sha256 != emitted_sha256
+          raise IOError, 'Staged BOMC digest does not match the validated candidate.'
+        end
         if source_info
           assert_source_identity!(source_info)
           raise_target_not_met!(candidate, source_info, written_bytes) unless written_bytes < source_info.fetch(:bytes)
@@ -150,6 +162,7 @@ module BOMEngine
       {
         path: output_path,
         bytes: File.size(output_path),
+        sha256: emitted_digest.hexdigest,
         published: true,
         report: report,
         source_skp_bytes: source_info && source_info[:bytes],
@@ -178,7 +191,8 @@ module BOMEngine
         source: graph,
         decoded: decoded,
         profile: prof,
-        texture_evidence: texture_evidence
+        texture_evidence: texture_evidence,
+        normalized_source: candidate[:normalized_source]
       )
       published = publish_validated(candidate: candidate, report: report, output_path: path)
       jcm_selected?(candidate) ? published.merge(required_loader: 'bomc-next-jcm-v1') : published
@@ -451,7 +465,8 @@ module BOMEngine
                 source: graph,
                 decoded: decoded,
                 profile: profile,
-                texture_evidence: texture_evidence
+                texture_evidence: texture_evidence,
+                normalized_source: result[:normalized_source]
               )
             else
               { passed: true }

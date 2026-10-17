@@ -162,12 +162,15 @@ class TestSelectedCandidateEmission < Test::Unit::TestCase
     assert_operator cache.stats[:normalization_misses], :>, 0
     assert_equal 0, cache.stats[:normalization_hits]
     assert_operator cache.stats[:candidate_misses], :>, 0
+    assert_equal 1, cache.stats[:preparation_misses]
+    assert_equal 0, cache.stats[:preparation_hits]
     first_candidate_misses = cache.stats[:candidate_misses]
 
     # Second export: warm cache with same graph and profile
     res2 = BOMEngine::BOMCWriter.pack(graph, profile: :visual, export_cache: cache)
     assert_equal 1, cache.stats[:normalization_hits]
-    assert_operator cache.stats[:candidate_hits], :>, 0
+    assert_equal 1, cache.stats[:preparation_hits]
+    assert_equal 0, cache.stats[:candidate_hits], 'prepared build bypasses lower-level candidate lookup on a warm export'
     assert_equal first_candidate_misses, cache.stats[:candidate_misses]
     assert_equal res1[:bytes], res2[:bytes]
 
@@ -205,6 +208,15 @@ class TestSelectedCandidateEmission < Test::Unit::TestCase
     # 6. Mutate policy_revision
     key6 = BOMEngine::BOMCExportCache::Cache.compute_key(**base_params.merge(policy_revision: '2026.09.09.2'))
     assert_not_equal base_key, key6
+  end
+
+  def test_unsaved_fixture_digest_streams_without_graph_inspect_materialization
+    graph = sample_graph
+    graph[:source].delete(:sha256)
+    graph.define_singleton_method(:inspect) { raise 'graph.inspect must not be used for source identity' }
+    result = BOMEngine::BOMCWriter.pack(graph, profile: :visual)
+    digest = result.fetch(:prepared_candidates).source_digest
+    assert_match(/\A[0-9a-f]{64}\z/, digest)
   end
 
   # Regression 3: Soft Visual target bounded by actual frontiers with diagnostic reason on fallback <90%.

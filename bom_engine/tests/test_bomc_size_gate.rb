@@ -20,6 +20,7 @@ module BOMEngine
         test_boundaries
         test_source_capture
         test_escalation_and_invariants
+        test_escalation_reuses_preparation_and_candidates
         test_failed_candidates_are_not_published
         test_research_and_visual_never_allow_over_budget
         puts 'BOMC Size Gate Tests: ALL PASSED'
@@ -113,6 +114,24 @@ module BOMEngine
         ensure
           FileUtils.remove_entry(directory) if directory && Dir.exist?(directory)
         end
+      end
+
+      def test_escalation_reuses_preparation_and_candidates
+        graph = graph_fixture
+        compact = BOMCWriter.pack(graph, profile: :production, compression_level: 9, minimal_metadata: false)
+        cache = BOMCExportCache::Cache.new
+        result = BOMCSizeGate.compile(
+          graph: graph,
+          profile: :production,
+          source_info: { available: true, bytes: compact[:bytes].bytesize },
+          base_path: nil,
+          export_cache: cache
+        )
+        assert(result[:attempts].map { |attempt| attempt[:strategy] } == [:standard, :compact, :maximum_lossless], 'escalation still evaluates the frozen bounded strategy order')
+        assert(cache.stats[:preparation_misses] == 2, 'normal metadata and minimal metadata each prepare exactly once')
+        assert(cache.stats[:preparation_hits] == 1, 'compact compression reuses the standard raw preparation')
+        assert(cache.stats[:normalization_misses] == 1 && cache.stats[:normalization_hits].zero?, 'size-gate normalizes the source once and passes the shared normalized view forward')
+        assert(cache.stats[:candidate_hits].zero?, 'minimal-metadata retry consumes the first prepared candidate set directly')
       end
 
       def test_advisory_gate_publishes_best_complete_candidate

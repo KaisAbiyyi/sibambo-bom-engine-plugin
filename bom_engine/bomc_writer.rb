@@ -45,7 +45,7 @@ module BOMEngine
       BOMC::SECTION_DEBUG => :debug
     }.freeze
 
-    def self.pack(graph, profile: :visual, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil, candidate_groups: nil, export_cache: nil)
+    def self.pack(graph, profile: :visual, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil, candidate_groups: nil, export_cache: nil, normalized_model: nil, source_digest: nil, solver_result: nil)
       Builder.new(
         graph,
         profile: profile,
@@ -59,11 +59,14 @@ module BOMEngine
         minimal_metadata: minimal_metadata,
         checkpoint: checkpoint,
         candidate_groups: candidate_groups,
-        export_cache: export_cache
+        export_cache: export_cache,
+        normalized_model: normalized_model,
+        source_digest: source_digest,
+        solver_result: solver_result
       ).build
     end
 
-    def self.write(path, graph, profile: :visual, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil, candidate_groups: nil, export_cache: nil)
+    def self.write(path, graph, profile: :visual, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path: nil, sparse: true, compact_directory: true, compression_level: Zlib::BEST_COMPRESSION, minimal_metadata: false, checkpoint: nil, candidate_groups: nil, export_cache: nil, normalized_model: nil, source_digest: nil, solver_result: nil)
       result = pack(
         graph,
         profile: profile,
@@ -77,12 +80,24 @@ module BOMEngine
         minimal_metadata: minimal_metadata,
         checkpoint: checkpoint,
         candidate_groups: candidate_groups,
-        export_cache: export_cache
+        export_cache: export_cache,
+        normalized_model: normalized_model,
+        source_digest: source_digest,
+        solver_result: solver_result
       )
       temporary_path = "#{path}.#{Process.pid}.part"
+      emitted_digest = Digest::SHA256.new
+      emitted_sha256 = nil
       begin
         File.open(temporary_path, 'wb') do |file|
-          file.write(result[:bytes])
+          bytes = result[:bytes]
+          offset = 0
+          while offset < bytes.bytesize
+            chunk = bytes.byteslice(offset, [1024 * 1024, bytes.bytesize - offset].min)
+            file.write(chunk)
+            emitted_digest.update(chunk)
+            offset += chunk.bytesize
+          end
           file.flush
           file.fsync rescue nil
         end
@@ -107,6 +122,10 @@ module BOMEngine
             )
           end
         end
+        emitted_sha256 = emitted_digest.hexdigest
+        if result[:sha256] && result[:sha256] != emitted_sha256
+          raise IOError, 'Written BOMC digest does not match the compiled candidate.'
+        end
         FileUtils.mv(temporary_path, path, force: true)
       ensure
         File.delete(temporary_path) if File.file?(temporary_path)
@@ -114,12 +133,12 @@ module BOMEngine
       result.merge(
         path: path,
         bytes: File.size(path),
-        sha256: Digest::SHA256.file(path).hexdigest
+        sha256: emitted_sha256
       )
     end
 
     class Builder
-      def initialize(graph, profile:, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path:, sparse:, compact_directory:, compression_level:, minimal_metadata:, checkpoint:, candidate_groups: nil, export_cache: nil)
+      def initialize(graph, profile:, profile_contract: nil, source_skp_bytes: 0, target_bytes: 0, base_path:, sparse:, compact_directory:, compression_level:, minimal_metadata:, checkpoint:, candidate_groups: nil, export_cache: nil, normalized_model: nil, source_digest: nil, solver_result: nil)
         @profile = profile.to_sym
         allowed_profiles = [:production, :debug, :exact, :research, :visual]
         raise ArgumentError, "Unknown BOMC profile #{@profile}." unless allowed_profiles.include?(@profile)
@@ -140,19 +159,18 @@ module BOMEngine
         @minimal_metadata = !!minimal_metadata
         @checkpoint = checkpoint
         @candidate_groups_input = candidate_groups
+        @solver_result_input = solver_result
         @export_cache = export_cache
 
-        @source_digest = if graph.is_a?(Hash)
-                           capture_sha = graph.respond_to?(:source_digest) ? graph.source_digest : nil
-                           src = graph[:source] || graph['source']
-                           src_sha = src.is_a?(Hash) ? (src[:sha256] || src['sha256'] || src[:source_digest] || src['source_digest']) : nil
-                           capture_sha || graph[:source_digest] || graph['source_digest'] || src_sha || Digest::SHA256.hexdigest(begin graph.inspect rescue graph.to_s end)
-                         else
-                           Digest::SHA256.hexdigest(graph.to_s)
-                         end
+        supplied_digest = source_digest.to_s.downcase
+        supplied_digest = nil unless supplied_digest.match?(/\A[0-9a-f]{64}\z/)
+        @source_digest = supplied_digest || source_digest_from_graph(graph) || BOMCExportCache::Cache.stable_source_digest(graph)
 
-        @model = PerformanceTrace.stage(:normalize_graph) do
-          if @export_cache
+        @model = if normalized_model
+                   normalized_model
+                 else
+                   PerformanceTrace.stage(:normalize_graph) do
+                     if @export_cache
             norm_key = BOMCExportCache::Cache.compute_key(
               source_digest: @source_digest,
               profile: @profile,
@@ -166,11 +184,119 @@ module BOMEngine
               @export_cache.store_normalization(norm_key, normalized)
               normalized
             end
-          else
-            BOMC::ModelAdapter.normalize(graph, base_path: base_path, checkpoint: @checkpoint)
-          end
+                     else
+                       BOMC::ModelAdapter.normalize(graph, base_path: base_path, checkpoint: @checkpoint)
+                     end
+                   end
+                 end
+      end
+
+      def build
+        preparation = fetch_or_prepare
+        geometry = preparation.fetch(:geometry)
+        all_sections = preparation.fetch(:all_sections)
+        sections = preparation.fetch(:sections)
+        flags = preparation.fetch(:flags)
+
+        pack_res = PerformanceTrace.stage(:compression, counts: { sections: sections.length }) do
+          BOMC::Container.pack_with_metrics(
+            sections,
+            flags: flags,
+            compact_directory: @compact_directory,
+            version_minor: @compact_directory ? 2 : 0,
+            compression_level: @compression_level,
+            checkpoint: @checkpoint
+          )
+        end
+        bytes = pack_res[:bytes]
+        header_metrics = pack_res[:header_metrics]
+        section_sizes = {}
+        pack_res[:section_metrics].each do |descriptor|
+          name = SECTION_NAMES.fetch(descriptor[:type], :unknown)
+          section_sizes[name] = {
+            raw_bytes: descriptor[:raw_size],
+            stored_bytes: descriptor[:stored_size],
+            codec: descriptor[:codec],
+            count: descriptor[:count]
+          }
+        end
+        candidate_sha256 = PerformanceTrace.stage(:candidate_hash, counts: { bytes: bytes.bytesize }) do
+          Digest::SHA256.hexdigest(bytes)
+        end
+        {
+          bytes: bytes,
+          sha256: candidate_sha256,
+          format: FORMAT_VERSION,
+          profile: @profile,
+          prepared_candidates: geometry[:prepared_candidates],
+          solver_result: geometry[:solver_result],
+          normalized_source: @model,
+          metrics: {
+            header_directory_bytes: header_metrics[:header_directory_bytes],
+            directory_entry_bytes: header_metrics[:directory_entry_bytes],
+            omitted_empty_sections: all_sections.length - sections.length,
+            sections: section_sizes,
+            positions: preparation[:position_metrics],
+            normals: preparation[:normal_metrics],
+            uv: preparation[:uv_metrics],
+            geometry_candidate_frontiers: preparation[:geometry_candidate_frontiers],
+            transforms: preparation[:transform_metrics],
+            topology: preparation[:topology_metrics],
+            adaptive_indices: preparation[:adaptive_metrics],
+            textures: preparation[:texture_metrics],
+            appearance: preparation[:appearance_metrics],
+            coverage: @model[:coverage],
+            solver: geometry[:solver_result]
+          }
+        }
+      end
+
+      private
+
+      def fetch_or_prepare
+        cache_key = preparation_cache_key
+        if @export_cache && cache_key
+          cached = @export_cache.fetch_preparation(cache_key)
+          return cached if cached
         end
 
+        compatible_base = nil
+        if @export_cache && @minimal_metadata
+          compatible_base = @export_cache.peek_preparation(preparation_cache_key(false))
+        end
+        prepared = prepare_build(compatible_base)
+        @export_cache.store_preparation(cache_key, prepared) if @export_cache && cache_key
+        prepared
+      end
+
+      def preparation_cache_key(minimal_metadata = @minimal_metadata)
+        return nil unless preparation_cacheable?
+        contract = @profile_contract
+        contract_key = [
+          contract.name, contract.hard_ratio, contract.preferred_ratio,
+          contract.position_error_m, contract.normal_error_deg, contract.uv_error,
+          contract.transform_error
+        ].join(',')
+        encoder_key = [
+          'bomc-preparation-v1', minimal_metadata ? 1 : 0, @sparse ? 1 : 0,
+          @compact_directory ? 1 : 0, @source_skp_bytes, @target_bytes, contract_key
+        ].join(':')
+        BOMCExportCache::Cache.compute_key(
+          source_digest: @source_digest,
+          profile: @profile,
+          encoder_digest: encoder_key,
+          policy_revision: BOMCExportCache::POLICY_REVISION
+        )
+      end
+
+      def preparation_cacheable?
+        return true if @candidate_groups_input.nil?
+        return false unless @candidate_groups_input.respond_to?(:source_digest) && @candidate_groups_input.respond_to?(:profile)
+        @candidate_groups_input.source_digest.to_s == @source_digest.to_s &&
+          @candidate_groups_input.profile.to_sym == @profile
+      end
+
+      def prepare_build(compatible_base = nil)
         @adaptive_actual = 0
         @adaptive_u32 = 0
         @position_metrics = []
@@ -178,13 +304,30 @@ module BOMEngine
         @geometry_candidate_frontiers = { positions: [], normals: [], uv: [] }
         @topology_absolute_bytes = 0
         @topology_encoded_bytes = 0
-        build_texture_registry
-        build_string_dictionary
-      end
 
-      def build
         notify(:compile_metadata, 0, 1)
-        geometry = PerformanceTrace.stage(:candidate_generation, counts: { meshes: @model[:meshes].length }, sample_resources: true) { build_geometry }
+        if compatible_base
+          @textures = compatible_base[:textures]
+          @texture_blob_bytes = compatible_base[:texture_blob_bytes]
+          @texture_reference_count = compatible_base[:texture_reference_count]
+          @position_metrics = compatible_base[:position_metrics].dup
+          @uv_metrics = compatible_base[:uv_metrics].dup
+          @geometry_candidate_frontiers = {
+            positions: compatible_base[:geometry_candidate_frontiers][:positions].dup,
+            normals: compatible_base[:geometry_candidate_frontiers][:normals].dup,
+            uv: compatible_base[:geometry_candidate_frontiers][:uv].dup
+          }
+          @topology_absolute_bytes = compatible_base[:topology_metrics][:absolute_bytes]
+          @topology_encoded_bytes = compatible_base[:topology_metrics][:encoded_bytes]
+        else
+          build_texture_registry
+        end
+        build_string_dictionary
+        geometry = if compatible_base
+                     remap_geometry_string_references(compatible_base.fetch(:geometry))
+                   else
+                     PerformanceTrace.stage(:candidate_generation, counts: { meshes: @model[:meshes].length }, sample_resources: true) { build_geometry }
+                   end
         scenes = Array(@model[:scenes])
         clip_planes = Array(@model[:clip_planes])
         all_sections = PerformanceTrace.stage(:section_creation) do
@@ -235,106 +378,124 @@ module BOMEngine
           flags |= BOMC::FLAG_SCOPE_ALL
         end
 
-        pack_res = PerformanceTrace.stage(:compression, counts: { sections: sections.length }) do
-          BOMC::Container.pack_with_metrics(
-            sections,
-            flags: flags,
-            compact_directory: @compact_directory,
-            version_minor: @compact_directory ? 2 : 0,
-            compression_level: @compression_level,
-            checkpoint: @checkpoint
-          )
-        end
-        bytes = pack_res[:bytes]
-        header_metrics = pack_res[:header_metrics]
-        section_sizes = {}
-        pack_res[:section_metrics].each do |descriptor|
-          name = SECTION_NAMES.fetch(descriptor[:type], :unknown)
-          section_sizes[name] = {
-            raw_bytes: descriptor[:raw_size],
-            stored_bytes: descriptor[:stored_size],
-            codec: descriptor[:codec],
-            count: descriptor[:count]
-          }
-        end
-        candidate_sha256 = PerformanceTrace.stage(:candidate_hash, counts: { bytes: bytes.bytesize }) do
-          Digest::SHA256.hexdigest(bytes)
-        end
         {
-          bytes: bytes,
-          sha256: candidate_sha256,
-          format: FORMAT_VERSION,
-          profile: @profile,
-          prepared_candidates: geometry[:prepared_candidates],
-          solver_result: geometry[:solver_result],
-          metrics: {
-            header_directory_bytes: header_metrics[:header_directory_bytes],
-            directory_entry_bytes: header_metrics[:directory_entry_bytes],
-            omitted_empty_sections: all_sections.length - sections.length,
-            sections: section_sizes,
-            positions: @position_metrics,
-            normals: candidate_metric_hash(geometry[:normal_block]),
-            uv: @uv_metrics,
-            geometry_candidate_frontiers: @geometry_candidate_frontiers,
-            transforms: candidate_metric_hash(geometry[:transform_block]),
-            topology: {
-              absolute_bytes: @topology_absolute_bytes,
-              encoded_bytes: @topology_encoded_bytes,
-              saved_bytes: @topology_absolute_bytes - @topology_encoded_bytes
-            },
-            adaptive_indices: {
-              uint32_bytes: @adaptive_u32,
-              actual_bytes: @adaptive_actual,
-              saved_bytes: @adaptive_u32 - @adaptive_actual
-            },
-            textures: {
-              source_references: @texture_reference_count,
-              unique: @textures.length,
-              deduplicated: @texture_reference_count - @textures.length,
-              bytes: @texture_blob_bytes.bytesize,
-              encodings: texture_encoding_metrics,
-              largest: largest_texture_metrics,
-              evidence: @textures.map { |texture| texture[:encoding_evidence] }.compact
-            },
-            appearance: appearance_metrics,
-            coverage: @model[:coverage],
-            solver: geometry[:solver_result]
-          }
+          geometry: geometry,
+          all_sections: all_sections,
+          sections: sections,
+          flags: flags,
+          position_metrics: @position_metrics.dup,
+          normal_metrics: candidate_metric_hash(geometry[:normal_block]),
+          uv_metrics: @uv_metrics.dup,
+          geometry_candidate_frontiers: {
+            positions: @geometry_candidate_frontiers[:positions].dup,
+            normals: @geometry_candidate_frontiers[:normals].dup,
+            uv: @geometry_candidate_frontiers[:uv].dup
+          },
+          transform_metrics: candidate_metric_hash(geometry[:transform_block]),
+          topology_metrics: {
+            absolute_bytes: @topology_absolute_bytes,
+            encoded_bytes: @topology_encoded_bytes,
+            saved_bytes: @topology_absolute_bytes - @topology_encoded_bytes
+          },
+          adaptive_metrics: {
+            uint32_bytes: @adaptive_u32,
+            actual_bytes: @adaptive_actual,
+            saved_bytes: @adaptive_u32 - @adaptive_actual
+          },
+          texture_metrics: {
+            source_references: @texture_reference_count,
+            unique: @textures.length,
+            deduplicated: @texture_reference_count - @textures.length,
+            bytes: @texture_blob_bytes.bytesize,
+            encodings: texture_encoding_metrics,
+            largest: largest_texture_metrics,
+            evidence: @textures.map { |texture| texture[:encoding_evidence] }.compact
+          },
+          appearance_metrics: appearance_metrics,
+          textures: @textures,
+          texture_blob_bytes: @texture_blob_bytes,
+          texture_reference_count: @texture_reference_count
         }
       end
 
-      private
+      def remap_geometry_string_references(base_geometry)
+        face_index = 0
+        remapped_faces = []
+        @model[:meshes].each do |mesh|
+          mesh[:faces].each do |source_face|
+            cached_face = base_geometry[:faces][face_index]
+            remapped_face = cached_face.dup
+            remapped_face[:label] = string_reference(source_face[:semantic_label])
+            remapped_faces << remapped_face
+            face_index += 1
+          end
+        end
+        remapped = base_geometry.dup
+        remapped[:faces] = remapped_faces
+        remapped
+      end
+
+      def source_digest_from_graph(graph)
+        return nil unless graph.is_a?(Hash)
+        capture_sha = graph.respond_to?(:source_digest) ? graph.source_digest : nil
+        source = graph[:source] || graph['source']
+        source_sha = source.is_a?(Hash) ? (source[:sha256] || source['sha256'] || source[:source_digest] || source['source_digest']) : nil
+        candidate = capture_sha || graph[:source_digest] || graph['source_digest'] || source_sha
+        value = candidate.to_s.downcase
+        value.match?(/\A[0-9a-f]{64}\z/) ? value : nil
+      end
 
       def appearance_metrics
-        faces = @model[:meshes].map { |mesh| mesh[:faces] }.flatten
-        triangle_count = lambda { |face| Array(face[:triangles]).length / 3 }
-        front = faces.select { |face| face[:front_appearance_required] }
-        back = faces.select { |face| face[:back_appearance_required] }
-        front_uv = faces.select { |face| uv_side_present?(face, :front) }
-        back_uv = faces.select { |face| uv_side_present?(face, :back) }
-        back_material = faces.select { |face| !face[:back_material].nil? }
-        back_uv_only = back_uv.reject { |face| face[:back_appearance_required] }
-        front_triangles = front.inject(0) { |sum, face| sum + triangle_count.call(face) }
-        back_triangles = back.inject(0) { |sum, face| sum + triangle_count.call(face) }
-        uv_scalars = faces.inject(0) do |sum, face|
-          sum + [:front_outer, :front_holes, :back_outer, :back_holes].inject(0) do |face_sum, key|
-            face_sum + Array(face.dig(:uv, key)).flatten.length
+        counts = {
+          faces_total: 0,
+          front_appearance_faces: 0,
+          back_appearance_faces: 0,
+          front_uv_faces: 0,
+          back_uv_faces: 0,
+          back_material_faces: 0,
+          back_uv_only_faces: 0,
+          front_triangle_count: 0,
+          required_back_triangle_count: 0,
+          uv_scalar_count: 0
+        }
+        @model[:meshes].each do |mesh|
+          mesh[:faces].each do |face|
+            counts[:faces_total] += 1
+            triangles = Array(face[:triangles]).length / 3
+            if face[:front_appearance_required]
+              counts[:front_appearance_faces] += 1
+              counts[:front_triangle_count] += triangles
+            end
+            if face[:back_appearance_required]
+              counts[:back_appearance_faces] += 1
+              counts[:required_back_triangle_count] += triangles
+            end
+            front_uv = uv_side_present?(face, :front)
+            back_uv = uv_side_present?(face, :back)
+            counts[:front_uv_faces] += 1 if front_uv
+            counts[:back_uv_faces] += 1 if back_uv
+            counts[:back_material_faces] += 1 unless face[:back_material].nil?
+            counts[:back_uv_only_faces] += 1 if back_uv && !face[:back_appearance_required]
+            uv = face[:uv] || {}
+            [:front_outer, :front_holes, :back_outer, :back_holes].each do |key|
+              counts[:uv_scalar_count] += nested_scalar_count(uv[key])
+            end
           end
         end
         {
-          faces_total: faces.length,
-          front_appearance_faces: front.length,
-          back_appearance_faces: back.length,
-          front_uv_faces: front_uv.length,
-          back_uv_faces: back_uv.length,
-          back_material_faces: back_material.length,
-          back_uv_only_faces: back_uv_only.length,
-          redundant_back_pass_candidates: back_uv_only.length,
-          front_triangle_count: front_triangles,
-          required_back_triangle_count: back_triangles,
-          estimated_two_side_triangle_occurrences: front_triangles + back_triangles,
-          uv_scalar_count: uv_scalars,
-          uncompressed_uv_bytes: uv_scalars * 4
+          faces_total: counts[:faces_total],
+          front_appearance_faces: counts[:front_appearance_faces],
+          back_appearance_faces: counts[:back_appearance_faces],
+          front_uv_faces: counts[:front_uv_faces],
+          back_uv_faces: counts[:back_uv_faces],
+          back_material_faces: counts[:back_material_faces],
+          back_uv_only_faces: counts[:back_uv_only_faces],
+          redundant_back_pass_candidates: counts[:back_uv_only_faces],
+          front_triangle_count: counts[:front_triangle_count],
+          required_back_triangle_count: counts[:required_back_triangle_count],
+          estimated_two_side_triangle_occurrences: counts[:front_triangle_count] + counts[:required_back_triangle_count],
+          uv_scalar_count: counts[:uv_scalar_count],
+          uncompressed_uv_bytes: counts[:uv_scalar_count] * 4
         }
       end
 
@@ -342,6 +503,12 @@ module BOMEngine
         uv = face[:uv]
         return false unless uv
         !Array(uv[(side.to_s + '_outer').to_sym]).empty? || !Array(uv[(side.to_s + '_holes').to_sym]).empty?
+      end
+
+      def nested_scalar_count(value)
+        return 0 if value.nil?
+        return 1 unless value.is_a?(Array)
+        value.inject(0) { |sum, child| sum + nested_scalar_count(child) }
       end
 
       def section(type, count, bytes, compress)
@@ -716,7 +883,7 @@ module BOMEngine
           fixed_sections: SECTION_NAMES.values
         )
 
-        solver_result = if @profile_contract.profile == :exact || @source_skp_bytes > 0
+        solver_result = @solver_result_input || if @profile_contract.profile == :exact || @source_skp_bytes > 0
                           begin
                             BOMCBudgetSolver.solve(
                               profile: @profile,
@@ -1059,68 +1226,72 @@ module BOMEngine
       end
 
       def build_string_dictionary
-        candidates = []
+        candidates = {}
+        add = lambda do |value|
+          next if value.nil?
+          candidates[value.to_s] = true
+        end
         source = @model[:source] || {}
         unless @minimal_metadata
-          candidates << source[:file_name]
-          candidates << source[:model_name]
+          add.call(source[:file_name])
+          add.call(source[:model_name])
         end
         @model[:materials].each do |material|
-          candidates << material[:name]
-          candidates << material[:display_name]
-          candidates << material[:stable_id]
+          add.call(material[:name])
+          add.call(material[:display_name])
+          add.call(material[:stable_id])
         end
         @model[:tags].each do |tag|
-          candidates << tag[:name]
-          candidates << tag[:id]
-          candidates << tag[:stable_id]
+          add.call(tag[:name])
+          add.call(tag[:id])
+          add.call(tag[:stable_id])
         end
         @model[:definitions].each do |definition|
-          candidates << definition[:name]
-          candidates << definition[:stable_id]
+          add.call(definition[:name])
+          add.call(definition[:stable_id])
         end
         @model[:instances].each_with_index do |instance, index|
           notify(:compile_metadata, index + 1, @model[:instances].length)
-          candidates << instance[:name]
-          candidates << instance[:id]
-          candidates << instance[:stable_id]
-          candidates << instance[:semantic_label]
+          add.call(instance[:name])
+          add.call(instance[:id])
+          add.call(instance[:stable_id])
+          add.call(instance[:semantic_label])
         end
         @model[:meshes].each do |mesh|
-          candidates << mesh[:stable_id]
-          mesh[:faces].each { |face| candidates << face[:semantic_label] }
+          add.call(mesh[:stable_id])
+          mesh[:faces].each { |face| add.call(face[:semantic_label]) }
         end
-        fallback_records.each { |record| candidates << record[:text] }
+        fallback_records.each { |record| add.call(record[:text]) }
         Array(@model[:scenes]).each do |scene|
-          candidates << scene[:name]
-          candidates << scene[:description]
-          candidates << scene[:stable_id]
-          candidates << scene[:visibility_signature]
+          add.call(scene[:name])
+          add.call(scene[:description])
+          add.call(scene[:stable_id])
+          add.call(scene[:visibility_signature])
           vis = scene[:visibility] || {}
-          Array(vis[:visible_node_overrides]).each { |id| candidates << id }
-          Array(vis[:hidden_node_overrides]).each { |id| candidates << id }
-          Array(vis[:visible_tag_ids]).each { |id| candidates << id }
-          Array(vis[:hidden_tag_ids]).each { |id| candidates << id }
-          Array(vis[:unresolved_hidden_node_overrides]).each { |id| candidates << id }
-          Array(vis[:unresolved_visible_node_overrides]).each { |id| candidates << id }
+          Array(vis[:visible_node_overrides]).each { |id| add.call(id) }
+          Array(vis[:hidden_node_overrides]).each { |id| add.call(id) }
+          Array(vis[:visible_tag_ids]).each { |id| add.call(id) }
+          Array(vis[:hidden_tag_ids]).each { |id| add.call(id) }
+          Array(vis[:unresolved_hidden_node_overrides]).each { |id| add.call(id) }
+          Array(vis[:unresolved_visible_node_overrides]).each { |id| add.call(id) }
           [:visible_face_overrides, :hidden_face_overrides, :visible_edge_overrides, :hidden_edge_overrides,
            :unresolved_visible_face_overrides, :unresolved_hidden_face_overrides,
            :unresolved_visible_edge_overrides, :unresolved_hidden_edge_overrides,
            :unresolved_primitive_overrides].each do |key|
-            Array(vis[key]).each { |id| candidates << id }
+            Array(vis[key]).each { |id| add.call(id) }
           end
-          Array(scene.dig(:section_state, :active_section_plane_ids)).each { |id| candidates << id }
+          Array(scene.dig(:section_state, :active_section_plane_ids)).each { |id| add.call(id) }
         end
         Array(@model[:clip_planes]).each do |plane|
-          candidates << plane[:stable_id]
-          candidates << plane[:source_persistent_id]
-          candidates << plane[:owner_definition_id]
-          candidates << plane[:owner_instance_id]
+          add.call(plane[:stable_id])
+          add.call(plane[:source_persistent_id])
+          add.call(plane[:owner_definition_id])
+          add.call(plane[:owner_instance_id])
         end
         if @profile == :debug
-          each_debug_string { |value| candidates << value }
+          each_debug_string { |value| add.call(value) }
         end
-        @strings = candidates.compact.map(&:to_s).uniq.sort
+        @strings = candidates.keys.sort
         @string_index = {}
         @strings.each_with_index { |value, index| @string_index[value] = index }
       end

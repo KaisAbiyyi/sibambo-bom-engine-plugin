@@ -453,7 +453,7 @@ module BOMEngine
         end
         return nil if bytes.nil?
 
-        content = bytes.b
+        content = bytes.encoding == Encoding::BINARY ? bytes : bytes.b
         supplied_length = texture[:byte_length]
         if supplied_length && Integer(supplied_length) != content.bytesize
           raise ArgumentError, 'Captured texture byte length mismatch'

@@ -87,6 +87,7 @@ module BOMEngine
           published = PerformanceTrace.stage(:publish) { context[:publish].call(result, validation, output_path) }
           result = result.merge(published: published)
         end
+        result.delete(:normalized_source)
         advance.call(:DONE, result[:candidate_bytes], result[:savings_bytes])
 
         container_bytes = result[:bytes] if result[:bytes].is_a?(String)

@@ -25,14 +25,90 @@ module BOMEngine
       area_absolute_m2: 1.0e-6
     }.freeze
 
-    def self.compare(source, decoded, tolerances: {}, base_path: nil)
-      normalized = BOMC::ModelAdapter.normalize(source, base_path: base_path)
+    class ErrorAccumulator
+      def initialize(max_count: 0, percentile: true)
+        @count = 0
+        @max = 0.0
+        @sum_squares = 0.0
+        @percentile = percentile
+        upper = [Integer(max_count || 0), 0].max
+        @tail_capacity = percentile && upper.positive? ? [upper - (upper * 0.95).ceil + 1, 1].max : 0
+        @tail = []
+      end
+
+      def add(value)
+        numeric = value.to_f
+        @count += 1
+        @max = numeric if numeric > @max
+        @sum_squares += numeric * numeric
+        add_tail(numeric) if @tail_capacity.positive?
+        numeric
+      end
+
+      def summary
+        return { max: 0.0, p95: 0.0, rms: 0.0 } if @count.zero?
+        p95 = @max
+        if @percentile && !@tail.empty?
+          rank_from_largest = @count - (@count * 0.95).ceil + 1
+          ordered = @tail.sort.reverse
+          p95 = ordered[[rank_from_largest - 1, ordered.length - 1].min]
+        end
+        {
+          max: @max,
+          p95: p95,
+          rms: Math.sqrt(@sum_squares / @count)
+        }
+      end
+
+      private
+
+      def add_tail(value)
+        if @tail.length < @tail_capacity
+          @tail << value
+          sift_up(@tail.length - 1)
+          return
+        end
+        return unless value > @tail[0]
+        @tail[0] = value
+        sift_down(0)
+      end
+
+      def sift_up(index)
+        while index.positive?
+          parent = (index - 1) / 2
+          break if @tail[parent] <= @tail[index]
+          @tail[parent], @tail[index] = @tail[index], @tail[parent]
+          index = parent
+        end
+      end
+
+      def sift_down(index)
+        length = @tail.length
+        loop do
+          left = index * 2 + 1
+          break if left >= length
+          right = left + 1
+          child = right < length && @tail[right] < @tail[left] ? right : left
+          break if @tail[index] <= @tail[child]
+          @tail[index], @tail[child] = @tail[child], @tail[index]
+          index = child
+        end
+      end
+    end
+
+    def self.compare(source, decoded, tolerances: {}, base_path: nil, normalized_source: nil)
+      normalized = normalized_source || BOMC::ModelAdapter.normalize(source, base_path: base_path)
       limits = DEFAULT_TOLERANCES.merge(tolerances)
-      position_errors = []
-      normal_errors = []
-      uv_errors = []
-      transform_errors = []
-      area_errors = []
+      face_count = normalized[:meshes].inject(0) { |sum, mesh| sum + mesh[:faces].length }
+      position_count = normalized[:meshes].inject(0) { |sum, mesh| sum + (mesh[:positions].length / 3) }
+      uv_count = normalized[:meshes].inject(0) do |sum, mesh|
+        sum + mesh[:faces].inject(0) { |face_sum, face| face_sum + [nested_scalar_count(face[:uv]) / 2, 1].max }
+      end
+      position_errors = ErrorAccumulator.new(max_count: position_count)
+      normal_errors = ErrorAccumulator.new(max_count: face_count)
+      uv_errors = ErrorAccumulator.new(max_count: uv_count)
+      transform_errors = ErrorAccumulator.new(max_count: normalized[:transforms].length)
+      area_errors = ErrorAccumulator.new(max_count: face_count)
       topology_exact = normalized[:meshes].length == decoded[:meshes].length
       visual_edges_exact = topology_exact
       materials_exact = compare_materials(normalized[:materials], decoded[:materials], decoded[:textures])
@@ -67,7 +143,7 @@ module BOMEngine
           visual_edges_exact = false
           next
         end
-        position_errors.concat(point_errors(source_mesh[:positions], decoded_mesh[:positions]))
+        each_point_error(source_mesh[:positions], decoded_mesh[:positions]) { |error| position_errors.add(error) }
         topology_exact &&= source_mesh[:faces].length == decoded_mesh[:faces].length
         source_mesh[:faces].each_with_index do |source_face, face_index|
           decoded_face = decoded_mesh[:faces][face_index]
@@ -87,15 +163,15 @@ module BOMEngine
           topology_exact &&= normalize_role(source_face[:semantic_role]) == decoded_face[:semantic_role].to_s
           topology_exact &&= optional_string(source_face[:semantic_label]) == optional_string(decoded_face[:semantic_label])
           topology_exact &&= source_face[:hidden] == decoded_face[:hidden]
-          normal_errors << angular_error(source_face[:normal], decoded_face[:normal])
+          normal_errors.add(angular_error(source_face[:normal], decoded_face[:normal]))
           source_uv = flatten_uv(source_face[:uv])
           decoded_uv = flatten_uv(decoded_face[:uv])
           if source_uv.length == decoded_uv.length
-            uv_errors.concat(pair_errors(source_uv, decoded_uv))
+            each_pair_error(source_uv, decoded_uv) { |error| uv_errors.add(error) }
           else
-            uv_errors << Float::INFINITY
+            uv_errors.add(Float::INFINITY)
           end
-          area_errors << (source_face[:area_m2].to_f - decoded_face[:area_m2].to_f).abs
+          area_errors.add((source_face[:area_m2].to_f - decoded_face[:area_m2].to_f).abs)
         end
         source_edges = source_mesh[:edges].map { |edge| [edge[:vertices], edge[:tag], edge[:hidden], edge[:soft], edge[:smooth]] }
         decoded_edges = decoded_mesh[:edges].map { |edge| [edge[:vertices], edge[:tag], edge[:hidden], edge[:soft], edge[:smooth]] }
@@ -105,16 +181,21 @@ module BOMEngine
       normalized[:transforms].each_with_index do |matrix, index|
         decoded_matrix = decoded[:transforms][index]
         if decoded_matrix
-          transform_errors << matrix.each_with_index.map { |value, component| (value.to_f - decoded_matrix[component].to_f).abs }.max
+          max_error = 0.0
+          matrix.each_with_index do |value, component|
+            error = (value.to_f - decoded_matrix[component].to_f).abs
+            max_error = error if error > max_error
+          end
+          transform_errors.add(max_error)
         else
-          transform_errors << Float::INFINITY
+          transform_errors.add(Float::INFINITY)
         end
       end
-      position_summary = summarize(position_errors)
-      normal_summary = summarize(normal_errors)
-      uv_summary = summarize(uv_errors)
-      transform_summary = summarize(transform_errors)
-      area_summary = summarize(area_errors)
+      position_summary = position_errors.summary
+      normal_summary = normal_errors.summary
+      uv_summary = uv_errors.summary
+      transform_summary = transform_errors.summary
+      area_summary = area_errors.summary
       source_texture_hashes = normalized[:materials].map { |material| material[:texture] && material[:texture][:sha256] }
       source_texture_hashes += normalized[:instances].map { |instance| instance.dig(:fallback, :texture, :sha256) }
       source_texture_hashes = source_texture_hashes.compact.uniq.sort
@@ -130,11 +211,13 @@ module BOMEngine
         textures: [source_texture_hashes.length, decoded_texture_hashes.length]
       }
       counts[:exact] = counts.reject { |key, _value| key == :exact }.values.all? { |pair| pair[0] == pair[1] }
-      maximum_area_tolerance = normalized[:meshes].map do |mesh|
-        mesh[:faces].map do |face|
-          [limits[:area_absolute_m2], face[:area_m2].to_f.abs * limits[:area_relative]].max
+      maximum_area_tolerance = limits[:area_absolute_m2]
+      normalized[:meshes].each do |mesh|
+        mesh[:faces].each do |face|
+          tolerance = [limits[:area_absolute_m2], face[:area_m2].to_f.abs * limits[:area_relative]].max
+          maximum_area_tolerance = tolerance if tolerance > maximum_area_tolerance
         end
-      end.flatten.max || limits[:area_absolute_m2]
+      end
 
       {
         counts: counts,
@@ -171,8 +254,8 @@ module BOMEngine
       }
     end
 
-    def self.validate!(source, decoded, tolerances: {}, base_path: nil)
-      result = compare(source, decoded, tolerances: tolerances, base_path: base_path)
+    def self.validate!(source, decoded, tolerances: {}, base_path: nil, normalized_source: nil)
+      result = compare(source, decoded, tolerances: tolerances, base_path: base_path, normalized_source: normalized_source)
       failures = []
       failures << 'table counts' unless result[:counts][:exact]
       failures << 'materials' unless result[:materials][:exact]
@@ -194,8 +277,10 @@ module BOMEngine
       result
     end
 
-    def self.validate_profile(source:, decoded:, profile: :visual, texture_evidence: nil, base_path: nil)
-      normalized = if source.is_a?(Hash) && source[:meshes] && source[:instances] && !source.dig(:format, :name).to_s.include?('BOM Engine Canonical')
+    def self.validate_profile(source:, decoded:, profile: :visual, texture_evidence: nil, base_path: nil, normalized_source: nil)
+      normalized = if normalized_source
+                     normalized_source
+                   elsif source.is_a?(Hash) && source[:meshes] && source[:instances] && !source.dig(:format, :name).to_s.include?('BOM Engine Canonical')
                      source
                    else
                      BOMC::ModelAdapter.normalize(source, base_path: base_path)
@@ -302,14 +387,16 @@ module BOMEngine
       # Geometry, topology and visual edges
       topology_exact = normalized[:meshes].length == decoded[:meshes].length
       visual_edges_exact = topology_exact
-      position_errors = []
-      normal_errors = []
-      uv_errors = []
-      area_errors = []
+      position_errors = ErrorAccumulator.new(percentile: false)
+      normal_errors = ErrorAccumulator.new(percentile: false)
+      uv_errors = ErrorAccumulator.new(percentile: false)
+      area_errors = ErrorAccumulator.new(percentile: false)
       positions_passed = true
       normals_passed = true
       uv_passed = true
-      source_area_metadata_errors = []
+      source_area_metadata_errors = ErrorAccumulator.new(percentile: false)
+      source_area_metadata_mismatch_count = 0
+      maximum_area_tolerance = area_limit_abs
 
       normalized[:meshes].each_with_index do |source_mesh, mesh_index|
         decoded_mesh = decoded[:meshes][mesh_index]
@@ -323,9 +410,10 @@ module BOMEngine
         mesh_class = BOMCGeometryPolicy.mesh_semantic_class(source_mesh[:faces])
         mesh_pos_tol = (prof == :visual) ? BOMCGeometryPolicy.position_tolerance(profile: :visual, semantic_class: mesh_class) : pos_limit
 
-        mesh_pos_errors = point_errors(source_mesh[:positions], decoded_mesh[:positions])
-        position_errors.concat(mesh_pos_errors)
-        positions_passed &&= mesh_pos_errors.all? { |err| err <= mesh_pos_tol + 1.0e-12 }
+        each_point_error(source_mesh[:positions], decoded_mesh[:positions]) do |error|
+          position_errors.add(error)
+          positions_passed = false if error > mesh_pos_tol + 1.0e-12
+        end
 
         topology_exact &&= (source_mesh[:faces].length == decoded_mesh[:faces].length)
         source_mesh[:faces].each_with_index do |source_face, face_index|
@@ -351,18 +439,19 @@ module BOMEngine
           face_uv_tol = (prof == :visual) ? BOMCGeometryPolicy.uv_tolerance(profile: :visual, semantic_class: face_class) : uv_limit
 
           ang_err = angular_error(source_face[:normal], decoded_face[:normal])
-          normal_errors << ang_err
+          normal_errors.add(ang_err)
           normals_passed &&= (ang_err <= face_norm_tol + 1.0e-12)
           normals_passed &&= source_face[:normal] == decoded_face[:normal] if prof == :exact
 
           source_uv = flatten_uv(source_face[:uv])
           decoded_uv = flatten_uv(decoded_face[:uv])
           if source_uv.length == decoded_uv.length
-            face_uv_errors = pair_errors(source_uv, decoded_uv)
-            uv_errors.concat(face_uv_errors)
-            uv_passed &&= face_uv_errors.all? { |err| err <= face_uv_tol + 1.0e-12 }
+            each_pair_error(source_uv, decoded_uv) do |error|
+              uv_errors.add(error)
+              uv_passed = false if error > face_uv_tol + 1.0e-12
+            end
           else
-            uv_errors << Float::INFINITY
+            uv_errors.add(Float::INFINITY)
             uv_passed = false
           end
 
@@ -372,9 +461,13 @@ module BOMEngine
           reference_area = source_face[:area_m2].to_f
           if prof == :exact
             reference_area = geometry_face_area(source_mesh[:positions], source_face)
-            source_area_metadata_errors << (source_face[:area_m2].to_f - reference_area).abs
+            metadata_error = (source_face[:area_m2].to_f - reference_area).abs
+            source_area_metadata_errors.add(metadata_error)
+            source_area_metadata_mismatch_count += 1 if metadata_error > area_limit_abs + 1.0e-12
           end
-          area_errors << (reference_area - decoded_face[:area_m2].to_f).abs
+          area_errors.add((reference_area - decoded_face[:area_m2].to_f).abs)
+          area_tolerance = [area_limit_abs, source_face[:area_m2].to_f.abs * area_limit_relative].max
+          maximum_area_tolerance = area_tolerance if area_tolerance > maximum_area_tolerance
         end
 
         source_edges = source_mesh[:edges].map { |edge| [edge[:vertices], edge[:tag], edge[:hidden], edge[:soft], edge[:smooth]] }
@@ -389,26 +482,27 @@ module BOMEngine
       failures << 'UV' unless uv_passed
 
       # Transforms
-      transform_errors = []
+      transform_errors = ErrorAccumulator.new(percentile: false)
+      transforms_passed = true
       normalized[:transforms].each_with_index do |matrix, index|
         decoded_matrix = decoded[:transforms][index]
         if decoded_matrix
-          err = matrix.each_with_index.map { |value, component| (value.to_f - decoded_matrix[component].to_f).abs }.max
-          transform_errors << err
+          err = 0.0
+          matrix.each_with_index do |value, component|
+            component_error = (value.to_f - decoded_matrix[component].to_f).abs
+            err = component_error if component_error > err
+          end
+          transform_errors.add(err)
+          transforms_passed = false if err > transform_limit + 1.0e-12
         else
-          transform_errors << Float::INFINITY
+          transform_errors.add(Float::INFINITY)
+          transforms_passed = false
         end
       end
-      transforms_passed = transform_errors.all? { |err| err <= transform_limit + 1.0e-12 }
       failures << 'transforms' unless transforms_passed
 
       # Areas
-      maximum_area_tolerance = normalized[:meshes].map do |mesh|
-        mesh[:faces].map do |face|
-          [area_limit_abs, face[:area_m2].to_f.abs * area_limit_relative].max
-        end
-      end.flatten.max || area_limit_abs
-      area_summary = summarize(area_errors)
+      area_summary = area_errors.summary
       areas_passed = area_summary[:max] <= maximum_area_tolerance + 1.0e-12
       failures << 'areas' unless areas_passed
 
@@ -625,22 +719,22 @@ module BOMEngine
           topology: { exact: topology_exact },
           visual_edges: { exact: visual_edges_exact },
           positions: {
-            max_error_m: summarize(position_errors)[:max],
+            max_error_m: position_errors.summary[:max],
             passed: positions_passed,
             tolerance: pos_limit
           },
           normals: {
-            max_angular_error_deg: summarize(normal_errors)[:max],
+            max_angular_error_deg: normal_errors.summary[:max],
             passed: normals_passed,
             tolerance: norm_limit
           },
           uv: {
-            max_error: summarize(uv_errors)[:max],
+            max_error: uv_errors.summary[:max],
             passed: uv_passed,
             tolerance: uv_limit
           },
           transforms: {
-            max_error: summarize(transform_errors)[:max],
+            max_error: transform_errors.summary[:max],
             passed: transforms_passed,
             tolerance: transform_limit
           },
@@ -649,8 +743,8 @@ module BOMEngine
             passed: areas_passed,
             tolerance: maximum_area_tolerance,
             basis: prof == :exact ? 'source_geometry' : 'source_area_metadata',
-            source_metadata_max_delta_m2: summarize(source_area_metadata_errors)[:max],
-            source_metadata_mismatch_count: source_area_metadata_errors.count { |error| error > area_limit_abs + 1.0e-12 }
+            source_metadata_max_delta_m2: source_area_metadata_errors.summary[:max],
+            source_metadata_mismatch_count: source_area_metadata_mismatch_count
           },
           scenes: { exact: scenes_exact },
           clip_planes: { exact: clip_planes_exact },
@@ -660,13 +754,14 @@ module BOMEngine
       }
     end
 
-    def self.validate_profile!(source:, decoded:, profile: :visual, texture_evidence: nil, base_path: nil)
+    def self.validate_profile!(source:, decoded:, profile: :visual, texture_evidence: nil, base_path: nil, normalized_source: nil)
       report = validate_profile(
         source: source,
         decoded: decoded,
         profile: profile,
         texture_evidence: texture_evidence,
-        base_path: base_path
+        base_path: base_path,
+        normalized_source: normalized_source
       )
       unless report[:passed]
         raise ProfileValidationError.new(
@@ -761,32 +856,43 @@ module BOMEngine
     end
     private_class_method :optional_string
 
-    def self.summarize(errors)
-      values = Array(errors).map(&:to_f).sort
-      return { max: 0.0, p95: 0.0, rms: 0.0 } if values.empty?
-      index = [(values.length * 0.95).ceil - 1, 0].max
-      rms = Math.sqrt(values.map { |value| value * value }.inject(0.0, :+) / values.length)
-      { max: values[-1], p95: values[index], rms: rms }
-    end
-    private_class_method :summarize
-
-    def self.point_errors(source, decoded)
-      return [Float::INFINITY] unless source.length == decoded.length
-      source.each_slice(3).with_index.map do |point, index|
-        offset = index * 3
-        Math.sqrt(3.times.map { |axis| (point[axis].to_f - decoded[offset + axis].to_f)**2 }.inject(0.0, :+))
+    def self.each_point_error(source, decoded)
+      unless source.length == decoded.length
+        yield Float::INFINITY
+        return
+      end
+      index = 0
+      while index < source.length
+        dx = source[index].to_f - decoded[index].to_f
+        dy = source[index + 1].to_f - decoded[index + 1].to_f
+        dz = source[index + 2].to_f - decoded[index + 2].to_f
+        yield Math.sqrt(dx * dx + dy * dy + dz * dz)
+        index += 3
       end
     end
-    private_class_method :point_errors
+    private_class_method :each_point_error
 
-    def self.pair_errors(source, decoded)
-      return [Float::INFINITY] unless source.length == decoded.length
-      source.each_slice(2).with_index.map do |pair, index|
-        offset = index * 2
-        Math.sqrt(2.times.map { |axis| (pair[axis].to_f - decoded[offset + axis].to_f)**2 }.inject(0.0, :+))
+    def self.each_pair_error(source, decoded)
+      unless source.length == decoded.length
+        yield Float::INFINITY
+        return
+      end
+      index = 0
+      while index < source.length
+        du = source[index].to_f - decoded[index].to_f
+        dv = source[index + 1].to_f - decoded[index + 1].to_f
+        yield Math.sqrt(du * du + dv * dv)
+        index += 2
       end
     end
-    private_class_method :pair_errors
+    private_class_method :each_pair_error
+
+    def self.nested_scalar_count(value)
+      return 0 if value.nil?
+      return 1 unless value.is_a?(Array)
+      value.inject(0) { |sum, child| sum + nested_scalar_count(child) }
+    end
+    private_class_method :nested_scalar_count
 
     def self.angular_error(left, right)
       return Float::INFINITY unless [left, right].all? do |vector|
