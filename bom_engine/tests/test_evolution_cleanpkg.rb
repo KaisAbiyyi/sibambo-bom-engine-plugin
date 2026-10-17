@@ -54,6 +54,27 @@ class TestEvolutionCleanPKG < Test::Unit::TestCase
     end
   end
 
+  def test_truncated_zip_is_rejected_even_when_local_entries_are_complete
+    Dir.mktmpdir do |dir|
+      valid = File.join(dir, 'valid.cleanpkg')
+      BOMEngine::EvolutionCleanPKGWriter.write(valid, document)
+      bytes = File.binread(valid)
+      central = bytes.index([0x02014b50].pack('V'))
+      assert_not_nil central
+      truncated = File.join(dir, 'truncated-zip.cleanpkg')
+      File.binwrite(truncated, bytes.byteslice(0, central))
+      assert_raise(BOMEngine::EvolutionValidator::ValidationError) do
+        BOMEngine::EvolutionValidator.read(truncated, engine: :e3)
+      end
+
+      partial_central = File.join(dir, 'partial-central.cleanpkg')
+      File.binwrite(partial_central, bytes.byteslice(0, central + 12))
+      assert_raise(BOMEngine::EvolutionValidator::ValidationError) do
+        BOMEngine::EvolutionValidator.read(partial_central, engine: :e3)
+      end
+    end
+  end
+
   def test_full_matrix_and_high_precision_uv_survive_real_file_readback
     Dir.mktmpdir do |dir|
       path = File.join(dir, 'exact.cleanpkg')
@@ -117,6 +138,34 @@ class TestEvolutionCleanPKG < Test::Unit::TestCase
         assert_nothing_raised do
           BOMEngine::EvolutionValidator.validate_file!(path, engine: :e3, expected_profile: :research, source_document: document)
         end
+      end
+    end
+  end
+
+  def test_compact_validation_normalizes_legacy_missing_optional_defaults
+    graph = EvolutionFixture.graph
+    graph.delete(:clip_planes)
+    face = graph[:meshes][0][:faces][0]
+    %i[normal area_m2 front_appearance_required back_appearance_required tag_id hidden semantic].each { |key| face.delete(key) }
+    document = BOMEngine::EvolutionDocument.prepare(
+      graph,
+      engine: :e3,
+      profile: :research,
+      source_tree_sha256: 'e' * 64,
+      historical_baseline_sha: 'f' * 40
+    )
+
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, 'legacy-defaults.cleanpkg')
+      BOMEngine::EvolutionCleanPKGWriter.write(path, document)
+      assert_nothing_raised do
+        report = BOMEngine::EvolutionValidator.validate_file!(
+          path,
+          engine: :e3,
+          expected_profile: :research,
+          source_document: document
+        )
+        assert_equal 'compact-definition-occurrence', report.dig(:comparison, :mode)
       end
     end
   end

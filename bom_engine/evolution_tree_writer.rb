@@ -2,6 +2,7 @@
 
 require 'json'
 require_relative 'evolution_document'
+require_relative 'evolution_stream'
 require_relative 'performance_trace'
 
 module BOMEngine
@@ -16,13 +17,14 @@ module BOMEngine
         meshes = index_by_id(graph['meshes'])
         nodes = index_by_id(graph['nodes'])
         transforms = Array(graph['transforms'])
+        prepared_definitions = prepare_definitions(definitions, meshes)
         root = Array(graph['nodes']).find { |node| node['kind'] == 'root' }
         raise ArgumentError, 'E1 requires exactly one root node' unless root
 
         root_matrix = transform_at(transforms, root['transform_id'])
         entities = instantiate_definition(
           root.fetch('definition_id'), root_matrix, root.fetch('id'), nil,
-          definitions: definitions, meshes: meshes, nodes: nodes, transforms: transforms, ancestry: []
+          prepared_definitions: prepared_definitions, nodes: nodes, transforms: transforms, ancestry: []
         )
         {
           'schema_version' => '2.2',
@@ -45,25 +47,70 @@ module BOMEngine
     end
 
     def write(path, document)
-      payload = PerformanceTrace.stage(:e1_serialize) { JSON.generate(build(document)) }
-      PerformanceTrace.stage(:e1_file_write, counts: { bytes: payload.bytesize }) do
-        File.open(path, 'wb') { |file| file.write(payload) }
+      PerformanceTrace.stage(:e1_serialize) do
+        EvolutionDocument.validate!(document)
+        graph = document.fetch('graph')
+        definitions = index_by_id(graph['definitions'])
+        meshes = index_by_id(graph['meshes'])
+        nodes = index_by_id(graph['nodes'])
+        transforms = Array(graph['transforms'])
+        prepared_definitions = prepare_definitions(definitions, meshes)
+        root = Array(graph['nodes']).find { |node| node['kind'] == 'root' }
+        raise ArgumentError, 'E1 requires exactly one root node' unless root
+        root_matrix = transform_at(transforms, root['transform_id'])
+        result = nil
+        PerformanceTrace.stage(:e1_file_write) do
+          File.open(path, 'wb') do |file|
+            digest_io = EvolutionStream::DigestIO.new(file)
+            io = EvolutionStream::BufferedIO.new(digest_io)
+            io.write('{')
+            write_pair(io, 'schema_version', '2.2', true)
+            write_pair(io, 'format', 'sibambo-evolution-e1')
+            write_pair(io, 'profile', document.fetch('profile'))
+            write_pair(io, 'evolution', graph.fetch('evolution'))
+            write_pair(io, 'units', graph['units'] || {})
+            write_pair(io, 'coordinate_system', graph['coordinate_system'] || {})
+            write_pair(io, 'source', graph['source'] || {})
+            write_pair(io, 'metadata', graph['metadata'] || {})
+            write_pair(io, 'tags', graph['tags'] || [])
+            write_pair(io, 'materials', graph['materials'] || [])
+            io.write(',')
+            io.write(JSON.generate('assets'))
+            io.write(':')
+            EvolutionStream.write_assets(io, document.fetch('assets'))
+            write_pair(io, 'scenes', graph['scenes'] || [])
+            write_pair(io, 'clip_planes', graph['clip_planes'] || [])
+            write_pair(io, 'scene_fidelity_manifest', graph['scene_fidelity_manifest'] || {})
+            io.write(',')
+            io.write(JSON.generate('entities'))
+            io.write(':')
+            write_definition_entities(
+              io, root.fetch('definition_id'), root_matrix, root.fetch('id'), nil,
+              prepared_definitions: prepared_definitions, nodes: nodes, transforms: transforms, ancestry: []
+            )
+            io.write('}')
+            io.flush
+            digest_io.flush
+            result = { path: path, bytes: digest_io.bytes, sha256: digest_io.sha256 }
+          end
+        end
+        result
       end
-      { path: path, bytes: payload.bytesize }
     end
 
-    def instantiate_definition(definition_id, world, path, inherited_material_id, definitions:, meshes:, nodes:, transforms:, ancestry:)
+    def instantiate_definition(definition_id, world, path, inherited_material_id, prepared_definitions:, nodes:, transforms:, ancestry:)
       raise ArgumentError, "Recursive definition cycle: #{(ancestry + [definition_id]).join(' -> ')}" if ancestry.include?(definition_id)
-      definition = definitions.fetch(definition_id) { raise ArgumentError, "Missing definition #{definition_id}" }
+      prepared = prepared_definitions.fetch(definition_id) { raise ArgumentError, "Missing definition #{definition_id}" }
+      definition = prepared.fetch(:definition)
       next_ancestry = ancestry + [definition_id]
+      context = occurrence_context(world, path)
       children = []
-      if definition['mesh_id']
-        mesh = meshes.fetch(definition['mesh_id']) { raise ArgumentError, "Missing mesh #{definition['mesh_id']}" }
-        Array(mesh['faces']).each_with_index do |face, face_index|
-          children << world_face(face, face_index, mesh, definition, world, path, inherited_material_id)
+      if prepared[:mesh]
+        prepared.fetch(:faces).each do |face, face_index|
+          children << world_face(face, face_index, prepared, definition, context, path, inherited_material_id)
         end
-        Array(mesh['edges']).each_with_index do |edge, edge_index|
-          children << world_edge(edge, edge_index, mesh, definition, world, path)
+        prepared.fetch(:edges).each do |edge, edge_index|
+          children << world_edge(edge, edge_index, prepared, definition, world, path)
         end
       end
 
@@ -77,7 +124,7 @@ module BOMEngine
         child_path = "#{path}/#{node.fetch('id')}"
         nested = instantiate_definition(
           node.fetch('definition_id'), child_world, child_path, node['material_override_id'] || inherited_material_id,
-          definitions: definitions, meshes: meshes, nodes: nodes, transforms: transforms, ancestry: next_ancestry
+          prepared_definitions: prepared_definitions, nodes: nodes, transforms: transforms, ancestry: next_ancestry
         )
         children << {
           'id' => child_path,
@@ -98,11 +145,10 @@ module BOMEngine
     end
     private_class_method :instantiate_definition
 
-    def world_face(face, face_index, mesh, definition, world, path, inherited_material_id)
-      determinant = determinant3(world)
-      raise ArgumentError, "Singular transform for occurrence #{path}" if determinant.abs < 1.0e-12
-      mirrored = determinant.negative?
-      positions = Array(mesh.fetch('positions_m'))
+    def world_face(face, face_index, prepared, definition, context, path, inherited_material_id)
+      mirrored = context.fetch(:mirrored)
+      positions = prepared.fetch(:positions)
+      world = context.fetch(:world)
       point = ->(index) { transform_point(position_at(positions, index), world) }
       outer = Array(face.fetch('outer')).map(&point)
       holes = Array(face['holes']).map { |loop| Array(loop).map(&point) }
@@ -114,7 +160,7 @@ module BOMEngine
         triangles.each { |triangle| triangle[1], triangle[2] = triangle[2], triangle[1] if triangle.length == 3 }
         reverse_uv_loops!(uv)
       end
-      normal = transform_normal(Array(face['normal'] || [0.0, 0.0, 1.0]), world)
+      normal = transform_normal(Array(face['normal'] || [0.0, 0.0, 1.0]), context.fetch(:normal_matrix))
       source_identity = face['source_identity'] || {}
       {
         'id' => "#{path}:#{face.fetch('id')}",
@@ -143,8 +189,8 @@ module BOMEngine
     end
     private_class_method :world_face
 
-    def world_edge(edge, edge_index, mesh, definition, world, path)
-      positions = Array(mesh.fetch('positions_m'))
+    def world_edge(edge, edge_index, prepared, definition, world, path)
+      positions = prepared.fetch(:positions)
       vertices = Array(edge.fetch('vertices')).map { |index| transform_point(position_at(positions, index), world) }
       source_identity = edge['source_identity'] || {}
       {
@@ -162,6 +208,94 @@ module BOMEngine
       }
     end
     private_class_method :world_edge
+
+    def write_pair(io, key, value, first = false)
+      io.write(',') unless first
+      io.write(JSON.generate(key))
+      io.write(':')
+      EvolutionStream.write_json(io, value)
+    end
+    private_class_method :write_pair
+
+    def write_definition_entities(io, definition_id, world, path, inherited_material_id, prepared_definitions:, nodes:, transforms:, ancestry:)
+      raise ArgumentError, "Recursive definition cycle: #{(ancestry + [definition_id]).join(' -> ')}" if ancestry.include?(definition_id)
+      prepared = prepared_definitions.fetch(definition_id) { raise ArgumentError, "Missing definition #{definition_id}" }
+      definition = prepared.fetch(:definition)
+      next_ancestry = ancestry + [definition_id]
+      context = occurrence_context(world, path)
+      first = true
+      io.write('[')
+      if prepared[:mesh]
+        prepared.fetch(:faces).each do |face, face_index|
+          io.write(',') unless first
+          first = false
+          io.write(JSON.generate(world_face(face, face_index, prepared, definition, context, path, inherited_material_id)))
+        end
+        prepared.fetch(:edges).each do |edge, edge_index|
+          io.write(',') unless first
+          first = false
+          io.write(JSON.generate(world_edge(edge, edge_index, prepared, definition, world, path)))
+        end
+      end
+      Array(definition['node_ids']).each do |node_id|
+        node = nodes.fetch(node_id) { raise ArgumentError, "Missing node #{node_id}" }
+        io.write(',') unless first
+        first = false
+        unless node['definition_id']
+          io.write(JSON.generate(fallback_entity(node, world, transforms, path)))
+          next
+        end
+        child_world = multiply(world, transform_at(transforms, node['transform_id']))
+        child_path = "#{path}/#{node.fetch('id')}"
+        io.write('{')
+        write_pair(io, 'id', child_path, true)
+        write_pair(io, 'type', node['kind'] == 'component_instance' ? 'ComponentInstance' : 'Group')
+        write_pair(io, 'name', node['name'].to_s)
+        write_pair(io, 'source_node_id', node['id'])
+        write_pair(io, 'source_definition_id', node['definition_id'])
+        write_pair(io, 'instance_path', child_path)
+        write_pair(io, 'tag_id', node['tag_id'])
+        write_pair(io, 'material_override_id', node['material_override_id'])
+        write_pair(io, 'inherited_material_id', inherited_material_id)
+        write_pair(io, 'visible', node.key?('visible') ? node['visible'] : true)
+        write_pair(io, 'semantic', node['semantic'] || {})
+        io.write(',')
+        io.write(JSON.generate('children'))
+        io.write(':')
+        write_definition_entities(
+          io, node.fetch('definition_id'), child_world, child_path, node['material_override_id'] || inherited_material_id,
+          prepared_definitions: prepared_definitions, nodes: nodes, transforms: transforms, ancestry: next_ancestry
+        )
+        io.write('}')
+      end
+      io.write(']')
+    end
+    private_class_method :write_definition_entities
+
+    def prepare_definitions(definitions, meshes)
+      definitions.each_with_object({}) do |(id, definition), result|
+        mesh = definition['mesh_id'] ? meshes.fetch(definition['mesh_id']) { raise ArgumentError, "Missing mesh #{definition['mesh_id']}" } : nil
+        result[id] = {
+          definition: definition,
+          mesh: mesh,
+          positions: mesh ? Array(mesh.fetch('positions_m')) : [],
+          faces: mesh ? Array(mesh['faces']).each_with_index.map { |face, index| [face, index] } : [],
+          edges: mesh ? Array(mesh['edges']).each_with_index.map { |edge, index| [edge, index] } : []
+        }
+      end
+    end
+    private_class_method :prepare_definitions
+
+    def occurrence_context(world, path)
+      determinant = determinant3(world)
+      raise ArgumentError, "Singular transform for occurrence #{path}" if determinant.abs < 1.0e-12
+      {
+        world: world,
+        mirrored: determinant.negative?,
+        normal_matrix: inverse_transpose3(world, determinant)
+      }
+    end
+    private_class_method :occurrence_context
 
     def fallback_entity(node, parent_world, transforms, path)
       world = multiply(parent_world, transform_at(transforms, node['transform_id']))
@@ -231,17 +365,20 @@ module BOMEngine
     end
     private_class_method :determinant3
 
-    def transform_normal(normal, matrix)
+    def inverse_transpose3(matrix, determinant = determinant3(matrix))
       a, b, c = matrix[0], matrix[4], matrix[8]
       d, e, f = matrix[1], matrix[5], matrix[9]
       g, h, i = matrix[2], matrix[6], matrix[10]
-      determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
       raise ArgumentError, 'Singular transform cannot preserve normals' if determinant.abs < 1.0e-12
-      inverse = [
+      [
         (e * i - f * h) / determinant, (c * h - b * i) / determinant, (b * f - c * e) / determinant,
         (f * g - d * i) / determinant, (a * i - c * g) / determinant, (c * d - a * f) / determinant,
         (d * h - e * g) / determinant, (b * g - a * h) / determinant, (a * e - b * d) / determinant
       ]
+    end
+    private_class_method :inverse_transpose3
+
+    def transform_normal(normal, inverse)
       x, y, z = normal.map(&:to_f)
       result = [
         inverse[0] * x + inverse[3] * y + inverse[6] * z,

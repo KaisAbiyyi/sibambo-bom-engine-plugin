@@ -215,15 +215,22 @@ module BOMEngine
           )
           candidate = File.join(job_dir, "candidate#{info.fetch(:extension)}")
           progress.call(phase: :compiling, stage: :evolution_writer, processed: 1, total: 2, force: true) if progress
-          PerformanceTrace.stage(:evolution_writer, details: { engine: engine }) do
+          writer_result = PerformanceTrace.stage(:evolution_writer, details: { engine: engine }) do
             info.fetch(:writer).write(candidate, document)
           end
           progress.call(phase: :validating, stage: :evolution_readback, processed: 0, total: 1, force: true) if progress
-          validation = EvolutionValidator.validate_file!(candidate, engine: engine, expected_profile: profile, source_document: document)
+          validation = EvolutionValidator.validate_file!(
+            candidate,
+            engine: engine,
+            expected_profile: profile,
+            source_document: document,
+            artifact_sha256: writer_result[:sha256]
+          )
           guard.check!
           sidecar = PerformanceTrace.stage(:provenance_build) do
             build_provenance(model, candidate, engine: engine, profile: profile, source_tree_sha256: source_tree,
-              format: info.fetch(:format), writer_id: info.fetch(:id), source_info: source_info)
+              format: info.fetch(:format), writer_id: info.fetch(:id), source_info: source_info,
+              artifact_sha256: writer_result[:sha256], artifact_bytes: writer_result[:bytes])
           end
           performance_metadata[:source_model] = sidecar[:model]
           performance_metadata[:artifact] = sidecar[:artifact]
@@ -235,13 +242,12 @@ module BOMEngine
           PerformanceTrace.stage(:publication) do
             publish_pair(candidate, sidecar_candidate, output_path, sidecar_path)
           end
-          artifact_sha = PerformanceTrace.stage(:published_artifact_hash, counts: { bytes: File.size(output_path) }) do
-            Digest::SHA256.file(output_path).hexdigest
-          end
+          artifact_sha = writer_result.fetch(:sha256)
+          artifact_bytes = writer_result.fetch(:bytes)
           result = {
             path: output_path,
             sidecar_path: sidecar_path,
-            bytes: File.size(output_path),
+            bytes: artifact_bytes,
             sha256: artifact_sha,
             engine: engine,
             profile: profile,
@@ -250,7 +256,7 @@ module BOMEngine
             source_tree_sha256: source_tree,
             validation: validation.reject { |key, _| key == :decoded }
           }
-          performance_metadata[:artifact] = performance_metadata[:artifact].merge(path: output_path, sha256: artifact_sha, bytes: File.size(output_path))
+          performance_metadata[:artifact] = performance_metadata[:artifact].merge(path: output_path, sha256: artifact_sha, bytes: artifact_bytes)
         end
       end
       result
@@ -279,9 +285,9 @@ module BOMEngine
       end
     end
 
-    def build_provenance(model, artifact_path, engine:, profile:, source_tree_sha256:, format:, writer_id:, source_info: nil)
-      bytes = File.size(artifact_path)
-      sha = Digest::SHA256.file(artifact_path).hexdigest
+    def build_provenance(model, artifact_path, engine:, profile:, source_tree_sha256:, format:, writer_id:, source_info: nil, artifact_sha256: nil, artifact_bytes: nil)
+      bytes = artifact_bytes || File.size(artifact_path)
+      sha = artifact_sha256 || Digest::SHA256.file(artifact_path).hexdigest
       model_record = model_source_record(model, source_info: source_info)
       now = Time.now.utc.iso8601
       {

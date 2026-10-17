@@ -7,6 +7,7 @@ require 'stringio'
 require 'zlib'
 require_relative 'evolution_document'
 require_relative 'evolution_tree_writer'
+require_relative 'evolution_stream'
 require_relative 'performance_trace'
 
 module BOMEngine
@@ -15,7 +16,7 @@ module BOMEngine
     UINT32_NONE = 0xffff_ffff
     module_function
 
-    def validate_file!(path, engine:, expected_profile: nil, source_document: nil)
+    def validate_file!(path, engine:, expected_profile: nil, source_document: nil, artifact_sha256: nil)
       raise ValidationError, "Evolution candidate missing: #{path}" unless File.file?(path) && File.size(path).positive?
       decoded = PerformanceTrace.stage(:evolution_readback, counts: { bytes: File.size(path) }) { read(path, engine: engine) }
       profile = decoded.fetch(:profile)
@@ -23,7 +24,11 @@ module BOMEngine
         raise ValidationError, "Profile mismatch: expected #{expected_profile}, got #{profile}"
       end
       comparison = source_document ? PerformanceTrace.stage(:evolution_compare) { compare!(source_document, decoded) } : nil
-      sha256 = PerformanceTrace.stage(:artifact_hash, counts: { bytes: File.size(path) }) { Digest::SHA256.file(path).hexdigest }
+      sha256 = if artifact_sha256
+                 normalize_sha256(artifact_sha256)
+               else
+                 PerformanceTrace.stage(:artifact_hash, counts: { bytes: File.size(path) }) { Digest::SHA256.file(path).hexdigest }
+               end
       {
         passed: true,
         engine: engine.to_s,
@@ -59,9 +64,16 @@ module BOMEngine
     private_class_method :read_e1
 
     def read_e2(path)
-      bytes = File.binread(path)
-      raise ValidationError, 'E2 must be gzip JSON' unless bytes.byteslice(0, 2) == "\x1f\x8b".b
-      payload = Zlib::GzipReader.new(StringIO.new(bytes)).read
+      payload = File.open(path, 'rb') do |file|
+        raise ValidationError, 'E2 must be gzip JSON' unless file.read(2) == "\x1f\x8b".b
+        file.rewind
+        gzip = Zlib::GzipReader.new(file)
+        begin
+          gzip.read
+        ensure
+          gzip.close
+        end
+      end
       graph = JSON.parse(payload)
       format = graph.fetch('format')
       raise ValidationError, 'Wrong E2 format identifier' unless format['name'] == 'BOM Engine Canonical'
@@ -71,13 +83,13 @@ module BOMEngine
       document = { 'contract' => EvolutionDocument::CONTRACT, 'engine' => 'e2', 'profile' => evolution.fetch('profile'), 'graph' => graph, 'assets' => assets }
       EvolutionDocument.validate!(document)
       { engine: 'e2', profile: evolution.fetch('profile'), document: document, graph: graph, assets: assets }
-    rescue JSON::ParserError, Zlib::GzipFile::Error => error
+    rescue JSON::ParserError, Zlib::GzipFile::Error, EOFError => error
       raise ValidationError, "Invalid E2 gzip JSON: #{error.message}"
     end
     private_class_method :read_e2
 
     def read_e3(path)
-      entries = read_zip_entries(File.binread(path))
+      entries = read_zip_entries_file(path)
       manifest_bytes = entries.fetch('manifest.json') { raise ValidationError, 'E3 manifest.json missing' }
       buffers = entries.fetch('buffers.bin') { raise ValidationError, 'E3 buffers.bin missing' }
       manifest = JSON.parse(manifest_bytes)
@@ -103,12 +115,14 @@ module BOMEngine
 
     def compare!(source_document, decoded)
       EvolutionDocument.validate!(source_document)
+      return compare_e1!(source_document, decoded) if decoded.fetch(:engine) == 'e1'
+
+      compare_compact!(source_document, decoded)
+    end
+
+    def compare_e1!(source_document, decoded)
       source_tree = EvolutionTreeWriter.build(source_document)
-      target_tree = if decoded.fetch(:engine) == 'e1'
-                      decoded.fetch(:tree)
-                    else
-                      EvolutionTreeWriter.build(decoded.fetch(:document))
-                    end
+      target_tree = decoded.fetch(:tree)
       source_rows = face_rows(source_tree)
       target_rows = face_rows(target_tree)
       raise ValidationError, 'Occurrence face identity set changed during readback' unless source_rows.keys == target_rows.keys
@@ -127,8 +141,186 @@ module BOMEngine
       compare_json!(source_tree['scenes'], target_tree['scenes'], 'scenes')
       compare_json!(source_tree['clip_planes'], target_tree['clip_planes'], 'clip planes')
       compare_assets!(source_document.fetch('assets'), decoded.fetch(:assets))
-      { occurrences: source_rows.length, edges: source_edges.length, scenes: Array(source_tree['scenes']).length, clip_planes: Array(source_tree['clip_planes']).length, assets: Array(source_document['assets']).length }
+      {
+        mode: 'world-expanded', occurrences: source_rows.length, edges: source_edges.length,
+        scenes: Array(source_tree['scenes']).length, clip_planes: Array(source_tree['clip_planes']).length,
+        assets: Array(source_document['assets']).length
+      }
     end
+    private_class_method :compare_e1!
+
+    def compare_compact!(source_document, decoded)
+      target_document = decoded.fetch(:document)
+      EvolutionDocument.validate!(target_document)
+      source_graph = source_document.fetch('graph')
+      target_graph = target_document.fetch('graph')
+
+      compare_digest!(source_graph.fetch('evolution'), target_graph.fetch('evolution'), 'evolution metadata')
+      %w[units coordinate_system source metadata tags materials definitions scenes clip_planes scene_fidelity_manifest].each do |key|
+        compare_digest!(compact_graph_value(source_graph, key), compact_graph_value(target_graph, key), key.tr('_', ' '))
+      end
+      compare_definition_local_geometry!(source_graph, target_graph)
+      compare_occurrence_bindings!(source_graph, target_graph)
+      compare_assets!(source_document.fetch('assets'), decoded.fetch(:assets))
+
+      source_counts = occurrence_geometry_counts(source_graph)
+      target_counts = occurrence_geometry_counts(target_graph)
+      raise ValidationError, 'Occurrence geometry count changed during compact readback' unless source_counts == target_counts
+      {
+        mode: 'compact-definition-occurrence', occurrences: source_counts.fetch(:faces), edges: source_counts.fetch(:edges),
+        scenes: Array(source_graph['scenes']).length, clip_planes: Array(source_graph['clip_planes']).length,
+        assets: Array(source_document['assets']).length
+      }
+    end
+    private_class_method :compare_compact!
+
+    def compact_graph_value(graph, key)
+      case key
+      when 'units', 'coordinate_system', 'source', 'metadata', 'scene_fidelity_manifest'
+        graph[key] || {}
+      when 'tags', 'materials', 'definitions', 'scenes', 'clip_planes'
+        graph[key] || []
+      else
+        graph[key]
+      end
+    end
+    private_class_method :compact_graph_value
+
+    def compare_definition_local_geometry!(source_graph, target_graph)
+      source_meshes = definition_local_geometry_digests(source_graph)
+      target_meshes = definition_local_geometry_digests(target_graph)
+      raise ValidationError, 'Definition-local mesh identity set changed during readback' unless source_meshes.keys == target_meshes.keys
+      source_meshes.each do |id, digest|
+        unless digest == target_meshes.fetch(id)
+          raise ValidationError, "Definition-local geometry/material/UV/topology mismatch for #{id}"
+        end
+      end
+      true
+    end
+    private_class_method :compare_definition_local_geometry!
+
+    def definition_local_geometry_digests(graph)
+      Array(graph['meshes']).each_with_object({}) do |mesh, digests|
+        id = mesh.fetch('id')
+        raise ValidationError, "Duplicate mesh identity #{id}" if digests.key?(id)
+        digests[id] = canonical_digest(normalized_mesh_row(mesh))
+      end.sort.to_h
+    end
+    private_class_method :definition_local_geometry_digests
+
+    def normalized_mesh_row(mesh)
+      faces = Array(mesh['faces']).map do |face|
+        normalized = {
+          'id' => face['id'],
+          'source_identity' => EvolutionDocument.deep_copy(face['source_identity'] || {}),
+          'outer' => Array(face['outer']).map { |value| Integer(value) },
+          'holes' => Array(face['holes']).map { |loop| Array(loop).map { |value| Integer(value) } },
+          'triangles' => Array(face['triangles']).map { |value| Integer(value) },
+          'normal' => Array(face['normal'] || [0.0, 0.0, 1.0]).map { |value| Float(value) },
+          'area_m2' => Float(face['area_m2'] || 0.0),
+          'front_material_id' => face['front_material_id'],
+          'back_material_id' => face['back_material_id'],
+          'front_appearance_required' => face['front_appearance_required'] != false,
+          'back_appearance_required' => face['back_appearance_required'] == true,
+          'tag_id' => face['tag_id'],
+          'hidden' => face['hidden'] == true,
+          'surface_hint' => face['surface_hint'],
+          'semantic' => EvolutionDocument.deep_copy(face['semantic'] || {})
+        }
+        normalized['uv'] = normalized_uv(face['uv']) if face.key?('uv')
+        normalized
+      end
+      edges = Array(mesh['edges']).map do |edge|
+        normalized = EvolutionDocument.deep_copy(edge)
+        normalized['vertices'] = Array(edge['vertices']).map { |value| Integer(value) }
+        normalized
+      end
+      {
+        'id' => mesh.fetch('id'),
+        'definition_id' => mesh['definition_id'],
+        'positions_m' => Array(mesh.fetch('positions_m')).map { |value| Float(value) },
+        'faces' => faces,
+        'edges' => edges
+      }
+    rescue ArgumentError, TypeError => error
+      raise ValidationError, "Invalid definition-local mesh #{mesh['id']}: #{error.message}"
+    end
+    private_class_method :normalized_mesh_row
+
+    def normalized_uv(uv)
+      value = uv || {}
+      result = {}
+      %w[front_outer back_outer].each do |key|
+        next unless value[key].is_a?(Array)
+        result[key] = Array(value[key]).map { |pair| [Float(pair.fetch(0)), Float(pair.fetch(1))] }
+      end
+      %w[front_holes back_holes].each do |key|
+        next unless value[key].is_a?(Array)
+        result[key] = Array(value[key]).map do |loop|
+          Array(loop).map { |pair| [Float(pair.fetch(0)), Float(pair.fetch(1))] }
+        end
+      end
+      result
+    end
+    private_class_method :normalized_uv
+
+    def compare_occurrence_bindings!(source_graph, target_graph)
+      source_rows = occurrence_binding_rows(source_graph)
+      target_rows = occurrence_binding_rows(target_graph)
+      raise ValidationError, 'Occurrence identity set changed during readback' unless source_rows.keys == target_rows.keys
+      source_rows.each do |id, digest|
+        raise ValidationError, "Occurrence binding mismatch for #{id}" unless digest == target_rows.fetch(id)
+      end
+      true
+    end
+    private_class_method :compare_occurrence_bindings!
+
+    def occurrence_binding_rows(graph)
+      transforms = Array(graph['transforms'])
+      Array(graph['nodes']).each_with_object({}) do |node, rows|
+        id = node.fetch('id')
+        raise ValidationError, "Duplicate occurrence identity #{id}" if rows.key?(id)
+        transform_id = Integer(node['transform_id'] || 0)
+        matrix = transforms.fetch(transform_id) { raise ValidationError, "Missing transform #{transform_id} for #{id}" }
+        row = node.reject { |key, _| key == 'transform_id' }.merge('world_binding_transform' => matrix)
+        rows[id] = canonical_digest(row)
+      end.sort.to_h
+    rescue IndexError, ArgumentError => error
+      raise ValidationError, "Invalid occurrence binding: #{error.message}"
+    end
+    private_class_method :occurrence_binding_rows
+
+    def occurrence_geometry_counts(graph)
+      definitions = Array(graph['definitions']).each_with_object({}) { |definition, map| map[definition.fetch('id')] = definition }
+      meshes = Array(graph['meshes']).each_with_object({}) { |mesh, map| map[mesh.fetch('id')] = mesh }
+      nodes = Array(graph['nodes']).each_with_object({}) { |node, map| map[node.fetch('id')] = node }
+      root = Array(graph['nodes']).find { |node| node['kind'] == 'root' }
+      raise ValidationError, 'Compact graph requires exactly one root node' unless root
+      count_definition_occurrences(root.fetch('definition_id'), definitions, meshes, nodes, [])
+    end
+    private_class_method :occurrence_geometry_counts
+
+    def count_definition_occurrences(definition_id, definitions, meshes, nodes, ancestry)
+      raise ValidationError, "Recursive definition cycle: #{(ancestry + [definition_id]).join(' -> ')}" if ancestry.include?(definition_id)
+      definition = definitions.fetch(definition_id) { raise ValidationError, "Missing definition #{definition_id}" }
+      next_ancestry = ancestry + [definition_id]
+      faces = 0
+      edges = 0
+      if definition['mesh_id']
+        mesh = meshes.fetch(definition['mesh_id']) { raise ValidationError, "Missing mesh #{definition['mesh_id']}" }
+        faces += Array(mesh['faces']).length
+        edges += Array(mesh['edges']).length
+      end
+      Array(definition['node_ids']).each do |node_id|
+        node = nodes.fetch(node_id) { raise ValidationError, "Missing node #{node_id}" }
+        next unless node['definition_id']
+        child = count_definition_occurrences(node['definition_id'], definitions, meshes, nodes, next_ancestry)
+        faces += child.fetch(:faces)
+        edges += child.fetch(:edges)
+      end
+      { faces: faces, edges: edges }
+    end
+    private_class_method :count_definition_occurrences
 
     def validate_evolution!(metadata, engine, fallback_profile)
       raise ValidationError, 'Evolution metadata must be an object' unless metadata.is_a?(Hash)
@@ -244,15 +436,80 @@ module BOMEngine
     end
     private_class_method :compare_assets!
 
+    def compare_digest!(left, right, label)
+      raise ValidationError, "#{label} changed during readback" unless canonical_digest(left) == canonical_digest(right)
+    end
+    private_class_method :compare_digest!
+
+    def canonical_digest(value)
+      digest = Digest::SHA256.new
+      append_canonical_digest(digest, value)
+      digest.hexdigest
+    end
+    private_class_method :canonical_digest
+
+    def append_canonical_digest(digest, value)
+      case value
+      when Hash
+        digest.update('{')
+        value.keys.map(&:to_s).sort.each_with_index do |key, index|
+          digest.update(',') unless index.zero?
+          digest.update(JSON.generate(key))
+          digest.update(':')
+          child = value.key?(key) ? value[key] : value[key.to_sym]
+          append_canonical_digest(digest, child)
+        end
+        digest.update('}')
+      when Array
+        digest.update('[')
+        value.each_with_index do |child, index|
+          digest.update(',') unless index.zero?
+          append_canonical_digest(digest, child)
+        end
+        digest.update(']')
+      else
+        digest.update(JSON.generate(value))
+      end
+    end
+    private_class_method :append_canonical_digest
+
+    def normalize_sha256(value)
+      text = value.to_s.downcase
+      raise ValidationError, 'Invalid artifact SHA-256' unless text.match?(/\A[0-9a-f]{64}\z/)
+      text
+    end
+    private_class_method :normalize_sha256
+
+    def read_zip_entries_file(path)
+      File.open(path, 'rb') { |file| read_zip_entries_io(file) }
+    end
+    private_class_method :read_zip_entries_file
+
     def read_zip_entries(bytes)
-      cursor = 0
+      read_zip_entries_io(StringIO.new(bytes))
+    end
+    private_class_method :read_zip_entries
+
+    def read_zip_entries_io(io)
       entries = {}
-      while cursor + 4 <= bytes.bytesize
-        signature = bytes.byteslice(cursor, 4).unpack1('V')
-        break if signature == 0x02014b50 || signature == 0x06054b50
+      entry_metadata = {}
+      cursor = 0
+      loop do
+        signature_bytes = io.read(4)
+        break unless signature_bytes
+        raise ValidationError, 'Truncated E3 ZIP signature' unless signature_bytes.bytesize == 4
+        signature = signature_bytes.unpack1('V')
+        if signature == 0x02014b50
+          validate_zip_central_directory!(io, signature_bytes, entries, entry_metadata, cursor)
+          return entries
+        elsif signature == 0x06054b50
+          raise ValidationError, 'E3 ZIP central directory missing'
+        end
         raise ValidationError, "Invalid E3 ZIP local header at byte #{cursor}" unless signature == 0x04034b50
-        header = bytes.byteslice(cursor, 30)
-        raise ValidationError, 'Truncated E3 ZIP header' unless header && header.bytesize == 30
+        local_offset = cursor
+        remainder = io.read(26)
+        raise ValidationError, 'Truncated E3 ZIP header' unless remainder && remainder.bytesize == 26
+        header = signature_bytes + remainder
         fields = header.unpack('VvvvvvVVVvv')
         method = fields[3]
         crc = fields[6]
@@ -260,10 +517,11 @@ module BOMEngine
         raw_size = fields[8]
         name_length = fields[9]
         extra_length = fields[10]
-        name_start = cursor + 30
-        name = bytes.byteslice(name_start, name_length)
-        data_start = name_start + name_length + extra_length
-        encoded = bytes.byteslice(data_start, compressed_size)
+        name = io.read(name_length)
+        raise ValidationError, 'Truncated E3 ZIP entry name' unless name && name.bytesize == name_length
+        extra = io.read(extra_length)
+        raise ValidationError, "Truncated E3 ZIP extra field for #{name}" unless extra && extra.bytesize == extra_length
+        encoded = io.read(compressed_size)
         raise ValidationError, "Truncated E3 ZIP entry #{name}" unless encoded && encoded.bytesize == compressed_size
         raw = case method
               when 0 then encoded
@@ -275,12 +533,80 @@ module BOMEngine
         key = name.force_encoding('UTF-8')
         raise ValidationError, "Duplicate E3 ZIP entry #{key}" if entries.key?(key)
         entries[key] = raw
-        cursor = data_start + compressed_size
+        entry_metadata[key] = {
+          raw_size: raw_size,
+          compressed_size: compressed_size,
+          crc: crc,
+          method: method,
+          local_offset: local_offset
+        }
+        cursor += 30 + name_length + extra_length + compressed_size
       end
       raise ValidationError, 'E3 ZIP contained no local entries' if entries.empty?
-      entries
+      raise ValidationError, 'Truncated E3 ZIP central directory'
     end
-    private_class_method :read_zip_entries
+    private_class_method :read_zip_entries_io
+
+    def validate_zip_central_directory!(io, first_signature, entries, entry_metadata, central_offset)
+      signature_bytes = first_signature
+      central_count = 0
+      central_bytes = 0
+      loop do
+        signature = signature_bytes.unpack1('V')
+        if signature == 0x02014b50
+          remainder = io.read(42)
+          raise ValidationError, 'Truncated E3 ZIP central header' unless remainder && remainder.bytesize == 42
+          header = signature_bytes + remainder
+          fields = header.unpack('VvvvvvvVVVvvvvvVV')
+          method = fields[4]
+          crc = fields[7]
+          compressed_size = fields[8]
+          raw_size = fields[9]
+          name_length = fields[10]
+          extra_length = fields[11]
+          comment_length = fields[12]
+          local_offset = fields[16]
+          name = io.read(name_length)
+          raise ValidationError, 'Truncated E3 ZIP central entry name' unless name && name.bytesize == name_length
+          extra = io.read(extra_length)
+          raise ValidationError, "Truncated E3 ZIP central extra field for #{name}" unless extra && extra.bytesize == extra_length
+          comment = io.read(comment_length)
+          raise ValidationError, "Truncated E3 ZIP central comment for #{name}" unless comment && comment.bytesize == comment_length
+          key = name.force_encoding('UTF-8')
+          metadata = entry_metadata.fetch(key) { raise ValidationError, "E3 ZIP central entry #{key} has no local entry" }
+          unless metadata == { raw_size: raw_size, compressed_size: compressed_size, crc: crc, method: method, local_offset: local_offset }
+            raise ValidationError, "E3 ZIP central metadata mismatch for #{key}"
+          end
+          central_count += 1
+          central_bytes += 46 + name_length + extra_length + comment_length
+          signature_bytes = io.read(4)
+          raise ValidationError, 'Truncated E3 ZIP after central entry' unless signature_bytes && signature_bytes.bytesize == 4
+          next
+        end
+
+        raise ValidationError, 'E3 ZIP end-of-central-directory missing' unless signature == 0x06054b50
+        remainder = io.read(18)
+        raise ValidationError, 'Truncated E3 ZIP end-of-central-directory' unless remainder && remainder.bytesize == 18
+        footer = signature_bytes + remainder
+        fields = footer.unpack('VvvvvVVv')
+        disk_number = fields[1]
+        central_disk = fields[2]
+        disk_entries = fields[3]
+        total_entries = fields[4]
+        declared_central_bytes = fields[5]
+        declared_central_offset = fields[6]
+        comment_length = fields[7]
+        raise ValidationError, 'Multi-disk E3 ZIP is unsupported' unless disk_number.zero? && central_disk.zero?
+        raise ValidationError, 'E3 ZIP central entry count mismatch' unless disk_entries == central_count && total_entries == central_count && central_count == entries.length
+        raise ValidationError, 'E3 ZIP central byte length mismatch' unless declared_central_bytes == central_bytes
+        raise ValidationError, 'E3 ZIP central offset mismatch' unless declared_central_offset == central_offset
+        comment = io.read(comment_length)
+        raise ValidationError, 'Truncated E3 ZIP comment' unless comment && comment.bytesize == comment_length
+        raise ValidationError, 'Unexpected trailing bytes after E3 ZIP' if io.read(1)
+        return true
+      end
+    end
+    private_class_method :validate_zip_central_directory!
 
     def inflate_raw(bytes)
       inflater = Zlib::Inflate.new(-Zlib::MAX_WBITS)

@@ -3,11 +3,13 @@
 require 'test/unit'
 require 'tmpdir'
 require 'zlib'
+require 'base64'
 require_relative '../evolution_document'
 require_relative '../evolution_tree_writer'
 require_relative '../evolution_canonical_writer'
 require_relative '../evolution_cleanpkg_writer'
 require_relative '../evolution_validator'
+require_relative '../canonical_json_writer'
 require_relative '../performance_trace'
 require_relative 'support/evolution_fixture'
 
@@ -101,6 +103,93 @@ class TestEvolutionProfiles < Test::Unit::TestCase
     end
   end
 
+  def test_streaming_writers_preserve_legacy_payload_bytes
+    %i[e1 e2 e3].each do |engine|
+      with_document(engine, :exact) do |dir, document|
+        expected = File.join(dir, "expected-#{engine}")
+        observed = File.join(dir, "observed-#{engine}")
+        case engine
+        when :e1
+          File.binwrite(expected, JSON.generate(BOMEngine::EvolutionTreeWriter.build(document)))
+          result = BOMEngine::EvolutionTreeWriter.write(observed, document)
+        when :e2
+          BOMEngine::CanonicalJSONWriter.write(expected, BOMEngine::EvolutionCanonicalWriter.build(document), pretty: false, compress: true)
+          result = BOMEngine::EvolutionCanonicalWriter.write(observed, document)
+        when :e3
+          built = BOMEngine::EvolutionCleanPKGWriter.build(document)
+          entries = {
+            'manifest.json' => JSON.generate(built.fetch(:manifest)),
+            'buffers.bin' => built.fetch(:buffers)
+          }
+          Array(document.fetch('assets')).each { |asset| entries[asset.fetch('path')] = asset.fetch('bytes') }
+          BOMEngine::EvolutionCleanPKG::DeterministicZip.write(expected, entries)
+          result = BOMEngine::EvolutionCleanPKGWriter.write(observed, document)
+        end
+        assert_equal File.binread(expected), File.binread(observed), "#{engine} streaming output stays byte deterministic"
+        assert_equal File.size(observed), result.fetch(:bytes)
+        assert_equal Digest::SHA256.file(observed).hexdigest, result.fetch(:sha256)
+      end
+    end
+  end
+
+  def test_compact_e2_e3_validation_never_builds_world_e1_tree
+    original = BOMEngine::EvolutionTreeWriter.method(:build)
+    BOMEngine::EvolutionTreeWriter.define_singleton_method(:build) do |_document|
+      raise 'E1 world expansion must not run for compact validation'
+    end
+    %i[e2 e3].each do |engine|
+      with_document(engine, :research) do |dir, document|
+        extension = engine == :e2 ? '.json.gz' : '.cleanpkg'
+        path = File.join(dir, "compact#{extension}")
+        result = writer(engine).write(path, document)
+        report = BOMEngine::EvolutionValidator.validate_file!(
+          path, engine: engine, expected_profile: :research, source_document: document,
+          artifact_sha256: result.fetch(:sha256)
+        )
+        assert_equal 'compact-definition-occurrence', report.dig(:comparison, :mode)
+        assert_equal result.fetch(:sha256), report.fetch(:sha256)
+      end
+    end
+  ensure
+    BOMEngine::EvolutionTreeWriter.define_singleton_method(:build) { |document| original.call(document) } if original
+  end
+
+  def test_e2_artifact_corruption_is_detected_across_compact_contract
+    with_document(:e2, :research) do |dir, document|
+      valid = File.join(dir, 'valid.json.gz')
+      BOMEngine::EvolutionCanonicalWriter.write(valid, document)
+      baseline_json = Zlib::GzipReader.open(valid) { |gzip| gzip.read }
+      baseline = JSON.parse(baseline_json)
+      mutations = {
+        geometry: ->(graph) { graph['meshes'][0]['positions_m'][0] += 0.125 },
+        transform: ->(graph) { graph['transforms'][1][12] += 1.0 },
+        material_ref: ->(graph) { graph['meshes'][0]['faces'][0]['front_material_id'] = 'material:corrupt' },
+        uv: ->(graph) { graph['meshes'][0]['faces'][0]['uv']['front_outer'][0][0] += 0.25 },
+        scene: ->(graph) { graph['scenes'][0]['visibility_signature'] = 'corrupt-scene' },
+        clip: ->(graph) { graph['clip_planes'][0]['plane_constant'] -= 2.0 },
+        asset_bytes: lambda do |graph|
+          raw = Base64.strict_decode64(graph['assets'][0]['data_base64'])
+          graph['assets'][0]['data_base64'] = Base64.strict_encode64(raw + 'x')
+        end,
+        asset_hash: ->(graph) { graph['assets'][0]['sha256'] = '0' * 64 }
+      }
+      mutations.each do |label, mutate|
+        graph = JSON.parse(JSON.generate(baseline))
+        mutate.call(graph)
+        corrupt = File.join(dir, "corrupt-#{label}.json.gz")
+        write_gzip_json(corrupt, JSON.generate(graph))
+        assert_raise(BOMEngine::EvolutionValidator::ValidationError, "#{label} corruption must fail") do
+          BOMEngine::EvolutionValidator.validate_file!(corrupt, engine: :e2, expected_profile: :research, source_document: document)
+        end
+      end
+      truncated = File.join(dir, 'truncated.json.gz')
+      write_gzip_json(truncated, baseline_json.byteslice(0, baseline_json.bytesize - 13))
+      assert_raise(BOMEngine::EvolutionValidator::ValidationError) do
+        BOMEngine::EvolutionValidator.validate_file!(truncated, engine: :e2, expected_profile: :research, source_document: document)
+      end
+    end
+  end
+
   private
 
   def writer(engine)
@@ -120,5 +209,12 @@ class TestEvolutionProfiles < Test::Unit::TestCase
       end
     end
     result
+  end
+
+  def write_gzip_json(path, payload)
+    Zlib::GzipWriter.open(path) do |gzip|
+      gzip.mtime = 0
+      gzip.write(payload)
+    end
   end
 end
