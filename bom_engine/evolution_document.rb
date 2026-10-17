@@ -3,6 +3,7 @@
 require 'base64'
 require 'digest'
 require 'json'
+require_relative 'performance_trace'
 
 module BOMEngine
   module EvolutionDocument
@@ -19,32 +20,34 @@ module BOMEngine
     module_function
 
     def prepare(graph, engine:, profile:, source_tree_sha256:, historical_baseline_sha:)
-      normalized_profile = normalize_profile(profile)
-      normalized_engine = normalize_engine(engine)
-      assets = {}
-      assert_acyclic!(graph)
-      portable_graph = deep_portable(graph, assets: assets, path: [])
-      portable_graph.delete('source_info') if portable_graph.is_a?(Hash)
-      if portable_graph['source'].is_a?(Hash)
-        portable_graph['source'].delete('file_path')
-      end
-      portable_graph['evolution'] = {
-        'contract' => CONTRACT,
-        'engine' => normalized_engine,
-        'profile' => normalized_profile,
-        'source_tree_sha256' => validate_hash(source_tree_sha256, 'source tree SHA-256'),
-        'historical_baseline_sha' => validate_commit(historical_baseline_sha)
-      }
+      PerformanceTrace.stage(:graph_detach) do
+        normalized_profile = normalize_profile(profile)
+        normalized_engine = normalize_engine(engine)
+        assets = {}
+        assert_acyclic!(graph)
+        portable_graph = deep_portable(graph, assets: assets, path: [])
+        portable_graph.delete('source_info') if portable_graph.is_a?(Hash)
+        if portable_graph['source'].is_a?(Hash)
+          portable_graph['source'].delete('file_path')
+        end
+        portable_graph['evolution'] = {
+          'contract' => CONTRACT,
+          'engine' => normalized_engine,
+          'profile' => normalized_profile,
+          'source_tree_sha256' => validate_hash(source_tree_sha256, 'source tree SHA-256'),
+          'historical_baseline_sha' => validate_commit(historical_baseline_sha)
+        }
 
-      document = {
-        'contract' => CONTRACT,
-        'engine' => normalized_engine,
-        'profile' => normalized_profile,
-        'graph' => portable_graph,
-        'assets' => assets.values.sort_by { |asset| asset.fetch('id') }
-      }
-      validate!(document)
-      document
+        document = {
+          'contract' => CONTRACT,
+          'engine' => normalized_engine,
+          'profile' => normalized_profile,
+          'graph' => portable_graph,
+          'assets' => assets.values.sort_by { |asset| asset.fetch('id') }
+        }
+        validate!(document)
+        document
+      end
     end
 
     def validate!(document)

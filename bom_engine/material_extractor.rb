@@ -3,6 +3,7 @@
 # BOMC texture staging is evidence-gated and remains independent of geometry.
 
 require_relative 'bomc_texture_optimizer'
+require_relative 'performance_trace'
 
 module BOMEngine
   module MaterialExtractor
@@ -16,6 +17,7 @@ module BOMEngine
       written = 0
       materials = model.materials.to_a
       total = materials.length
+      PerformanceTrace.increment(:materials_seen, total)
       color_map_budget = allow_jpeg_color_map ? { remaining_pixels: 128_000_000, hashes: {} } : nil
 
       work = materials.each_with_index.to_a
@@ -108,6 +110,7 @@ module BOMEngine
               end
               entry[:texture][:filename] = staged[:filename]
               entry[:texture][:staging_evidence] = staged[:evidence]
+              PerformanceTrace.increment(:textures_staged, 1)
               if staged.dig(:evidence,:selected) == :semantic_colorized_native
                 entry[:semantic_colorize_active]=true
                 entry[:colorize_output_sha256]=staged.dig(:evidence,:output_pixel_sha256)

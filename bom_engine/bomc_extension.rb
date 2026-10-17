@@ -15,6 +15,7 @@ require_relative 'bomc_size_gate'
 require_relative 'bomc_writer'
 require_relative 'bomc_validator'
 require_relative 'conversion_job'
+require_relative 'performance_trace'
 
 if defined?(Sketchup) && defined?(UI)
   require_relative 'core'
@@ -63,6 +64,13 @@ module BOMEngine
       base = output_base_path(path)
       normalized_profile = normalize_profile(profile)
       "#{base}__SIBAMBO-BOMC-v#{Branding::EXTENSION_VERSION}__#{normalized_profile.to_s.upcase}#{FORMAT_EXTENSION}"
+    end
+
+    def performance_receipt_path(output_path, status: :success)
+      normalized = status.to_s
+      return "#{output_path}.performance.json" if normalized == 'success'
+
+      "#{output_path}.performance.#{normalized}.json"
     end
 
     def output_base_path(path)
@@ -175,20 +183,25 @@ module BOMEngine
       jcm_selected?(candidate) ? published.merge(required_loader: 'bomc-next-jcm-v1') : published
     end
 
-    def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil, allow_jpeg_color_map: nil, prepared_color_maps: nil, candidate_cache: nil)
+    def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil, allow_jpeg_color_map: nil, prepared_color_maps: nil, candidate_cache: nil, performance_trace: nil)
       profile = normalize_profile(profile)
       jcm_enabled = resolve_jpeg_color_map(profile, allow_jpeg_color_map)
       processing = settings || BOMCProcessing.settings(:balanced)
       yield_callback = progress || ->(_event) {}
+      trace = performance_trace || PerformanceTrace.new(
+        enabled: true,
+        metadata: { engine: 'e4', profile: profile, mode: processing[:mode], format: 'bomc-1.2' },
+        resource_sampling: :selected
+      )
       context = export_context(output_path, yield_callback, profile: profile, diagnostics: diagnostics,
         allow_jpeg_color_map: jcm_enabled, prepared_color_maps: prepared_color_maps,
-        candidate_cache: candidate_cache, processing: processing)
+        candidate_cache: candidate_cache, processing: processing, performance_trace: trace)
       result = BOMCExportJob.run(
         model: model,
         output_path: output_path,
         settings: processing,
         context: context
-      ).merge(format: 'bomc', profile: profile)
+      ).merge(format: 'bomc', profile: profile, performance_receipt_path: performance_receipt_path(output_path))
       jcm_selected?(result) ? result.merge(required_loader: 'bomc-next-jcm-v1') : result
     end
 
@@ -381,7 +394,7 @@ module BOMEngine
       end
     end
 
-    def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE, diagnostics: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil, processing: nil)
+    def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE, diagnostics: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil, processing: nil, performance_trace: nil)
       texture_directory = Dir.mktmpdir('bomc-textures')
       effective_cache = candidate_cache
       unless effective_cache
@@ -393,13 +406,19 @@ module BOMEngine
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
         on_yield: yield_callback,
         cancelled: -> { false },
+        performance_trace: performance_trace,
+        performance_receipt: performance_trace ? lambda { |receipt|
+          PerformanceTrace.write_receipt(performance_receipt_path(output_path, status: receipt[:status] || receipt['status']), receipt)
+        } : nil,
         source_info: lambda do |model|
           BOMCSizeGate.source_info(model.path.to_s)
         end,
         snapshot: lambda do |model, checkpoint|
-          graph = capture_graph(model, texture_directory: texture_directory, checkpoint: checkpoint, profile: profile,
-            allow_jpeg_color_map: allow_jpeg_color_map, prepared_color_maps: prepared_color_maps,
-            candidate_cache: effective_cache, processing: processing, texture_representation: :bomc)
+          graph = PerformanceTrace.stage(:capture_graph) do
+            capture_graph(model, texture_directory: texture_directory, checkpoint: checkpoint, profile: profile,
+              allow_jpeg_color_map: allow_jpeg_color_map, prepared_color_maps: prepared_color_maps,
+              candidate_cache: effective_cache, processing: processing, texture_representation: :bomc)
+          end
           diagnostics[:graph] = graph if diagnostics
           graph
         end,
@@ -413,18 +432,26 @@ module BOMEngine
           )
         end,
         validate: lambda do |result, graph = nil|
-          decoded = BOMCDecoder.decode(result.fetch(:bytes), allow_jpeg_color_map: allow_jpeg_color_map)
+          profiled = PerformanceTrace.stage(:decode_readback, counts: { bytes: result.fetch(:bytes).bytesize }) do
+            BOMCDecoder.profile(result.fetch(:bytes), allow_jpeg_color_map: allow_jpeg_color_map)
+          end
+          decoded = profiled.fetch(:model)
+          profiled.fetch(:timings, {}).each do |phase, milliseconds|
+            PerformanceTrace.increment("decoder_#{phase}", milliseconds) if milliseconds.is_a?(Numeric)
+          end
           texture_evidence = graph && graph[:materials] ? graph[:materials].map { |m| m.dig(:texture, :encoding_evidence) }.compact : nil
-          report = if graph
-                     BOMCValidator.validate_profile!(
-                       source: graph,
-                       decoded: decoded,
-                       profile: profile,
-                       texture_evidence: texture_evidence
-                     )
-                   else
-                     { passed: true }
-                   end
+          report = PerformanceTrace.stage(:fidelity_validation) do
+            if graph
+              BOMCValidator.validate_profile!(
+                source: graph,
+                decoded: decoded,
+                profile: profile,
+                texture_evidence: texture_evidence
+              )
+            else
+              { passed: true }
+            end
+          end
           triangles = decoded[:meshes].map do |mesh|
             mesh[:faces].map { |face| face[:triangles].length / 3 }.inject(0, :+)
           end.inject(0, :+)
@@ -616,24 +643,27 @@ module BOMEngine
       rescue StandardError
         nil
       end
-      material_classes = compute_material_classes(model)
-      extracted_materials = MaterialExtractor.extract(
-        model,
-        texture_writer,
-        texture_directory,
-        checkpoint: checkpoint,
-        optimize_textures: true,
-        profile: profile,
-        material_classes: material_classes,
-        allow_jpeg_color_map: allow_jpeg_color_map,
-        allow_semantic_colorize: allow_semantic_colorize,
-        record_reference_pixel_hash: texture_representation.to_sym == :portable,
-        prepared_color_maps: prepared_color_maps,
-        candidate_cache: candidate_cache
-      )
+      material_classes = PerformanceTrace.stage(:material_classification) { compute_material_classes(model) }
+      extracted_materials = PerformanceTrace.stage(:material_extraction, sample_resources: true) do
+        MaterialExtractor.extract(
+          model,
+          texture_writer,
+          texture_directory,
+          checkpoint: checkpoint,
+          optimize_textures: true,
+          profile: profile,
+          material_classes: material_classes,
+          allow_jpeg_color_map: allow_jpeg_color_map,
+          allow_semantic_colorize: allow_semantic_colorize,
+          record_reference_pixel_hash: texture_representation.to_sym == :portable,
+          prepared_color_maps: prepared_color_maps,
+          candidate_cache: candidate_cache
+        )
+      end
       entity_total = model.entities.respond_to?(:length) ? model.entities.length : 0
-      graph = if defined?(CanonicalGraphBuilder)
-                CanonicalGraphBuilder.build(
+      graph = PerformanceTrace.stage(:canonical_capture, counts: { root_entities: entity_total }, sample_resources: true) do
+        if defined?(CanonicalGraphBuilder)
+          CanonicalGraphBuilder.build(
                   model: model,
                   entities: model.entities,
                   parent_transform: defined?(Geom::Transformation) ? Geom::Transformation.new : nil,
@@ -659,12 +689,15 @@ module BOMEngine
                   # callback on every entity. The controller still owns the
                   # actual 12 ms / item slice decision.
                   batch_size: 16
-                )
-              else
-                { materials: extracted_materials, meshes: [], definitions: [], nodes: [], instances: [] }
-              end
-      attach_staged_textures(graph, extracted_materials, texture_directory, profile: profile,
-        texture_representation: texture_representation)
+          )
+        else
+          { materials: extracted_materials, meshes: [], definitions: [], nodes: [], instances: [] }
+        end
+      end
+      PerformanceTrace.stage(:texture_attach) do
+        attach_staged_textures(graph, extracted_materials, texture_directory, profile: profile,
+          texture_representation: texture_representation)
+      end
     end
     private_class_method :snapshot_model
 

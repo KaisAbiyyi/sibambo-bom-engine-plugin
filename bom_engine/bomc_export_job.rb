@@ -2,6 +2,7 @@
 # injected by the extension so this state machine stays pure-Ruby testable.
 
 require_relative 'bomc_processing'
+require_relative 'performance_trace'
 
 module BOMEngine
   module BOMCExportJob
@@ -21,6 +22,10 @@ module BOMEngine
     def run(model:, output_path:, settings:, context:)
       graph = nil
       source = nil
+      result = nil
+      trace = context[:performance_trace]
+      trace_status = :success
+      trace_error = nil
       controller = BOMCProcessing::Controller.new(
         settings: settings,
         clock: context.fetch(:clock),
@@ -54,41 +59,84 @@ module BOMEngine
         controller.checkpoint(**payload)
       end
 
-      advance.call(:INITIALIZE)
-      source = context.fetch(:source_info).call(model)
-      advance.call(:SCAN_MODEL)
-      graph = context.fetch(:snapshot).call(model, checkpoint)
-      advance.call(:BUILD_INSTANCES)
-      result = context.fetch(:compile).call(graph, source, output_path, checkpoint)
-      advance.call(:SIZE_GATE, result[:candidate_bytes])
-      advance.call(:VALIDATE, result[:candidate_bytes])
-      validation = begin
-                     context.fetch(:validate).call(result, graph)
-                   rescue ArgumentError => e
-                     if e.message.include?('wrong number of arguments')
-                       context.fetch(:validate).call(result)
-                     else
-                       raise
-                     end
-                   end
-      advance.call(:DONE, result[:candidate_bytes], result[:savings_bytes])
+      work = lambda do
+        advance.call(:INITIALIZE)
+        source = PerformanceTrace.stage(:source_info) { context.fetch(:source_info).call(model) }
+        advance.call(:SCAN_MODEL)
+        graph = PerformanceTrace.stage(:snapshot) { context.fetch(:snapshot).call(model, checkpoint) }
+        advance.call(:BUILD_INSTANCES)
+        result = PerformanceTrace.stage(:compile) { context.fetch(:compile).call(graph, source, output_path, checkpoint) }
+        advance.call(:SIZE_GATE, result[:candidate_bytes])
+        advance.call(:VALIDATE, result[:candidate_bytes])
+        validation = PerformanceTrace.stage(:validate) do
+          begin
+            context.fetch(:validate).call(result, graph)
+          rescue ArgumentError => e
+            if e.message.include?('wrong number of arguments')
+              context.fetch(:validate).call(result)
+            else
+              raise
+            end
+          end
+        end
+        advance.call(:DONE, result[:candidate_bytes], result[:savings_bytes])
 
-      if context[:publish]
-        published = context[:publish].call(result, validation, output_path)
-        result = result.merge(published: published)
+        if context[:publish]
+          published = PerformanceTrace.stage(:publish) { context[:publish].call(result, validation, output_path) }
+          result = result.merge(published: published)
+        end
+
+        container_bytes = result[:bytes] if result[:bytes].is_a?(String)
+        result = result.merge(
+          path: result[:path] || output_path,
+          bytes: result[:candidate_bytes] || (container_bytes && container_bytes.bytesize),
+          validation: validation,
+          source_info: source,
+          mode: settings[:mode]
+        )
+        result.delete(:container_bytes)
+        result
       end
 
-      container_bytes = result[:bytes] if result[:bytes].is_a?(String)
-      result = result.merge(
-        path: result[:path] || output_path,
-        bytes: result[:candidate_bytes] || (container_bytes && container_bytes.bytesize),
-        validation: validation,
-        source_info: source,
-        mode: settings[:mode]
-      )
-      result.delete(:container_bytes)
-      result
+      if trace && trace.enabled
+        PerformanceTrace.with(trace) { work.call }
+      else
+        work.call
+      end
+    rescue StandardError => error
+      trace_status = PerformanceTrace.cancellation_error?(error) ? :cancelled : :error
+      trace_error = error
+      raise
     ensure
+      if trace
+        begin
+          artifact_bytes = if result.is_a?(Hash)
+                             result[:candidate_bytes] || (result[:bytes].is_a?(String) ? result[:bytes].bytesize : result[:bytes])
+                           end
+          trace_metadata = {
+            source: source && {
+              path: source[:path], bytes: source[:bytes], sha256: source[:sha256], available: source[:available]
+            },
+            artifact: result.is_a?(Hash) ? {
+              path: result[:path] || output_path,
+              bytes: artifact_bytes,
+              sha256: result[:sha256],
+              status: result[:status],
+              strategy: result[:strategy]
+            } : nil,
+            processing_mode: settings[:mode]
+          }.reject { |_key, value| value.nil? }
+          receipt = trace.finish(status: trace_status, error: trace_error, metadata: trace_metadata)
+          result[:performance_trace] = receipt if result.is_a?(Hash)
+          if context && context[:performance_receipt]
+            context[:performance_receipt].call(receipt)
+          end
+        rescue StandardError => performance_error
+          if result.is_a?(Hash)
+            result[:performance_receipt_error] = "#{performance_error.class}: #{performance_error.message}"
+          end
+        end
+      end
       graph = nil
       context[:graph_cleared].call if context && context[:graph_cleared]
       context[:cleanup].call if context && context[:cleanup]

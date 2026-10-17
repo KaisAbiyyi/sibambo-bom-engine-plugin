@@ -13,6 +13,7 @@ require_relative 'bomc_candidate'
 require_relative 'bomc_jpeg_color_map'
 require_relative 'bomc_png_optimizer'
 require_relative 'bomc_sketchup_colorize'
+require_relative 'performance_trace'
 
 module BOMEngine
   module BOMCTextureOptimizer
@@ -225,7 +226,7 @@ module BOMEngine
       )
     end
 
-    def stage(texture:, directory:, basename:, source_path:, profile: :visual, semantic_class: :class_b, policy: nil, image_rep_loader: nil, allow_jpeg_color_map: false, allow_semantic_colorize: true, record_reference_pixel_hash: false, color_map_budget: nil, prepared_color_maps: nil, candidate_cache: nil, appearance: nil, &checkpoint)
+    def stage_without_performance_trace(texture:, directory:, basename:, source_path:, profile: :visual, semantic_class: :class_b, policy: nil, image_rep_loader: nil, allow_jpeg_color_map: false, allow_semantic_colorize: true, record_reference_pixel_hash: false, color_map_budget: nil, prepared_color_maps: nil, candidate_cache: nil, appearance: nil, &checkpoint)
       stage_started = monotonic_ms
       timings = {}
       png_path = File.join(directory, "#{basename}.png")
@@ -354,6 +355,51 @@ module BOMEngine
         raise
       end
     end
+
+    def stage(texture:, directory:, basename:, source_path:, profile: :visual, semantic_class: :class_b, policy: nil, image_rep_loader: nil, allow_jpeg_color_map: false, allow_semantic_colorize: true, record_reference_pixel_hash: false, color_map_budget: nil, prepared_color_maps: nil, candidate_cache: nil, appearance: nil, &checkpoint)
+      PerformanceTrace.stage(
+        :texture_optimizer,
+        details: { profile: profile, semantic_class: semantic_class, basename: basename }
+      ) do
+        result = stage_without_performance_trace(
+          texture: texture,
+          directory: directory,
+          basename: basename,
+          source_path: source_path,
+          profile: profile,
+          semantic_class: semantic_class,
+          policy: policy,
+          image_rep_loader: image_rep_loader,
+          allow_jpeg_color_map: allow_jpeg_color_map,
+          allow_semantic_colorize: allow_semantic_colorize,
+          record_reference_pixel_hash: record_reference_pixel_hash,
+          color_map_budget: color_map_budget,
+          prepared_color_maps: prepared_color_maps,
+          candidate_cache: candidate_cache,
+          appearance: appearance,
+          &checkpoint
+        )
+        record_performance_summary(result)
+        result
+      end
+    end
+
+    def record_performance_summary(result)
+      evidence = result.is_a?(Hash) ? (result[:evidence] || {}) : {}
+      timings = evidence[:timings_ms] || {}
+      timings.each do |phase, milliseconds|
+        next unless milliseconds.is_a?(Numeric)
+        PerformanceTrace.increment("texture_optimizer_#{phase}_ms", milliseconds)
+      end
+      Array(evidence[:attempts]).each do |attempt|
+        (attempt[:timings_ms] || {}).each do |phase, milliseconds|
+          next unless milliseconds.is_a?(Numeric)
+          PerformanceTrace.increment("texture_candidate_#{phase}_ms", milliseconds)
+        end
+      end
+      PerformanceTrace.increment(:textures_optimized, 1)
+    end
+    private_class_method :record_performance_summary
 
     def select_semantic_colorized_native(texture, directory, basename, source_path, appearance, loader,
       semantic_class: :class_b, candidate_cache: nil, &checkpoint)

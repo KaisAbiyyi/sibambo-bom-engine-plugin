@@ -6,6 +6,7 @@ require_relative 'classifier'
 require_relative 'traversal'
 require_relative 'semantic_labeler'
 require_relative 'scene_visibility_resolver'
+require_relative 'performance_trace'
 
 module BOMEngine
   module CanonicalGraphBuilder
@@ -32,7 +33,9 @@ module BOMEngine
         @texture_writer = texture_writer
         @scene_scope = (@settings[:scene_scope] || 'all').to_s
         @preserve_hidden_geometry = @settings[:preserve_hidden_geometry] == true
-        @scenes = SceneVisibilityResolver.resolve_scenes(@model)
+        @scenes = PerformanceTrace.stage(:canonical_initial_scene_visibility) do
+          SceneVisibilityResolver.resolve_scenes(@model)
+        end
         @definitions = []
         @definition_index = {}
         @meshes = []
@@ -52,18 +55,20 @@ module BOMEngine
 
       def build(entities, parent_transform)
         checkpoint('Preparing model tables', force: true)
-        index_attached_labels(@model.entities)
-        build_tags
-        build_materials
+        PerformanceTrace.stage(:canonical_label_index) { index_attached_labels(@model.entities) }
+        PerformanceTrace.stage(:canonical_tags) { build_tags }
+        PerformanceTrace.stage(:canonical_materials) { build_materials }
         identity_transform_id = intern_transform(Geom::Transformation.new)
         root_definition_id = root_definition_id()
-        root_definition = build_definition(
-          id: root_definition_id,
-          name: @settings[:selection_only] ? 'Selection Root' : 'Model Root',
-          entities: entities,
-          source_identity: model_source_identity,
-          kind: 'root'
-        )
+        root_definition = PerformanceTrace.stage(:canonical_geometry_capture) do
+          build_definition(
+            id: root_definition_id,
+            name: @settings[:selection_only] ? 'Selection Root' : 'Model Root',
+            entities: entities,
+            source_identity: model_source_identity,
+            kind: 'root'
+          )
+        end
         root_transform_id = intern_transform(parent_transform || Geom::Transformation.new)
         @nodes.unshift(
           id: 'node:root',
@@ -80,8 +85,12 @@ module BOMEngine
         )
 
         checkpoint('Finalizing canonical graph', force: true)
-        scenes = build_scenes
-        clip_planes = SceneVisibilityResolver.collect_model_clip_planes(@model)
+        scenes = PerformanceTrace.stage(:canonical_scene_visibility, sample_resources: true) { build_scenes }
+        clip_planes = PerformanceTrace.stage(:clip_plane_collection) do
+          SceneVisibilityResolver.collect_model_clip_planes(@model)
+        end
+        statistics = PerformanceTrace.stage(:canonical_statistics) { build_statistics(identity_transform_id) }
+        PerformanceTrace.increment(:canonical_work_items, @work_count)
         result = {
           format: {
             name: FORMAT_NAME,
@@ -120,7 +129,7 @@ module BOMEngine
           spaces: extract_spaces,
           relationships: build_relationships,
           analysis: @spatial,
-          statistics: build_statistics(identity_transform_id)
+          statistics: statistics
         }
         checkpoint('Canonical graph ready', force: true)
         result

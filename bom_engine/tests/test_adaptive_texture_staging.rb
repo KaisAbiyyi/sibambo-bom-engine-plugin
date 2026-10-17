@@ -7,6 +7,7 @@ require 'zlib'
 require_relative '../bomc_texture_optimizer'
 require_relative '../bomc_extension'
 require_relative '../material_extractor'
+require_relative '../performance_trace'
 
 class TestAdaptiveTextureStaging < Test::Unit::TestCase
   Frame = Struct.new(:width, :height, :bits_per_pixel, :row_padding, :data) do
@@ -448,6 +449,22 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
         [:encode, :decode, :candidate_image_rep, :pixel_compare, :total].each do |phase|
           assert_kind_of Numeric, candidate.dig(:timings_ms, phase)
         end
+      end
+    end
+  end
+
+  def test_texture_stage_adds_phase_summary_to_active_performance_trace
+    with_codec do
+      Dir.mktmpdir('texture-trace') do |dir|
+        trace = BOMEngine::PerformanceTrace.new(enabled: true)
+        result = nil
+        BOMEngine::PerformanceTrace.with(trace) { result = stage(dir, profile: :research) }
+        receipt = trace.finish(status: :success)
+        names = receipt.fetch(:stages).map { |row| row[:name] }
+        assert_include names, 'texture_optimizer'
+        assert_equal :webp_candidate, result.dig(:evidence, :selected)
+        assert_operator receipt.dig(:counters, :texture_optimizer_total_ms).to_f, :>=, 0.0
+        assert_operator receipt.dig(:counters, :texture_optimizer_webp_search_ms).to_f, :>=, 0.0
       end
     end
   end

@@ -24,11 +24,11 @@ module BOMEngine
       Decoder.new(bytes, allow_jpeg_color_map: allow_jpeg_color_map).decode
     end
 
-    def self.profile(bytes)
+    def self.profile(bytes, allow_jpeg_color_map: true)
       timings = {}
       total_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       container_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      decoder = Decoder.new(bytes)
+      decoder = Decoder.new(bytes, allow_jpeg_color_map: allow_jpeg_color_map)
       timings[:container_ms] = elapsed_ms(container_started)
       logical_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       model = decoder.decode(timings)

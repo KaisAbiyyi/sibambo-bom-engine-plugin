@@ -4,6 +4,7 @@ require 'json'
 require_relative 'evolution_document'
 require_relative 'evolution_cleanpkg/section_writer'
 require_relative 'evolution_cleanpkg/deterministic_zip'
+require_relative 'performance_trace'
 
 module BOMEngine
   module EvolutionCleanPKGWriter
@@ -11,20 +12,21 @@ module BOMEngine
     module_function
 
     def build(document)
-      EvolutionDocument.validate!(document)
-      graph = document.fetch('graph')
-      writer = EvolutionCleanPKG::SectionWriter.new
-      material_index = Array(graph['materials']).each_with_index.to_h { |material, index| [material['id'], index] }
-      definition_index = Array(graph['definitions']).each_with_index.to_h { |definition, index| [definition['id'], index] }
-      mesh_index = Array(graph['meshes']).each_with_index.to_h { |mesh, index| [mesh['id'], index] }
+      PerformanceTrace.stage(:e3_binary_build) do
+        EvolutionDocument.validate!(document)
+        graph = document.fetch('graph')
+        writer = EvolutionCleanPKG::SectionWriter.new
+        material_index = Array(graph['materials']).each_with_index.to_h { |material, index| [material['id'], index] }
+        definition_index = Array(graph['definitions']).each_with_index.to_h { |definition, index| [definition['id'], index] }
+        mesh_index = Array(graph['meshes']).each_with_index.to_h { |mesh, index| [mesh['id'], index] }
 
-      mesh_rows = Array(graph['meshes']).each_with_index.map do |mesh, index|
-        encode_mesh(writer, mesh, index, material_index)
-      end
-      instances = encode_instances(writer, graph, definition_index, material_index)
-      raw_sections = writer.sections
-      section_index = raw_sections.keys.each_with_index.to_h
-      manifest = {
+        mesh_rows = Array(graph['meshes']).each_with_index.map do |mesh, index|
+          encode_mesh(writer, mesh, index, material_index)
+        end
+        instances = encode_instances(writer, graph, definition_index, material_index)
+        raw_sections = writer.sections
+        section_index = raw_sections.keys.each_with_index.to_h
+        manifest = {
         'format' => { 'identifier' => 'bom_engine_clean_package', 'version' => '1.1.0' },
         'evolution' => EvolutionDocument.deep_copy(graph.fetch('evolution')),
         'units' => EvolutionDocument.deep_copy(graph['units'] || {}),
@@ -52,9 +54,10 @@ module BOMEngine
             [descriptor['byte_offset'], descriptor['byte_length'], descriptor['count'], descriptor['component_count'], descriptor['component_type']]
           end
         }
-      }
-      replace_section_names!(manifest, section_index)
-      { manifest: manifest, buffers: writer.bytes }
+        }
+        replace_section_names!(manifest, section_index)
+        { manifest: manifest, buffers: writer.bytes }
+      end
     end
 
     def write(path, document)
@@ -64,7 +67,7 @@ module BOMEngine
         'buffers.bin' => built.fetch(:buffers)
       }
       Array(document.fetch('assets')).each { |asset| entries[asset.fetch('path')] = asset.fetch('bytes') }
-      EvolutionCleanPKG::DeterministicZip.write(path, entries)
+      PerformanceTrace.stage(:e3_zip_write) { EvolutionCleanPKG::DeterministicZip.write(path, entries) }
       { path: path, bytes: File.size(path) }
     end
 

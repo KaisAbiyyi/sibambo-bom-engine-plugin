@@ -7,6 +7,7 @@ require_relative 'bomc_writer'
 require_relative 'bomc_profile'
 require_relative 'bomc_budget_solver'
 require_relative 'bomc_export_cache'
+require_relative 'performance_trace'
 
 module BOMEngine
   module BOMCSizeGate
@@ -39,8 +40,11 @@ module BOMEngine
       unless !source_path.empty? && File.file?(source_path)
         return { path: source_path.empty? ? nil : source_path, bytes: nil, available: false, reason: :unsaved_or_missing }
       end
-      { path: File.expand_path(source_path), bytes: File.size(source_path),
-        sha256: Digest::SHA256.file(source_path).hexdigest, available: true }
+      size = File.size(source_path)
+      sha256 = PerformanceTrace.stage(:source_hash, counts: { bytes: size }) do
+        Digest::SHA256.file(source_path).hexdigest
+      end
+      { path: File.expand_path(source_path), bytes: size, sha256: sha256, available: true }
     end
 
     def evaluate(candidate_bytes:, source_info:, profile: :visual, profile_contract: nil)

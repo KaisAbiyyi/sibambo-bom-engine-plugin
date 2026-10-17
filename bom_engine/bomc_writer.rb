@@ -12,6 +12,7 @@ require_relative 'bomc_encoding_contract'
 require_relative 'bomc_geometry_policy'
 require_relative 'bomc_budget_solver'
 require_relative 'scene_clip_program'
+require_relative 'performance_trace'
 
 module BOMEngine
   module BOMCWriter
@@ -149,23 +150,25 @@ module BOMEngine
                            Digest::SHA256.hexdigest(graph.to_s)
                          end
 
-        @model = if @export_cache
-                   norm_key = BOMCExportCache::Cache.compute_key(
-                     source_digest: @source_digest,
-                     profile: @profile,
-                     policy_revision: BOMCExportCache::POLICY_REVISION
-                   )
-                   cached = @export_cache.fetch_normalization(norm_key)
-                   if cached
-                     cached
-                   else
-                     normalized = BOMC::ModelAdapter.normalize(graph, base_path: base_path, checkpoint: @checkpoint)
-                     @export_cache.store_normalization(norm_key, normalized)
-                     normalized
-                   end
-                 else
-                   BOMC::ModelAdapter.normalize(graph, base_path: base_path, checkpoint: @checkpoint)
-                 end
+        @model = PerformanceTrace.stage(:normalize_graph) do
+          if @export_cache
+            norm_key = BOMCExportCache::Cache.compute_key(
+              source_digest: @source_digest,
+              profile: @profile,
+              policy_revision: BOMCExportCache::POLICY_REVISION
+            )
+            cached = @export_cache.fetch_normalization(norm_key)
+            if cached
+              cached
+            else
+              normalized = BOMC::ModelAdapter.normalize(graph, base_path: base_path, checkpoint: @checkpoint)
+              @export_cache.store_normalization(norm_key, normalized)
+              normalized
+            end
+          else
+            BOMC::ModelAdapter.normalize(graph, base_path: base_path, checkpoint: @checkpoint)
+          end
+        end
 
         @adaptive_actual = 0
         @adaptive_u32 = 0
@@ -180,40 +183,38 @@ module BOMEngine
 
       def build
         notify(:compile_metadata, 0, 1)
-        geometry = build_geometry
-
-        all_sections = [
-          section(BOMC::SECTION_MODEL, 1, build_model_section(geometry), true),
-          section(BOMC::SECTION_STRINGS, @strings.length, build_strings_section, true),
-          section(BOMC::SECTION_MATERIALS, @model[:materials].length, build_materials_section, true),
-          section(BOMC::SECTION_TAGS, @model[:tags].length, build_tags_section, true),
-          section(BOMC::SECTION_MESHES, @model[:meshes].length, build_meshes_section(geometry[:meshes]), true),
-          section(BOMC::SECTION_FACES, geometry[:faces].length, build_faces_section(geometry[:faces]), true),
-          section(BOMC::SECTION_POSITIONS, @model[:meshes].length, geometry[:position_bytes], true),
-          section(BOMC::SECTION_TOPOLOGY, @model[:meshes].length, geometry[:topology_bytes], true),
-          section(BOMC::SECTION_NORMALS, geometry[:normals].length / 3, pack_codec_section(geometry[:normal_block]), true),
-          section(BOMC::SECTION_UVS, geometry[:uv_block_count], geometry[:uv_bytes], true),
-          section(BOMC::SECTION_DEFINITIONS, @model[:definitions].length, build_definitions_section, true),
-          section(BOMC::SECTION_INSTANCES, @model[:instances].length, build_instances_section, true),
-          section(BOMC::SECTION_TRANSFORMS, @model[:transforms].length, pack_codec_section(geometry[:transform_block]), true),
-          section(BOMC::SECTION_VISUAL_EDGES, geometry[:edges].length, build_edges_section(geometry[:edges]), true),
-          section(BOMC::SECTION_TEXTURE_TABLE, @textures.length, build_texture_table_section, true),
-          section(BOMC::SECTION_TEXTURE_BLOBS, @textures.length, @texture_blob_bytes,
-            @texture_blob_bytes.bytesize <= MAX_JCM_BLOB_DEFLATE_BYTES &&
-              @textures.any? { |texture| texture[:media_type] == :jpeg_color_map }),
-          section(BOMC::SECTION_COVERAGE, 1, build_coverage_section, true),
-          section(BOMC::SECTION_FALLBACK, fallback_records.length, build_fallback_section, true),
-          section(BOMC::SECTION_ENCODING_CONTRACT, 1, BOMCEncodingContract.encode(@profile_contract, source_skp_bytes: @source_skp_bytes, target_bytes: @target_bytes), true)
-        ]
+        geometry = PerformanceTrace.stage(:candidate_generation, counts: { meshes: @model[:meshes].length }, sample_resources: true) { build_geometry }
         scenes = Array(@model[:scenes])
-        if !scenes.empty?
-          all_sections << section(BOMC::SECTION_SCENES, scenes.length, build_scenes_section, true)
-        end
         clip_planes = Array(@model[:clip_planes])
-        if !clip_planes.empty?
-          all_sections << section(BOMC::SECTION_CLIP_PLANES, clip_planes.length, build_clip_planes_section, true)
+        all_sections = PerformanceTrace.stage(:section_creation) do
+          built_sections = [
+            section(BOMC::SECTION_MODEL, 1, build_model_section(geometry), true),
+            section(BOMC::SECTION_STRINGS, @strings.length, build_strings_section, true),
+            section(BOMC::SECTION_MATERIALS, @model[:materials].length, build_materials_section, true),
+            section(BOMC::SECTION_TAGS, @model[:tags].length, build_tags_section, true),
+            section(BOMC::SECTION_MESHES, @model[:meshes].length, build_meshes_section(geometry[:meshes]), true),
+            section(BOMC::SECTION_FACES, geometry[:faces].length, build_faces_section(geometry[:faces]), true),
+            section(BOMC::SECTION_POSITIONS, @model[:meshes].length, geometry[:position_bytes], true),
+            section(BOMC::SECTION_TOPOLOGY, @model[:meshes].length, geometry[:topology_bytes], true),
+            section(BOMC::SECTION_NORMALS, geometry[:normals].length / 3, pack_codec_section(geometry[:normal_block]), true),
+            section(BOMC::SECTION_UVS, geometry[:uv_block_count], geometry[:uv_bytes], true),
+            section(BOMC::SECTION_DEFINITIONS, @model[:definitions].length, build_definitions_section, true),
+            section(BOMC::SECTION_INSTANCES, @model[:instances].length, build_instances_section, true),
+            section(BOMC::SECTION_TRANSFORMS, @model[:transforms].length, pack_codec_section(geometry[:transform_block]), true),
+            section(BOMC::SECTION_VISUAL_EDGES, geometry[:edges].length, build_edges_section(geometry[:edges]), true),
+            section(BOMC::SECTION_TEXTURE_TABLE, @textures.length, build_texture_table_section, true),
+            section(BOMC::SECTION_TEXTURE_BLOBS, @textures.length, @texture_blob_bytes,
+              @texture_blob_bytes.bytesize <= MAX_JCM_BLOB_DEFLATE_BYTES &&
+                @textures.any? { |texture| texture[:media_type] == :jpeg_color_map }),
+            section(BOMC::SECTION_COVERAGE, 1, build_coverage_section, true),
+            section(BOMC::SECTION_FALLBACK, fallback_records.length, build_fallback_section, true),
+            section(BOMC::SECTION_ENCODING_CONTRACT, 1, BOMCEncodingContract.encode(@profile_contract, source_skp_bytes: @source_skp_bytes, target_bytes: @target_bytes), true)
+          ]
+          built_sections << section(BOMC::SECTION_SCENES, scenes.length, build_scenes_section, true) unless scenes.empty?
+          built_sections << section(BOMC::SECTION_CLIP_PLANES, clip_planes.length, build_clip_planes_section, true) unless clip_planes.empty?
+          built_sections << section(BOMC::SECTION_DEBUG, debug_records.length, build_debug_section, true) if @profile == :debug
+          built_sections
         end
-        all_sections << section(BOMC::SECTION_DEBUG, debug_records.length, build_debug_section, true) if @profile == :debug
         required = [
           BOMC::SECTION_MODEL, BOMC::SECTION_STRINGS, BOMC::SECTION_DEFINITIONS,
           BOMC::SECTION_INSTANCES, BOMC::SECTION_TRANSFORMS, BOMC::SECTION_COVERAGE,
@@ -233,14 +234,16 @@ module BOMEngine
           flags |= BOMC::FLAG_SCOPE_ALL
         end
 
-        pack_res = BOMC::Container.pack_with_metrics(
-          sections,
-          flags: flags,
-          compact_directory: @compact_directory,
-          version_minor: @compact_directory ? 2 : 0,
-          compression_level: @compression_level,
-          checkpoint: @checkpoint
-        )
+        pack_res = PerformanceTrace.stage(:compression, counts: { sections: sections.length }) do
+          BOMC::Container.pack_with_metrics(
+            sections,
+            flags: flags,
+            compact_directory: @compact_directory,
+            version_minor: @compact_directory ? 2 : 0,
+            compression_level: @compression_level,
+            checkpoint: @checkpoint
+          )
+        end
         bytes = pack_res[:bytes]
         header_metrics = pack_res[:header_metrics]
         section_sizes = {}
@@ -253,9 +256,12 @@ module BOMEngine
             count: descriptor[:count]
           }
         end
+        candidate_sha256 = PerformanceTrace.stage(:candidate_hash, counts: { bytes: bytes.bytesize }) do
+          Digest::SHA256.hexdigest(bytes)
+        end
         {
           bytes: bytes,
-          sha256: Digest::SHA256.hexdigest(bytes),
+          sha256: candidate_sha256,
           format: FORMAT_VERSION,
           profile: @profile,
           prepared_candidates: geometry[:prepared_candidates],

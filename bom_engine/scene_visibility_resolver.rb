@@ -5,22 +5,26 @@ require 'digest'
 require 'json'
 require 'set'
 require_relative 'constants'
+require_relative 'performance_trace'
 
 module BOMEngine
   module SceneVisibilityResolver
     module_function
 
     def resolve_scenes(model, active_page: nil, nodes: nil, definitions: nil, meshes: nil)
-      pages = model.respond_to?(:pages) ? model.pages : nil
-      active = active_page || (pages.respond_to?(:selected_page) ? pages.selected_page : nil)
-      pages_list = pages.respond_to?(:to_a) ? pages.to_a : Array(pages)
+      PerformanceTrace.stage(:scene_visibility_resolve) do
+        pages = model.respond_to?(:pages) ? model.pages : nil
+        active = active_page || (pages.respond_to?(:selected_page) ? pages.selected_page : nil)
+        pages_list = pages.respond_to?(:to_a) ? pages.to_a : Array(pages)
+        PerformanceTrace.increment(:scene_profiles, [pages_list.length, 1].max)
 
-      if pages_list.empty?
-        [build_scene_profile(nil, is_active: true, model: model, nodes: nodes, definitions: definitions, meshes: meshes)]
-      else
-        pages_list.map do |page|
-          is_active = (page == active)
-          build_scene_profile(page, is_active: is_active, model: model, nodes: nodes, definitions: definitions, meshes: meshes)
+        if pages_list.empty?
+          [build_scene_profile(nil, is_active: true, model: model, nodes: nodes, definitions: definitions, meshes: meshes)]
+        else
+          pages_list.map do |page|
+            is_active = (page == active)
+            build_scene_profile(page, is_active: is_active, model: model, nodes: nodes, definitions: definitions, meshes: meshes)
+          end
         end
       end
     end
@@ -35,7 +39,9 @@ module BOMEngine
         visible_tag_ids = []
         hidden_tag_ids = []
         if model && model.respond_to?(:layers)
+          tag_queries = 0
           model.layers.each do |layer|
+            tag_queries += 1
             id = tag_stable_id(layer)
             if layer.visible?
               visible_tag_ids << id
@@ -43,6 +49,7 @@ module BOMEngine
               hidden_tag_ids << id
             end
           end
+          PerformanceTrace.increment(:scene_tag_visibility_queries, tag_queries)
         end
         signature = compute_visibility_signature(
           visible_tag_ids: visible_tag_ids,
@@ -104,7 +111,9 @@ module BOMEngine
       visible_tag_ids = []
       hidden_tag_ids = []
       if model && model.respond_to?(:layers)
+        tag_queries = 0
         model.layers.each do |layer|
+          tag_queries += 1
           id = tag_stable_id(layer)
           if effective_tag_visibility(layer, page)
             visible_tag_ids << id
@@ -112,6 +121,7 @@ module BOMEngine
             hidden_tag_ids << id
           end
         end
+        PerformanceTrace.increment(:scene_tag_visibility_queries, tag_queries)
       end
 
       # DrawingElement visibility overrides
@@ -241,6 +251,7 @@ module BOMEngine
                             end
       hidden_entities_set = hidden_entities_list.to_set
       hidden_pids_set = hidden_entities_list.map { |he| safe_persistent_id(he).to_s }.to_set
+      PerformanceTrace.increment(:scene_hidden_entity_rows, hidden_entities_list.length)
 
       nodes_by_entity = {}
       nodes_by_pid = {}
@@ -273,6 +284,7 @@ module BOMEngine
         end
 
         has_drawingelement_visibility = page.respond_to?(:get_drawingelement_visibility)
+        node_visibility_queries = 0
         nodes.each do |node|
           next if node[:kind] == 'root'
           node_id = node[:id]
@@ -286,6 +298,7 @@ module BOMEngine
 
           if entity && has_drawingelement_visibility
             begin
+              node_visibility_queries += 1
               flag = page.get_drawingelement_visibility(entity)
             rescue StandardError => error
               result[:diagnostics] << extraction_failure(page, entity, :drawingelement_visibility, error, :base_visibility)
@@ -303,16 +316,19 @@ module BOMEngine
             end
           end
         end
+        PerformanceTrace.increment(:scene_node_visibility_queries, node_visibility_queries)
       end
 
       # Faces and edges are DrawingElements too, but only top-level geometry is
       # independently scene-controlled. Preserve both negative and positive
       # page overrides without treating nested definition geometry as scoped.
       if stores_geometry && page.respond_to?(:get_drawingelement_visibility)
+        primitive_visibility_queries = 0
         primitives_by_entity.each do |entity, primitive|
           next unless entity && drawingelement_scene_applicable?(entity, page, is_root: false)
           base_hidden = (entity.respond_to?(:hidden?) && entity.hidden?) || (entity.respond_to?(:visible?) && !entity.visible?)
           begin
+            primitive_visibility_queries += 1
             flag = page.get_drawingelement_visibility(entity)
             if flag == false
               (primitive[0] == :face ? result[:hidden_faces] : result[:hidden_edges]) << primitive[1]
@@ -323,6 +339,7 @@ module BOMEngine
             result[:diagnostics] << extraction_failure(page, entity, :primitive_drawingelement_visibility, error, :base_visibility)
           end
         end
+        PerformanceTrace.increment(:scene_primitive_visibility_queries, primitive_visibility_queries)
       end
 
       # Match top-level hidden entities from page.hidden_entities
@@ -747,6 +764,7 @@ module BOMEngine
           planes << "section:#{safe_persistent_id(sp)}"
         end
       end
+      PerformanceTrace.increment(:clip_plane_records, planes.length)
       planes
     rescue StandardError
       []

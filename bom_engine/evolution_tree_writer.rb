@@ -2,48 +2,53 @@
 
 require 'json'
 require_relative 'evolution_document'
+require_relative 'performance_trace'
 
 module BOMEngine
   module EvolutionTreeWriter
     module_function
 
     def build(document)
-      EvolutionDocument.validate!(document)
-      graph = document.fetch('graph')
-      definitions = index_by_id(graph['definitions'])
-      meshes = index_by_id(graph['meshes'])
-      nodes = index_by_id(graph['nodes'])
-      transforms = Array(graph['transforms'])
-      root = Array(graph['nodes']).find { |node| node['kind'] == 'root' }
-      raise ArgumentError, 'E1 requires exactly one root node' unless root
+      PerformanceTrace.stage(:e1_occurrence_expansion) do
+        EvolutionDocument.validate!(document)
+        graph = document.fetch('graph')
+        definitions = index_by_id(graph['definitions'])
+        meshes = index_by_id(graph['meshes'])
+        nodes = index_by_id(graph['nodes'])
+        transforms = Array(graph['transforms'])
+        root = Array(graph['nodes']).find { |node| node['kind'] == 'root' }
+        raise ArgumentError, 'E1 requires exactly one root node' unless root
 
-      root_matrix = transform_at(transforms, root['transform_id'])
-      entities = instantiate_definition(
-        root.fetch('definition_id'), root_matrix, root.fetch('id'), nil,
-        definitions: definitions, meshes: meshes, nodes: nodes, transforms: transforms, ancestry: []
-      )
-      {
-        'schema_version' => '2.2',
-        'format' => 'sibambo-evolution-e1',
-        'profile' => document.fetch('profile'),
-        'evolution' => EvolutionDocument.deep_copy(graph.fetch('evolution')),
-        'units' => EvolutionDocument.deep_copy(graph['units'] || {}),
-        'coordinate_system' => EvolutionDocument.deep_copy(graph['coordinate_system'] || {}),
-        'source' => EvolutionDocument.deep_copy(graph['source'] || {}),
-        'metadata' => EvolutionDocument.deep_copy(graph['metadata'] || {}),
-        'tags' => EvolutionDocument.deep_copy(graph['tags'] || []),
-        'materials' => EvolutionDocument.deep_copy(graph['materials'] || []),
-        'assets' => EvolutionDocument.json_asset_table(document),
-        'scenes' => EvolutionDocument.deep_copy(graph['scenes'] || []),
-        'clip_planes' => EvolutionDocument.deep_copy(graph['clip_planes'] || []),
-        'scene_fidelity_manifest' => EvolutionDocument.deep_copy(graph['scene_fidelity_manifest'] || {}),
-        'entities' => entities
-      }
+        root_matrix = transform_at(transforms, root['transform_id'])
+        entities = instantiate_definition(
+          root.fetch('definition_id'), root_matrix, root.fetch('id'), nil,
+          definitions: definitions, meshes: meshes, nodes: nodes, transforms: transforms, ancestry: []
+        )
+        {
+          'schema_version' => '2.2',
+          'format' => 'sibambo-evolution-e1',
+          'profile' => document.fetch('profile'),
+          'evolution' => EvolutionDocument.deep_copy(graph.fetch('evolution')),
+          'units' => EvolutionDocument.deep_copy(graph['units'] || {}),
+          'coordinate_system' => EvolutionDocument.deep_copy(graph['coordinate_system'] || {}),
+          'source' => EvolutionDocument.deep_copy(graph['source'] || {}),
+          'metadata' => EvolutionDocument.deep_copy(graph['metadata'] || {}),
+          'tags' => EvolutionDocument.deep_copy(graph['tags'] || []),
+          'materials' => EvolutionDocument.deep_copy(graph['materials'] || []),
+          'assets' => EvolutionDocument.json_asset_table(document),
+          'scenes' => EvolutionDocument.deep_copy(graph['scenes'] || []),
+          'clip_planes' => EvolutionDocument.deep_copy(graph['clip_planes'] || []),
+          'scene_fidelity_manifest' => EvolutionDocument.deep_copy(graph['scene_fidelity_manifest'] || {}),
+          'entities' => entities
+        }
+      end
     end
 
     def write(path, document)
-      payload = JSON.generate(build(document))
-      File.open(path, 'wb') { |file| file.write(payload) }
+      payload = PerformanceTrace.stage(:e1_serialize) { JSON.generate(build(document)) }
+      PerformanceTrace.stage(:e1_file_write, counts: { bytes: payload.bytesize }) do
+        File.open(path, 'wb') { |file| file.write(payload) }
+      end
       { path: path, bytes: payload.bytesize }
     end
 

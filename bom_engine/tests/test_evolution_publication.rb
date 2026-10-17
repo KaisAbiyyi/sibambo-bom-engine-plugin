@@ -3,6 +3,7 @@
 require 'test/unit'
 require 'tmpdir'
 require_relative '../evolution_exporter'
+require_relative '../performance_trace'
 
 class TestEvolutionPublication < Test::Unit::TestCase
   FakeModel = Struct.new(:path, :guid, :name, :modified, :observers) do
@@ -98,5 +99,35 @@ class TestEvolutionPublication < Test::Unit::TestCase
     second = BOMEngine::EvolutionExporter.normalize_output_path(first, engine: :e2, profile: :research)
     assert_equal 'C:/out/house__E2__RESEARCH.json.gz', first
     assert_equal first, second
+  end
+
+  def test_performance_receipt_is_separate_from_artifact_and_provenance
+    Dir.mktmpdir('evolution-performance-receipt') do |dir|
+      output = File.join(dir, 'house__E2__VISUAL.json.gz')
+      receipt_path = BOMEngine::EvolutionExporter.performance_receipt_path(output)
+      assert_equal "#{output}.performance.json", receipt_path
+      refute_equal "#{output}.provenance.json", receipt_path
+
+      trace = BOMEngine::PerformanceTrace.new(enabled: true, metadata: { engine: 'e2', profile: 'visual' })
+      trace.stage(:writer) { 1 + 1 }
+      receipt = BOMEngine::EvolutionExporter.finalize_performance_trace(output, trace, status: :success)
+      assert_equal receipt_path, receipt[:path]
+      parsed = JSON.parse(File.read(receipt_path, encoding: 'UTF-8'))
+      assert_equal BOMEngine::PerformanceTrace::SCHEMA, parsed['schema']
+      assert_equal 'success', parsed['status']
+      refute File.exist?(output), 'performance receipt must not create the artifact'
+      refute File.exist?("#{output}.provenance.json"), 'performance receipt must not create provenance'
+
+      failed_trace = BOMEngine::PerformanceTrace.new(enabled: true, metadata: { engine: 'e2', profile: 'visual' })
+      failed = BOMEngine::EvolutionExporter.finalize_performance_trace(
+        output, failed_trace, status: :error, error: RuntimeError.new('failed'),
+        metadata: { source_tree_sha256: 'a' * 64, preserved_existing_artifact: { sha256: 'b' * 64, bytes: 12 } }
+      )
+      assert(failed[:path].end_with?('.performance.error.json'), 'failed attempt uses a distinct receipt path')
+      assert(File.file?(receipt_path), 'failed attempt preserves the success receipt path')
+      failed_payload = JSON.parse(File.read(failed[:path], encoding: 'UTF-8'))
+      assert_equal 'a' * 64, failed_payload.dig('metadata', 'source_tree_sha256')
+      assert_equal 'b' * 64, failed_payload.dig('metadata', 'preserved_existing_artifact', 'sha256')
+    end
   end
 end

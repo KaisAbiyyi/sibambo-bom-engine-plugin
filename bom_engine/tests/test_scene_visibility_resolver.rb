@@ -8,6 +8,7 @@ require_relative '../scene_visibility_resolver'
 require_relative '../bomc_format'
 require_relative '../bomc_writer'
 require_relative '../bomc_decoder'
+require_relative '../performance_trace'
 
 module BOMEngine
   class TestSceneVisibilityResolver < Test::Unit::TestCase
@@ -127,6 +128,24 @@ module BOMEngine
         @name = 'Mock Model'
         @description = 'Mock model description'
       end
+    end
+
+    def test_performance_trace_counts_scene_queries
+      layer_arch = MockLayer.new('ARCH', visible: true, persistent_id: '101')
+      layer_struct = MockLayer.new('STRUCT', visible: true, persistent_id: '102')
+      pages = [
+        MockPage.new('PERS', persistent_id: 'page_pers', layers: [layer_struct]),
+        MockPage.new('STR', persistent_id: 'page_str', layers: [layer_arch])
+      ]
+      model = MockModel.new(pages: pages, layers: [layer_arch, layer_struct])
+      trace = PerformanceTrace.new(enabled: true)
+      scenes = nil
+      PerformanceTrace.with(trace) { scenes = SceneVisibilityResolver.resolve_scenes(model) }
+      receipt = trace.finish(status: :success)
+      assert_equal 2, scenes.length
+      assert_include receipt.fetch(:stages).map { |row| row[:name] }, 'scene_visibility_resolve'
+      assert_equal 2, receipt.dig(:counters, :scene_profiles)
+      assert_operator receipt.dig(:counters, :scene_tag_visibility_queries).to_i, :>=, 4
     end
 
     def test_pers_vs_str_tag_isolation

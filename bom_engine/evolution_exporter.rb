@@ -12,6 +12,7 @@ require_relative 'evolution_tree_writer'
 require_relative 'evolution_canonical_writer'
 require_relative 'evolution_cleanpkg_writer'
 require_relative 'evolution_validator'
+require_relative 'performance_trace'
 
 module BOMEngine
   module EvolutionExporter
@@ -147,66 +148,127 @@ module BOMEngine
       "#{base}__#{engine.to_s.upcase}__#{profile.to_s.upcase}#{WRITERS.fetch(engine).fetch(:extension)}"
     end
 
-    def export(model, engine:, profile:, output_path:, processing: nil, progress: nil, active_model: nil)
+    def performance_receipt_path(output_path, status: :success)
+      normalized = status.to_s
+      return "#{output_path}.performance.json" if normalized == 'success'
+
+      "#{output_path}.performance.#{normalized}.json"
+    end
+
+    def finalize_performance_trace(output_path, trace, status:, error: nil, metadata: nil)
+      receipt = trace.finish(status: status, error: error, metadata: metadata)
+      path = performance_receipt_path(output_path, status: status)
+      PerformanceTrace.write_receipt(path, receipt)
+      { path: path, receipt: receipt }
+    end
+
+    def export(model, engine:, profile:, output_path:, processing: nil, progress: nil, active_model: nil, performance_trace: nil)
       engine = normalize_engine(engine)
       profile = normalize_profile(profile)
       output_path = normalize_output_path(output_path, engine: engine, profile: profile)
       info = WRITERS.fetch(engine)
-      source_tree = source_tree_sha256
-      guard = ModelRevisionGuard.new(model, active_model: active_model).attach
-      parent = File.dirname(File.expand_path(output_path))
-      FileUtils.mkdir_p(parent)
+      trace = performance_trace || PerformanceTrace.new(
+        enabled: true,
+        metadata: { engine: engine, profile: profile, format: info.fetch(:format), writer_id: info.fetch(:id) },
+        resource_sampling: :selected
+      )
+      trace_status = :success
+      trace_error = nil
+      guard = nil
       result = nil
-      Dir.mktmpdir('.evolution-export-', parent) do |job_dir|
-        texture_dir = File.join(job_dir, 'textures')
-        FileUtils.mkdir_p(texture_dir)
-        checkpoint = lambda do |event = {}|
+      performance_metadata = { requested_output_path: output_path }
+      PerformanceTrace.with(trace) do
+        source_tree = PerformanceTrace.stage(:source_tree_hash) { source_tree_sha256 }
+        performance_metadata[:source_tree_sha256] = source_tree
+        guard = ModelRevisionGuard.new(model, active_model: active_model).attach
+        parent = File.dirname(File.expand_path(output_path))
+        FileUtils.mkdir_p(parent)
+        Dir.mktmpdir('.evolution-export-', parent) do |job_dir|
+          texture_dir = File.join(job_dir, 'textures')
+          FileUtils.mkdir_p(texture_dir)
+          checkpoint = lambda do |event = {}|
+            guard.check!
+            progress.call(event) if progress
+          end
+          checkpoint.call(stage: :capture, processed: 0, total: 1, force: true)
+          graph = PerformanceTrace.stage(:evolution_capture) do
+            BOMCExtension.capture_graph(
+              model,
+              texture_directory: texture_dir,
+              checkpoint: checkpoint,
+              profile: profile,
+              processing: processing,
+              texture_representation: :portable
+            )
+          end
           guard.check!
-          progress.call(event) if progress
+          document = EvolutionDocument.prepare(
+            graph,
+            engine: engine,
+            profile: profile,
+            source_tree_sha256: source_tree,
+            historical_baseline_sha: HISTORICAL_BASELINES.fetch(engine)
+          )
+          candidate = File.join(job_dir, "candidate#{info.fetch(:extension)}")
+          PerformanceTrace.stage(:evolution_writer, details: { engine: engine }) do
+            info.fetch(:writer).write(candidate, document)
+          end
+          validation = EvolutionValidator.validate_file!(candidate, engine: engine, expected_profile: profile, source_document: document)
+          guard.check!
+          sidecar = PerformanceTrace.stage(:provenance_build) do
+            build_provenance(model, candidate, engine: engine, profile: profile, source_tree_sha256: source_tree, format: info.fetch(:format), writer_id: info.fetch(:id))
+          end
+          performance_metadata[:source_model] = sidecar[:model]
+          performance_metadata[:artifact] = sidecar[:artifact]
+          sidecar_candidate = File.join(job_dir, 'candidate.provenance.json')
+          File.binwrite(sidecar_candidate, JSON.pretty_generate(sidecar) + "\n")
+          guard.check!
+          sidecar_path = "#{output_path}.provenance.json"
+          PerformanceTrace.stage(:publication) do
+            publish_pair(candidate, sidecar_candidate, output_path, sidecar_path)
+          end
+          artifact_sha = PerformanceTrace.stage(:published_artifact_hash, counts: { bytes: File.size(output_path) }) do
+            Digest::SHA256.file(output_path).hexdigest
+          end
+          result = {
+            path: output_path,
+            sidecar_path: sidecar_path,
+            bytes: File.size(output_path),
+            sha256: artifact_sha,
+            engine: engine,
+            profile: profile,
+            writer_id: info.fetch(:id),
+            output_version: info.fetch(:version),
+            source_tree_sha256: source_tree,
+            validation: validation.reject { |key, _| key == :decoded }
+          }
+          performance_metadata[:artifact] = performance_metadata[:artifact].merge(path: output_path, sha256: artifact_sha, bytes: File.size(output_path))
         end
-        checkpoint.call(stage: :capture, processed: 0, total: 1, force: true)
-        graph = BOMCExtension.capture_graph(
-          model,
-          texture_directory: texture_dir,
-          checkpoint: checkpoint,
-          profile: profile,
-          processing: processing,
-          texture_representation: :portable
-        )
-        guard.check!
-        document = EvolutionDocument.prepare(
-          graph,
-          engine: engine,
-          profile: profile,
-          source_tree_sha256: source_tree,
-          historical_baseline_sha: HISTORICAL_BASELINES.fetch(engine)
-        )
-        candidate = File.join(job_dir, "candidate#{info.fetch(:extension)}")
-        info.fetch(:writer).write(candidate, document)
-        validation = EvolutionValidator.validate_file!(candidate, engine: engine, expected_profile: profile, source_document: document)
-        guard.check!
-        sidecar = build_provenance(model, candidate, engine: engine, profile: profile, source_tree_sha256: source_tree, format: info.fetch(:format), writer_id: info.fetch(:id))
-        sidecar_candidate = File.join(job_dir, 'candidate.provenance.json')
-        File.binwrite(sidecar_candidate, JSON.pretty_generate(sidecar) + "\n")
-        guard.check!
-        sidecar_path = "#{output_path}.provenance.json"
-        publish_pair(candidate, sidecar_candidate, output_path, sidecar_path)
-        result = {
-          path: output_path,
-          sidecar_path: sidecar_path,
-          bytes: File.size(output_path),
-          sha256: Digest::SHA256.file(output_path).hexdigest,
-          engine: engine,
-          profile: profile,
-          writer_id: info.fetch(:id),
-          output_version: info.fetch(:version),
-          source_tree_sha256: source_tree,
-          validation: validation.reject { |key, _| key == :decoded }
-        }
       end
       result
+    rescue StandardError => error
+      trace_status = PerformanceTrace.cancellation_error?(error) ? :cancelled : :error
+      trace_error = error
+      raise
     ensure
       guard&.detach
+      if trace && output_path
+        begin
+          if trace_status != :success && File.file?(output_path)
+            performance_metadata[:preserved_existing_artifact] = {
+              path: output_path,
+              bytes: File.size(output_path),
+              sha256: Digest::SHA256.file(output_path).hexdigest
+            }
+          end
+          finalized = finalize_performance_trace(output_path, trace, status: trace_status, error: trace_error, metadata: performance_metadata)
+          result[:performance_receipt_path] = finalized[:path] if result.is_a?(Hash)
+        rescue StandardError => performance_error
+          if result.is_a?(Hash)
+            result[:performance_receipt_error] = "#{performance_error.class}: #{performance_error.message}"
+          end
+        end
+      end
     end
 
     def build_provenance(model, artifact_path, engine:, profile:, source_tree_sha256:, format:, writer_id:)

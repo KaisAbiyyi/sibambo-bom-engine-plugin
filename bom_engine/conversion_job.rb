@@ -2,6 +2,7 @@
 
 require 'json'
 require 'uri'
+require_relative 'performance_trace'
 
 module BOMEngine
   class ConversionJob
@@ -12,6 +13,10 @@ module BOMEngine
 
     class << self
       attr_reader :active
+
+      def next_generation
+        @generation_sequence = @generation_sequence.to_i + 1
+      end
 
       def start(title:, output_path:, batch_size: nil, kind: :export, &work)
         if @active && @active.running?
@@ -29,6 +34,8 @@ module BOMEngine
       end
     end
 
+    attr_reader :generation_id, :performance_metrics
+
     def initialize(title:, output_path:, batch_size: nil, kind: :export, &work)
       @title = title
       @output_path = output_path
@@ -42,6 +49,20 @@ module BOMEngine
       @result_path = nil
       @last_ui_progress_at = 0.0
       @last_ui_stage = nil
+      @generation_id = self.class.next_generation
+      @last_tick_at = nil
+      @last_checkpoint_at = nil
+      @performance_metrics = {
+        generation_id: @generation_id,
+        slice_count: 0,
+        checkpoint_count: 0,
+        ui_update_count: 0,
+        total_slice_ms: 0.0,
+        max_slice_ms: 0.0,
+        max_tick_delay_ms: 0.0,
+        max_checkpoint_gap_ms: 0.0,
+        max_ui_heartbeat_delay_ms: 0.0
+      }
       build_dialog
     end
 
@@ -109,6 +130,14 @@ module BOMEngine
     def checkpoint(event = {})
       raise Cancelled, 'Export dibatalkan.' if @cancel_requested
 
+      now = monotonic_seconds
+      if @last_checkpoint_at
+        gap_ms = (now - @last_checkpoint_at) * 1000.0
+        @performance_metrics[:max_checkpoint_gap_ms] = [@performance_metrics[:max_checkpoint_gap_ms], gap_ms].max
+      end
+      @last_checkpoint_at = now
+      @performance_metrics[:checkpoint_count] += 1
+
       Fiber.yield([:progress, event || {}])
       raise Cancelled, 'Export dibatalkan.' if @cancel_requested
     end
@@ -116,7 +145,21 @@ module BOMEngine
     def tick
       return finish_timer if @finished
 
-      outcome = @fiber.resume
+      tick_started = monotonic_seconds
+      if @last_tick_at
+        delay_ms = [((tick_started - @last_tick_at) - TIMER_INTERVAL_SECONDS) * 1000.0, 0.0].max
+        @performance_metrics[:max_tick_delay_ms] = [@performance_metrics[:max_tick_delay_ms], delay_ms].max
+      end
+      @last_tick_at = tick_started
+      outcome = nil
+      begin
+        outcome = @fiber.resume
+      ensure
+        slice_ms = [(monotonic_seconds - tick_started) * 1000.0, 0.0].max
+        @performance_metrics[:slice_count] += 1
+        @performance_metrics[:total_slice_ms] += slice_ms
+        @performance_metrics[:max_slice_ms] = [@performance_metrics[:max_slice_ms], slice_ms].max
+      end
       if outcome.is_a?(Array) && outcome[0] == :progress
         update_progress(outcome[1])
         return
@@ -142,6 +185,12 @@ module BOMEngine
 
       @last_ui_progress_at = now
       @last_ui_stage = stage
+      @performance_metrics[:ui_update_count] += 1
+      if @previous_ui_update_at
+        heartbeat_delay_ms = [((now - @previous_ui_update_at) - UI_PROGRESS_INTERVAL_SECONDS) * 1000.0, 0.0].max
+        @performance_metrics[:max_ui_heartbeat_delay_ms] = [@performance_metrics[:max_ui_heartbeat_delay_ms], heartbeat_delay_ms].max
+      end
+      @previous_ui_update_at = now
       data = {
         stage: stage,
         profile: event[:profile] || event['profile'],
@@ -160,6 +209,8 @@ module BOMEngine
     def complete(result)
       finish_timer
       @finished = true
+      finalize_performance_metrics
+      persist_performance_metrics(result)
       @result_path = result[:path] if @kind == :batch_export
       resize_result(650)
       stats = result[:validation] || {}
@@ -211,6 +262,7 @@ module BOMEngine
     def cancelled(_error)
       finish_timer
       @finished = true
+      finalize_performance_metrics
       resize_result(450)
       execute("cancelledConversion(#{JSON.generate(path: @result_path || @output_path, capture: @kind == :capture, batch_export: @kind == :batch_export, partial_result: @kind == :batch_export && !@result_path.nil?)})")
       self.class.release(self)
@@ -219,6 +271,7 @@ module BOMEngine
     def failed(error)
       finish_timer
       @finished = true
+      finalize_performance_metrics
       resize_result(500)
       detail = "#{error.class}: #{error.message}\n#{Array(error.backtrace).first(20).join("\n")}"
       Logger.error("Model-Eval cooperative export failed: #{detail}")
@@ -250,6 +303,30 @@ module BOMEngine
       return 0.0 if @started_at.nil?
 
       (Time.now - @started_at).round(1)
+    end
+
+    def finalize_performance_metrics
+      slices = @performance_metrics[:slice_count].to_i
+      @performance_metrics[:mean_slice_ms] = slices.positive? ? (@performance_metrics[:total_slice_ms].to_f / slices) : 0.0
+      @performance_metrics.each do |key, value|
+        @performance_metrics[key] = value.round(3) if value.is_a?(Float)
+      end
+      @performance_metrics
+    end
+
+    def persist_performance_metrics(result)
+      return unless result.is_a?(Hash)
+      path = result[:performance_receipt_path] || result['performance_receipt_path']
+      return if path.to_s.empty?
+
+      PerformanceTrace.merge_receipt_metadata(path, conversion_job: @performance_metrics)
+    rescue StandardError
+      # Telemetry must never change export success/failure semantics.
+      nil
+    end
+
+    def monotonic_seconds
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     def execute(script)

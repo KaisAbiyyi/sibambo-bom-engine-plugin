@@ -7,6 +7,7 @@ require 'stringio'
 require 'zlib'
 require_relative 'evolution_document'
 require_relative 'evolution_tree_writer'
+require_relative 'performance_trace'
 
 module BOMEngine
   module EvolutionValidator
@@ -16,18 +17,19 @@ module BOMEngine
 
     def validate_file!(path, engine:, expected_profile: nil, source_document: nil)
       raise ValidationError, "Evolution candidate missing: #{path}" unless File.file?(path) && File.size(path).positive?
-      decoded = read(path, engine: engine)
+      decoded = PerformanceTrace.stage(:evolution_readback, counts: { bytes: File.size(path) }) { read(path, engine: engine) }
       profile = decoded.fetch(:profile)
       if expected_profile && profile != expected_profile.to_s
         raise ValidationError, "Profile mismatch: expected #{expected_profile}, got #{profile}"
       end
-      comparison = source_document ? compare!(source_document, decoded) : nil
+      comparison = source_document ? PerformanceTrace.stage(:evolution_compare) { compare!(source_document, decoded) } : nil
+      sha256 = PerformanceTrace.stage(:artifact_hash, counts: { bytes: File.size(path) }) { Digest::SHA256.file(path).hexdigest }
       {
         passed: true,
         engine: engine.to_s,
         profile: profile,
         bytes: File.size(path),
-        sha256: Digest::SHA256.file(path).hexdigest,
+        sha256: sha256,
         comparison: comparison,
         decoded: decoded
       }

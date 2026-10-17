@@ -3,6 +3,7 @@
 require 'fileutils'
 require 'tmpdir'
 require_relative '../bomc_extension'
+require_relative '../performance_trace'
 
 module BOMEngine
   module Tests
@@ -93,6 +94,33 @@ module BOMEngine
           'Research does not enable the Exact-only JPEG color-map codec')
         assert(BOMCExtension.send(:resolve_jpeg_color_map, :exact, false) == false,
           'callers can explicitly disable JPEG color-map compatibility for legacy consumers')
+
+        performance_dir = Dir.mktmpdir('bomc-performance-receipt')
+        performance_output = File.join(performance_dir, 'fixture.bomc')
+        performance_trace = PerformanceTrace.new(enabled: true, metadata: { engine: 'e4', profile: 'visual' })
+        performance_context = nil
+        begin
+          performance_context = BOMCExtension.send(
+            :export_context,
+            performance_output,
+            ->(_event) {},
+            profile: :visual,
+            performance_trace: performance_trace
+          )
+          assert(performance_context[:performance_trace].equal?(performance_trace), 'export context carries the caller-owned performance trace')
+          receipt = performance_trace.finish(status: :success)
+          performance_context[:performance_receipt].call(receipt)
+          receipt_path = BOMCExtension.performance_receipt_path(performance_output)
+          assert(BOMCExtension.performance_receipt_path(performance_output, status: :error).end_with?('.performance.error.json'),
+            'failed performance attempts cannot overwrite the success receipt bound to an existing artifact')
+          assert(File.file?(receipt_path), 'performance receipt is written beside but separate from the BOMC artifact')
+          parsed = JSON.parse(File.read(receipt_path, encoding: 'UTF-8'))
+          assert(parsed['schema'] == PerformanceTrace::SCHEMA && parsed['metadata']['engine'] == 'e4', 'performance receipt is machine-readable and versioned')
+          assert(!File.exist?(performance_output), 'writing performance evidence cannot create or mutate the BOMC artifact')
+        ensure
+          performance_context[:cleanup].call if performance_context
+          FileUtils.remove_entry(performance_dir) if Dir.exist?(performance_dir)
+        end
         menu = FakeMenu.new
         BOMCExtension.register_menu(menu)
         assert(

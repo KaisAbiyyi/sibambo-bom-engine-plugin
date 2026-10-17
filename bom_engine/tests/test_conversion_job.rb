@@ -58,6 +58,7 @@ module BOMEngine
 end
 
 require_relative '../conversion_job'
+require_relative '../performance_trace'
 
 def assert(condition, message)
   raise "FAIL: #{message}" unless condition
@@ -77,8 +78,34 @@ assert(UI::HtmlDialog.last.options[:height] <= 420, 'active progress window rema
 assert(UI::HtmlDialog.last.size == [620, 650] && UI::HtmlDialog.last.center_calls >= 2,
   'completion window expands and re-centers relative to SketchUp')
 assert(BOMEngine::ConversionJob.active.nil?, 'completed job releases global active slot')
+first_generation = job.generation_id
+metrics = job.performance_metrics
+assert(first_generation.is_a?(Integer) && first_generation.positive?, 'conversion metrics are bound to a concrete job generation')
+assert(metrics[:generation_id] == first_generation && metrics[:slice_count].to_i >= 1,
+  'cooperative slice metrics stay associated with their job generation')
+assert(metrics[:max_slice_ms].is_a?(Numeric) && metrics[:max_tick_delay_ms].is_a?(Numeric),
+  'conversion job records slice duration and UI timer delay')
 
 require 'tmpdir'
+Dir.mktmpdir('conversion-job-performance') do |dir|
+  receipt_path = File.join(dir, 'artifact.bomc.performance.json')
+  BOMEngine::PerformanceTrace.write_receipt(receipt_path, {
+    schema: BOMEngine::PerformanceTrace::SCHEMA, enabled: true, status: 'success',
+    total_wall_ms: 1.0, metadata: { engine: 'e4' }, counters: {}, stages: []
+  })
+  receipt_job = BOMEngine::ConversionJob.start(title: 'Observed conversion', output_path: File.join(dir, 'artifact.bomc')) do |progress|
+    progress.call(stage: 'Observed', processed: 1, total: 1)
+    { path: File.join(dir, 'artifact.bomc'), bytes: 1, validation: {}, performance_receipt_path: receipt_path }
+  end
+  UI.tick while receipt_job.running?
+  parsed = JSON.parse(File.read(receipt_path, encoding: 'UTF-8'))
+  scheduler = parsed.dig('metadata', 'conversion_job')
+  assert(scheduler && scheduler['generation_id'] == receipt_job.generation_id,
+    'interactive scheduler metrics are persisted into the separate performance receipt')
+  assert(scheduler['max_slice_ms'].is_a?(Numeric) && scheduler['max_checkpoint_gap_ms'].is_a?(Numeric),
+    'persisted receipt includes UI-thread slice and checkpoint observability')
+end
+
 Dir.mktmpdir('capture result') do |capture_dir|
   capture_job = BOMEngine::ConversionJob.start(title: 'Capture', output_path: capture_dir, batch_size: 8192, kind: :capture) do
     { path: capture_dir, status: 'captured_pending_certification', source_info: { bytes: 440_016 },
@@ -137,5 +164,8 @@ cancelled_job.cancel
 UI.tick while cancelled_job.running?
 assert(UI::HtmlDialog.last.scripts.any? { |script| script.include?('cancelledConversion') }, 'cancel request stops at cooperative checkpoint')
 assert(BOMEngine::ConversionJob.active.nil?, 'cancelled job releases global active slot')
+assert(cancelled_job.generation_id > first_generation, 'later jobs use a new generation instead of reusing stale progress metrics')
+assert(cancelled_job.performance_metrics[:generation_id] == cancelled_job.generation_id,
+  'cancelled job metrics cannot be mistaken for an earlier generation')
 
 puts 'Conversion Job Tests: ALL PASSED'
