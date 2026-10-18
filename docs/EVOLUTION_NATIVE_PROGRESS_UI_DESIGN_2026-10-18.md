@@ -1,6 +1,8 @@
 # Native conversion progress UI — proposed interaction contract v1
 
-Date: 2026-10-18 (Asia/Jakarta). Status: **DESIGNED / NOT IMPLEMENTED**. Scope: SketchUp BOMC and Evolution E1–E4. This proposal responds to the native 60-row run and the [acceptance note](2026-10-18-native-progress-ui-acceptance.md). It does not certify host responsiveness.
+Date: 2026-10-18 (Asia/Jakarta). Status: **IMPLEMENTED IN SOURCE / HEADLESS-VERIFIED / SKETCHUP HOST PENDING**. Scope: SketchUp BOMC and Evolution E1–E4. The implementation responds to the native 60-row run. It does not certify host responsiveness.
+
+Implementation location: `bom_engine/conversion_job.rb` owns backend envelopes, pass identities and named phases; `bom_engine/bomc_processing.rb` forwards labels and units; `bom_engine/material_extractor.rb` supplies texture/material names; `bom_engine/ui/conversion_dialog.html` renders the five stages, elapsed heartbeat, pass-local counters and invalid-count warnings. `bom_engine/tests/test_conversion_job.rb` and `bom_engine/tests/test_dialog_html.rb` provide synthetic and actual headless Chrome assertions. Current backend event semantics support **phase-local progress and diagnostic stall detection**; detailed per-codec pass names and backend-authoritative full-job ETA remain proposed future enhancements. Capture may resume after the nested texture phase without resetting the displayed texture completion.
 
 ## User-visible layout
 

@@ -75,7 +75,7 @@ scripts = UI::HtmlDialog.last.scripts
 assert(scripts.any? { |script| script.include?('updateProgress') }, 'progress window receives cooperative updates')
 assert(scripts.any? { |script| script.include?('completeConversion') }, 'progress window receives completion result')
 assert(UI::HtmlDialog.last.centered, 'progress window is centered relative to SketchUp')
-assert(UI::HtmlDialog.last.options[:height] <= 420, 'active progress window remains compact')
+assert(UI::HtmlDialog.last.options[:height] >= 520, 'active progress window has room for five visible phases')
 assert(UI::HtmlDialog.last.size == [620, 650] && UI::HtmlDialog.last.center_calls >= 2,
   'completion window expands and re-centers relative to SketchUp')
 assert(BOMEngine::ConversionJob.active.nil?, 'completed job releases global active slot')
@@ -205,6 +205,17 @@ assert(slow_metrics[:checkpoint_count] == 5 && slow_metrics[:state_history].any?
   'slow-stage checkpoints keep backend phase and heartbeat telemetry current')
 assert(slow_metrics[:ui_update_count].to_i >= 2,
   'cooperatively chunkable slow work still delivers bounded progress updates')
+
+texture_job = BOMEngine::ConversionJob.start(title: 'Texture progress', output_path: 'D:/exports/texture.bomc') do |progress|
+  progress.call(stage: :SNAPSHOT_TEXTURES, processed: 142, total: 159, operation_label: 'mtl', unit: 'material')
+  progress.call(stage: :SNAPSHOT_TEXTURES, processed: 39, total: 159, operation_label: 'mtl', unit: 'material')
+  {path: 'D:/exports/texture.bomc', bytes: 1, validation: {}}
+end
+UI.tick while texture_job.running?
+texture_payload = UI::HtmlDialog.last.scripts.select { |script| script.include?('updateProgress') }.last.to_s
+assert(texture_payload.include?('"phase_id":"textures"') && texture_payload.include?('"operation_label":"mtl"') &&
+  texture_payload.include?('"unit":"material"') && texture_payload.include?('"pass_index":2'),
+  'backend emits named texture phase, material, real unit and pass identity')
 
 publish_calls = 0
 publish_cancel_job = BOMEngine::ConversionJob.start(title: 'Cancel before publication', output_path: 'C:/tmp/publish.bomc') do |progress|

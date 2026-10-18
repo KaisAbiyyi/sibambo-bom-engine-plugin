@@ -53,6 +53,7 @@ module BOMEngine
       @dialog_ready = false
       @pending_ui_event = nil
       @pending_ui_event_queued_at = nil
+      @progress_passes = {}
       @generation_id = self.class.next_generation
       @event_sequence = 0
       @state = :created
@@ -119,9 +120,9 @@ module BOMEngine
         scrollable: true,
         resizable: true,
         width: 620,
-        height: 380,
+        height: 540,
         min_width: 420,
-        min_height: 320,
+        min_height: 440,
         style: UI::HtmlDialog::STYLE_DIALOG
       )
       @dialog.set_file(File.join(File.dirname(__FILE__), 'ui', 'conversion_dialog.html'))
@@ -208,12 +209,36 @@ module BOMEngine
     def enqueue_ui_event(event)
       @result_path = event[:output_directory] || event['output_directory'] if @kind == :batch_export && (event[:output_directory] || event['output_directory'])
       stage = event[:stage] || event['stage'] || 'Converting model'
+      stage_key = stage.to_s.downcase
+      profile = event[:profile] || event['profile']
+      phase_id = if stage_key == 'snapshot_textures'
+                   'textures'
+                 elsif [:compiling, :validating, :publishing].include?(@state)
+                   @state.to_s == 'compiling' ? 'compile' : @state.to_s == 'validating' ? 'validate' : 'publish'
+                 else
+                   'capture'
+                 end
+      raw_processed = event.key?(:processed) ? event[:processed] : event['processed']
+      raw_total = event.key?(:total) ? event[:total] : event['total']
+      counter_key = [phase_id, profile.to_s, stage_key]
+      pass = (@progress_passes[counter_key] ||= { index: 1, previous: nil })
+      if raw_processed.is_a?(Numeric) && pass[:previous] && raw_processed < pass[:previous]
+        pass[:index] += 1
+      end
+      pass[:previous] = raw_processed if raw_processed.is_a?(Numeric)
+      unit = event[:unit] || event['unit'] || (stage_key == 'snapshot_textures' || stage_key == 'snapshot_materials' ? 'material' :
+        stage_key == 'snapshot_entities' ? 'entitas' : 'langkah')
       data = {
         stage: stage,
         phase: @state,
-        profile: event[:profile] || event['profile'],
-        processed: event[:processed] || event['processed'] || 0,
-        total: event[:total] || event['total'] || 0,
+        phase_id: phase_id,
+        pass_id: "#{stage_key}-#{pass[:index]}",
+        pass_index: pass[:index],
+        operation_label: event[:operation_label] || event['operation_label'] || event[:material_name] || event['material_name'],
+        unit: unit,
+        profile: profile,
+        processed: raw_processed,
+        total: raw_total,
         percent: event[:percent] || event['percent'] || 0.0,
         mode: event[:mode] || event['mode'],
         source_bytes: event[:source_bytes] || event['source_bytes'],

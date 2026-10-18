@@ -36,7 +36,7 @@ module BOMEngine
 
       results = Array.new(total)
       work.each do |mat, index|
-        checkpoint.call(stage: :snapshot_materials, processed: index, total: total) if checkpoint
+        checkpoint.call(stage: :snapshot_materials, processed: index, total: total, operation_label: mat.name, unit: 'material') if checkpoint
         c = mat.color
         entry = {
           id:            mat.object_id.to_s,
@@ -89,7 +89,7 @@ module BOMEngine
           # Keep a lossless PNG fallback. An opaque JPEG candidate is accepted
           # only after its decoded pixels and byte savings pass strict gates.
           begin
-            checkpoint.call(stage: :snapshot_textures, processed: index, total: total, force: true) if checkpoint
+            checkpoint.call(stage: :snapshot_textures, processed: index, total: total, operation_label: mat.name, unit: 'material', force: true) if checkpoint
             if optimize_textures
               staged = BOMCTextureOptimizer.stage(
                 texture: tex,
@@ -107,7 +107,7 @@ module BOMEngine
                 appearance: {material_type: entry[:material_type], colorize_type: entry[:colorize_type],
                   colorize_deltas: entry[:colorize_deltas]}
               ) do |_processed_pixels, _total_pixels|
-                checkpoint.call(stage: :snapshot_textures, processed: index, total: total) if checkpoint
+                checkpoint.call(stage: :snapshot_textures, processed: index, total: total, operation_label: mat.name, unit: 'material') if checkpoint
               end
               entry[:texture][:filename] = staged[:filename]
               entry[:texture][:staging_evidence] = staged[:evidence]
@@ -130,7 +130,7 @@ module BOMEngine
               written += 1 if tex.write(out_path, true)
               entry[:texture][:staging_evidence] = { selected: :staged_png, path: out_path, staged_bytes: File.size(out_path) } if File.file?(out_path)
             end
-            checkpoint.call(stage: :snapshot_textures, processed: index + 1, total: total, force: true) if checkpoint
+            checkpoint.call(stage: :snapshot_textures, processed: index + 1, total: total, operation_label: mat.name, unit: 'material', force: true) if checkpoint
           rescue => e
             raise if e.class.ancestors.any? { |ancestor| ancestor.respond_to?(:name) && ancestor.name.to_s.end_with?('Cancelled', 'TranscodeCancelledError') }
             raise if e.class.name.to_s.end_with?('ModelChanged')
@@ -154,7 +154,7 @@ module BOMEngine
                   selected_sha256: entry[:texture][:sha256]
                 }
                 written += 1
-                checkpoint.call(stage: :snapshot_textures, processed: index + 1, total: total, force: true) if checkpoint
+                checkpoint.call(stage: :snapshot_textures, processed: index + 1, total: total, operation_label: mat.name, unit: 'material', force: true) if checkpoint
               rescue StandardError => fallback_error
                 raise ArgumentError, "Cannot capture embedded texture '#{mat.name}' (#{e.message}); displayed-pixel fallback failed: #{fallback_error.message}"
               end

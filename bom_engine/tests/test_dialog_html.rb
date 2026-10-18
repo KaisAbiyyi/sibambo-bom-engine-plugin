@@ -20,7 +20,7 @@ class DialogHtmlTest < Minitest::Test
       injected = "<script>window.sketchup={ready:function(){},onReady:function(){},export:function(v){window.sent=JSON.parse(v)},start:function(v){window.sent=JSON.parse(v)},cancel:function(){},close:function(){},openFolder:function(){}};#{script};document.body.setAttribute('data-qa',encodeURIComponent(JSON.stringify(window.qa)));</script>"
       File.write(html, source.sub('</body>', "#{injected}</body>"))
       size = name == 'bomc_export_dialog.html' ? '680,795' :
-        (name == 'capture_options.html' ? '620,705' : (label == 'capture-complete' ? '620,755' : '620,485'))
+        (name == 'capture_options.html' ? '620,705' : (label == 'capture-complete' ? '620,755' : (label == 'progress-active' ? '620,640' : '620,485')))
       stdout, stderr, status = Open3.capture3(CHROME, '--headless=new', '--disable-gpu', '--no-first-run',
         '--no-default-browser-check', "--user-data-dir=#{File.join(folder, 'chrome')}",
         "--window-size=#{size}", '--virtual-time-budget=1000', '--dump-dom', "file:///#{html.tr('\\', '/')}")
@@ -42,6 +42,60 @@ class DialogHtmlTest < Minitest::Test
     result = render('conversion_dialog.html', "window.qa={text:document.body.innerText,processed:document.getElementById('processed').hidden};")
     refute_includes result['text'], '0 / 0'
     assert result['processed']
+  end
+
+  def test_phase_local_progress_never_claims_overall_completion
+    result = render('conversion_dialog.html', <<~JS, label: 'progress-active')
+      initializeConversion({job_id:31,sequence:1,state:'capturing',output_path:'D:/exports/model.bomc'});
+      updateProgress({job_id:31,sequence:2,state:'capturing',phase_id:'textures',stage:'SNAPSHOT_TEXTURES',operation_label:'mtl',unit:'material',processed:159,total:159});
+      window.qa={label:document.getElementById('overall-label').textContent,
+        counter:document.getElementById('processed').textContent,
+        operation:document.getElementById('operation').textContent,
+        wholeValue:document.getElementById('track').getAttribute('aria-valuenow'),
+        localPercent:document.getElementById('percent').textContent,
+        phase:document.querySelector('[data-phase="textures"]').dataset.status,
+        lastPhase:document.querySelector('[data-phase="publish"]').dataset.status,
+        height:document.documentElement.scrollHeight,viewport:window.innerHeight};
+    JS
+    assert_includes result['label'], 'belum diketahui'
+    assert_nil result['wholeValue']
+    assert_includes result['counter'], '159 / 159 material'
+    assert_includes result['operation'], 'mtl'
+    assert_includes result['localPercent'], 'dari fase'
+    assert_equal 'active', result['phase']
+    assert_equal 'waiting', result['lastPhase']
+    assert_operator result['height'], :<=, result['viewport'], 'active progress layout should fit the expanded dialog'
+  end
+
+  def test_impossible_counts_are_diagnostic_and_pass_restarts_are_labeled
+    result = render('conversion_dialog.html', <<~JS)
+      initializeConversion({job_id:32,sequence:1,state:'capturing',output_path:'D:/exports/model.bomc'});
+      updateProgress({job_id:32,sequence:2,state:'capturing',phase_id:'textures',stage:'SNAPSHOT_TEXTURES',processed:142,total:159});
+      updateProgress({job_id:32,sequence:3,state:'capturing',phase_id:'textures',stage:'SNAPSHOT_TEXTURES',processed:39,total:159});
+      const restarted=document.getElementById('processed').textContent;
+      updateProgress({job_id:32,sequence:4,state:'capturing',phase_id:'capture',stage:'SNAPSHOT_ENTITIES',processed:835632,total:198});
+      window.qa={restarted:restarted,warning:document.getElementById('counter-warning').textContent,
+        processedHidden:document.getElementById('processed').hidden,
+        globalPercent:document.getElementById('track').getAttribute('aria-valuenow')};
+    JS
+    assert_includes result['restarted'], 'pass 2'
+    assert_includes result['warning'], 'belum terukur'
+    assert result['processedHidden']
+    assert_nil result['globalPercent']
+  end
+
+  def test_texture_capture_returns_to_entity_capture_without_rewinding_completed_texture
+    result = render('conversion_dialog.html', <<~JS)
+      initializeConversion({job_id:33,sequence:1,state:'capturing',output_path:'D:/exports/model.bomc'});
+      updateProgress({job_id:33,sequence:2,state:'capturing',phase_id:'textures',stage:'SNAPSHOT_TEXTURES',processed:7,total:7});
+      updateProgress({job_id:33,sequence:3,state:'capturing',phase_id:'capture',stage:'SNAPSHOT_ENTITIES',processed:10,total:100});
+      window.qa={capture:document.querySelector('[data-phase="capture"]').dataset.status,
+        textures:document.querySelector('[data-phase="textures"]').dataset.status,
+        compile:document.querySelector('[data-phase="compile"]').dataset.status};
+    JS
+    assert_equal 'active', result['capture']
+    assert_equal 'completed', result['textures']
+    assert_equal 'waiting', result['compile']
   end
 
   def test_progress_dialog_rejects_stale_and_out_of_order_events

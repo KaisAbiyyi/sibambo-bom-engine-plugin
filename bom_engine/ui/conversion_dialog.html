@@ -22,6 +22,16 @@
     .done .bar { animation: none; transform: none; width: 100% !important; }
     .failed .bar, .cancelled .bar { animation: none; transform: none; width: 100% !important; background: var(--danger); }
     #stage { font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+    .phase-list { list-style: none; margin: 14px 0 18px; padding: 0; display: grid; gap: 7px; }
+    .phase-item { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+    .phase-item strong { color: var(--text, #292320); font-weight: 650; flex: 1; }
+    .phase-dot { display: inline-block; border-radius: 50%; width: 8px; height: 8px; background: var(--border-strong); flex: none; }
+    .phase-item[data-status="active"] .phase-dot { background: var(--maroon); box-shadow: 0 0 0 4px var(--maroon-wash); }
+    .phase-item[data-status="completed"] .phase-dot { background: #387355; }
+    .phase-item[data-status="failed"] .phase-dot { background: var(--danger); }
+    #operation { margin: 6px 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    #counter-warning { color: var(--danger); font-size: 12px; margin-top: 7px; }
+    .terminal .phase-list { display: none; }
     .meta { color: var(--muted); display: flex; flex-wrap: wrap; gap: 7px 16px; font-size: 12px; margin-top: 8px; }
     .meta span + span::before { color: var(--border-strong); content: '·'; margin-right: 14px; }
     #result { margin-top: 19px; }
@@ -50,8 +60,18 @@
   </div>
   <p class="path-note" id="path"></p>
   <div class="track" id="track" role="progressbar" aria-label="Kemajuan ekspor"><div class="bar" id="bar"></div></div>
+  <div class="status-detail" id="overall-label">Progres keseluruhan · sedang diproses (total pekerjaan belum diketahui)</div>
+  <ol class="phase-list" id="phase-list" aria-label="Tahapan konversi">
+    <li class="phase-item" data-phase="capture" data-status="waiting"><span class="phase-dot"></span><strong>Capture model</strong><span class="phase-status">Menunggu</span></li>
+    <li class="phase-item" data-phase="textures" data-status="waiting"><span class="phase-dot"></span><strong>Tekstur</strong><span class="phase-status">Menunggu</span></li>
+    <li class="phase-item" data-phase="compile" data-status="waiting"><span class="phase-dot"></span><strong>Kompilasi</strong><span class="phase-status">Menunggu</span></li>
+    <li class="phase-item" data-phase="validate" data-status="waiting"><span class="phase-dot"></span><strong>Validasi</strong><span class="phase-status">Menunggu</span></li>
+    <li class="phase-item" data-phase="publish" data-status="waiting"><span class="phase-dot"></span><strong>Publikasi</strong><span class="phase-status">Menunggu</span></li>
+  </ol>
   <div id="stage" role="status">Menyiapkan model…</div>
+  <div id="operation" hidden></div>
   <div class="meta"><span id="processed" hidden></span><span id="percent" hidden></span><span id="elapsed">0 detik</span><span id="backend-state">Backend menunggu</span></div>
+  <div id="counter-warning" hidden></div>
   <div class="meta"><span id="source" hidden></span><span id="candidate" hidden></span></div>
   <div id="result" hidden><div class="result-title" id="result-title"></div><div id="result-rows"></div></div>
   <p class="note" id="outcome-note" hidden></p>
@@ -69,6 +89,12 @@
   var backendState = 'created';
   var lastAcceptedEventAt = performance.now();
   var heartbeatTimer = null;
+  var elapsedAtEvent = 0;
+  var phaseOrder = ['capture','textures','compile','validate','publish'];
+  var textureSeen = false;
+  var currentCounterKey = '';
+  var previousCounter = null;
+  var localPassIndex = 1;
   function el(id) { return document.getElementById(id); }
   function formatBytes(value) {
     var n = Number(value);
@@ -89,6 +115,41 @@
     el('track').classList.remove('determinate');
     el('bar').style.width = '35%';
     el('track').removeAttribute('aria-valuenow');
+  }
+  function renderPhases(phase) {
+    var currentIndex = phaseOrder.indexOf(phase);
+    if (phase === 'textures') textureSeen = true;
+    phaseOrder.forEach(function(name, index) {
+      var node = document.querySelector('[data-phase="' + name + '"]');
+      var status = currentIndex < 0 ? 'waiting' : index < currentIndex ? 'completed' : index === currentIndex ? 'active' : 'waiting';
+      if (name === 'capture' && (phase === 'textures' || phase === 'capture')) status = 'active';
+      if (name === 'textures' && phase === 'capture') status = textureSeen ? 'completed' : 'waiting';
+      if (name === 'textures' && currentIndex > 1 && !textureSeen) status = 'skipped';
+      node.dataset.status = status;
+      node.querySelector('.phase-status').textContent = status === 'completed' ? 'Selesai' : status === 'active' ? 'Diproses' :
+        status === 'skipped' ? 'Tidak diperlukan' : 'Menunggu';
+    });
+  }
+  function phaseFromEvent(data) {
+    var explicit = String(data.phase_id || '').toLowerCase();
+    if (phaseOrder.indexOf(explicit) >= 0) return explicit;
+    var stage = String(data.stage || '').toLowerCase();
+    if (stage === 'snapshot_textures') return 'textures';
+    var state = String(data.state || '').toLowerCase();
+    return {compiling:'compile',validating:'validate',publishing:'publish'}[state] || 'capture';
+  }
+  function formatSeconds(value) {
+    var seconds = Math.max(0, Math.floor(value));
+    var hours = Math.floor(seconds / 3600);
+    var minutes = Math.floor((seconds % 3600) / 60);
+    var rest = seconds % 60;
+    return hours ? hours + 'j ' + minutes + 'm ' + rest + 'd' : minutes ? minutes + 'm ' + rest + 'd' : seconds + ' detik';
+  }
+  function updateClock(now) {
+    var age = Math.max(0, Number(now == null ? performance.now() : now) - lastAcceptedEventAt);
+    if (backendState !== 'completed' && backendState !== 'failed' && backendState !== 'cancelled') {
+      el('elapsed').textContent = formatSeconds(elapsedAtEvent + age / 1000);
+    }
   }
   function eventNumber(data) {
     var value = Number(data && data.sequence);
@@ -118,20 +179,32 @@
     if (backendState === 'failed') { status.textContent = 'Backend gagal'; return; }
     if (backendState === 'cancelling') { status.textContent = 'Membatalkan…'; return; }
     var age = Math.max(0, Number(now == null ? performance.now() : now) - lastAcceptedEventAt);
-    if (age > 10000) status.textContent = 'Belum ada checkpoint · backend sibuk atau macet';
+    if (age > 10000) status.textContent = 'Belum ada checkpoint ' + formatSeconds(age / 1000) + ' · backend sibuk atau macet';
     else if (age > 1500) status.textContent = 'Menunggu checkpoint · host/atomic call';
     else status.textContent = 'Backend aktif · ' + backendState;
   }
-  function refreshBackendHeartbeat(now) { renderBackendState(now); }
+  function refreshBackendHeartbeat(now) { renderBackendState(now); updateClock(now); }
   function initializeConversion(data) {
     if (!acceptEvent(data, true)) return;
     isCapture = data.capture === true;
     isBatchExport = data.batch_export === true;
-    el('title').textContent = isCapture ? 'Menyiapkan capture' : isBatchExport ? 'Menyiapkan 3 profil' : 'Menyiapkan ekspor';
+    el('title').textContent = data.title ? String(data.title) :
+      isCapture ? 'Menyiapkan capture' : isBatchExport ? 'Menyiapkan 3 profil' : 'Menyiapkan ekspor';
     el('detail').textContent = isCapture ? 'Visual, Research, dan Exact akan disimpan. Audit dilakukan terpisah.' :
       isBatchExport ? 'Visual, Research, dan Exact diproses berurutan ke folder baru. Hasil parsial bukan sukses.' : 'File diproses dengan validasi internal.';
     el('path').textContent = data.output_path || '';
-    el('build-label').textContent = isCapture ? 'PREVIEW · belum tersertifikasi' : isBatchExport ? 'Export All · 3 profil' : 'Ekspor BOMC';
+    el('build-label').textContent = isCapture ? 'PREVIEW · belum tersertifikasi' : isBatchExport ? 'Export All · 3 profil' :
+      /Evolution/i.test(String(data.title || '')) ? 'Evolution · kandidat' : 'Ekspor BOMC';
+    document.body.classList.remove('terminal');
+    elapsedAtEvent = 0;
+    currentCounterKey = '';
+    previousCounter = null;
+    localPassIndex = 1;
+    textureSeen = false;
+    renderPhases('capture');
+    el('counter-warning').hidden = true;
+    el('operation').hidden = true;
+    el('overall-label').textContent = 'Progres keseluruhan · sedang diproses (total pekerjaan belum diketahui)';
     resetProgressFacts();
     if (heartbeatTimer != null) clearInterval(heartbeatTimer);
     heartbeatTimer = setInterval(refreshBackendHeartbeat, 500);
@@ -141,19 +214,42 @@
     var stage = String(data.stage || 'Memproses model').replaceAll('_', ' ').toLowerCase();
     var profile = data.profile ? String(data.profile).toUpperCase() + ' · ' : '';
     el('stage').textContent = profile + stage;
+    var phase = phaseFromEvent(data);
+    renderPhases(phase);
+    var operation = data.operation_label == null ? '' : String(data.operation_label);
+    el('operation').hidden = !operation;
+    el('operation').textContent = operation ? 'Sedang menangani: ' + operation : '';
     var total = Number(data.total);
     var processed = Number(data.processed);
-    if (Number.isFinite(total) && total > 0 && Number.isFinite(processed)) {
+    var valid = data.total != null && data.processed != null && Number.isFinite(total) && total > 0 && Number.isFinite(processed) && processed >= 0 && processed <= total;
+    var key = [data.profile || '',phase,String(data.stage || ''),String(data.pass_id || '')].join('|');
+    if (key !== currentCounterKey) {
+      currentCounterKey = key;
+      previousCounter = null;
+      localPassIndex = Number(data.pass_index) > 0 ? Number(data.pass_index) : 1;
+    } else if (valid && previousCounter != null && processed < previousCounter) {
+      localPassIndex += 1;
+    }
+    if (valid) {
+      previousCounter = processed;
       var percent = Math.max(0, Math.min(100, processed * 100 / total));
-      el('processed').textContent = processed.toLocaleString() + ' / ' + total.toLocaleString() + ' entitas';
+      var unit = String(data.unit || 'langkah');
+      el('processed').textContent = processed.toLocaleString() + ' / ' + total.toLocaleString() + ' ' + unit + ' · fase saat ini' + (localPassIndex > 1 ? ' · pass ' + localPassIndex : '');
       el('processed').hidden = false;
-      el('percent').textContent = percent.toFixed(1) + '%';
+      el('percent').textContent = percent.toFixed(1) + '% dari fase';
       el('percent').hidden = false;
-      el('track').classList.add('determinate');
-      el('bar').style.width = percent + '%';
-      el('track').setAttribute('aria-valuenow', percent.toFixed(1));
-    } else { resetProgressFacts(); }
-    el('elapsed').textContent = Number(data.elapsed_seconds || 0).toFixed(1) + ' detik';
+      el('counter-warning').hidden = true;
+    } else {
+      el('processed').hidden = true;
+      el('percent').hidden = true;
+      el('counter-warning').textContent = 'Jumlah pekerjaan fase ini belum terukur dengan valid.';
+      el('counter-warning').hidden = false;
+    }
+    // The phase count must never become a fabricated overall completion percentage.
+    el('track').classList.remove('determinate');
+    el('track').removeAttribute('aria-valuenow');
+    elapsedAtEvent = Math.max(0, Number(data.elapsed_seconds) || 0);
+    updateClock();
     if (data.source_bytes != null) { el('source').textContent = 'SKP ' + formatBytes(data.source_bytes); el('source').hidden = false; }
     if (data.candidate_bytes != null) { el('candidate').textContent = 'Kandidat ' + formatBytes(data.candidate_bytes); el('candidate').hidden = false; }
     if (backendState === 'cancelling') { el('stage').textContent = 'Menghentikan proses dengan aman…'; el('cancel').disabled = true; }
@@ -162,6 +258,7 @@
   function setCancelling(data) { data = data || {}; data.state = 'cancelling'; return updateProgress(data); }
   function finish(status, title, detail) {
     document.body.className = status;
+    document.body.classList.add('terminal');
     el('status-icon').textContent = status === 'done' ? '✓' : '!';
     el('title').textContent = title; el('detail').textContent = detail;
     el('processed').hidden = true; el('percent').hidden = true; el('source').hidden = true; el('candidate').hidden = true;

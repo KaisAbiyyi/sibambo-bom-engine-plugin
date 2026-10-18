@@ -81,7 +81,7 @@ module BOMEngine
         @slice_processed = 0
       end
 
-      def checkpoint(stage:, processed:, total:, candidate_bytes: nil, source_bytes: nil, savings_bytes: nil, phase: nil, force: false)
+      def checkpoint(stage:, processed:, total:, candidate_bytes: nil, source_bytes: nil, savings_bytes: nil, phase: nil, force: false, operation_label: nil, unit: nil)
         raise Cancelled, 'BOMC export cancelled.' if @cancelled && @cancelled.call
 
         now = Float(@clock.call)
@@ -119,7 +119,9 @@ module BOMEngine
           savings_bytes: savings_bytes,
           phase: phase,
           target_items: @target_items,
-          reason: reason
+          reason: reason,
+          operation_label: operation_label,
+          unit: unit
         ) if @on_yield
         @slice_started = Float(@clock.call)
         @slice_processed = current_processed
