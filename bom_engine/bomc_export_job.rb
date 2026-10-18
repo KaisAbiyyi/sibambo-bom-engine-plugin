@@ -155,6 +155,7 @@ module BOMEngine
         source_bytes: source_bytes,
         savings_bytes: savings_bytes,
         phase: phase_for_stage(stage),
+        unit: 'tahap pipeline',
         force: true
       )
     end

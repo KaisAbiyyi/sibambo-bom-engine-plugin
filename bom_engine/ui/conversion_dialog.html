@@ -222,6 +222,7 @@
     var total = Number(data.total);
     var processed = Number(data.processed);
     var valid = data.total != null && data.processed != null && Number.isFinite(total) && total > 0 && Number.isFinite(processed) && processed >= 0 && processed <= total;
+    var pipelineMilestone = data.unit === 'tahap pipeline';
     var key = [data.profile || '',phase,String(data.stage || ''),String(data.pass_id || '')].join('|');
     if (key !== currentCounterKey) {
       currentCounterKey = key;
@@ -234,10 +235,12 @@
       previousCounter = processed;
       var percent = Math.max(0, Math.min(100, processed * 100 / total));
       var unit = String(data.unit || 'langkah');
-      el('processed').textContent = processed.toLocaleString() + ' / ' + total.toLocaleString() + ' ' + unit + ' · fase saat ini' + (localPassIndex > 1 ? ' · pass ' + localPassIndex : '');
+      el('processed').textContent = processed.toLocaleString() + ' / ' + total.toLocaleString() + ' ' + unit +
+        (pipelineMilestone ? ' · urutan tahap (bukan persen pekerjaan)' : ' · fase saat ini') +
+        (localPassIndex > 1 ? ' · pass ' + localPassIndex : '');
       el('processed').hidden = false;
       el('percent').textContent = percent.toFixed(1) + '% dari fase';
-      el('percent').hidden = false;
+      el('percent').hidden = pipelineMilestone;
       el('counter-warning').hidden = true;
     } else {
       el('processed').hidden = true;

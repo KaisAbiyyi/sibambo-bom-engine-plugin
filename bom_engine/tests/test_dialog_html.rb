@@ -98,6 +98,19 @@ class DialogHtmlTest < Minitest::Test
     assert_equal 'waiting', result['compile']
   end
 
+  def test_pipeline_step_index_does_not_pretend_to_be_phase_work_percentage
+    result = render('conversion_dialog.html', <<~JS)
+      initializeConversion({job_id:34,sequence:1,state:'capturing',output_path:'D:/exports/model.bomc'});
+      updateProgress({job_id:34,sequence:2,state:'compiling',phase_id:'compile',stage:'ENCODE_UV',unit:'tahap pipeline',processed:13,total:21});
+      window.qa={counter:document.getElementById('processed').textContent,
+        percentHidden:document.getElementById('percent').hidden,
+        wholeValue:document.getElementById('track').getAttribute('aria-valuenow')};
+    JS
+    assert_includes result['counter'], 'bukan persen pekerjaan'
+    assert result['percentHidden']
+    assert_nil result['wholeValue']
+  end
+
   def test_progress_dialog_rejects_stale_and_out_of_order_events
     result = render('conversion_dialog.html', <<~JS)
       initializeConversion({job_id:11,sequence:1,state:'capturing',output_path:'D:/one.bomc'});
