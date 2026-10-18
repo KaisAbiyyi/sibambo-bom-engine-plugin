@@ -26,6 +26,7 @@ module BOMEngine
     MAX_PNG_REPACK_PIXELS = 2_000_000
     POLICY_REVISION = 'adaptive-texture-7'.freeze
     SEMANTIC_COLORIZE_REVISION = 'exact-semantic-colorize-1'.freeze
+    SEMANTIC_VERIFY_BUDGET_SECONDS = 30.0
     LOSSLESS_SEARCH_REVISION = 'exact-webp-m4q75-m6q100mt-1'.freeze
     JCM_POLICY_REVISION = 'exact-jcm-2'.freeze
 
@@ -491,8 +492,10 @@ module BOMEngine
       colorized = texture.image_rep(true)
       proof = BOMCSketchupColorize.verify(
         uncolorized: uncolorized, colorized: colorized, mode: mode,
-        deltas: deltas, checkpoint: checkpoint
+        deltas: deltas, checkpoint: checkpoint,
+        max_seconds: SEMANTIC_VERIFY_BUDGET_SECONDS
       )
+      PerformanceTrace.increment(:texture_semantic_verify_timeouts, 1) if proof[:reason] == :time_budget_exceeded
       return nil unless proof[:passed]
 
       preferred = File.extname(source_path.to_s).downcase

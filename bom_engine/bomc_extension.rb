@@ -44,7 +44,11 @@ module BOMEngine
 
     def output_directory(model)
       path = model.path.to_s
-      return File.join(File.dirname(path), 'model-eval-exports') unless path.empty?
+      return File.join(File.dirname(path), 'model-eval-exports') if !path.empty? && (!Gem.win_platform? || path.match?(/\AD:[\\\/]/i))
+
+      if Gem.win_platform? && Dir.exist?('D:/')
+        return 'D:/SibamboExports'
+      end
 
       profile = ENV['USERPROFILE'].to_s
       profile = Dir.home if profile.empty?
@@ -199,6 +203,9 @@ module BOMEngine
     end
 
     def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil, allow_jpeg_color_map: nil, prepared_color_maps: nil, candidate_cache: nil, performance_trace: nil)
+      if Gem.win_platform? && Dir.exist?('D:/') && !File.expand_path(output_path).match?(/\AD:[\\\/]/i)
+        raise ArgumentError, 'Simpan hasil ekspor BOMC di drive D:.'
+      end
       profile = normalize_profile(profile)
       jcm_enabled = resolve_jpeg_color_map(profile, allow_jpeg_color_map)
       processing = settings || BOMCProcessing.settings(:balanced)
@@ -234,7 +241,7 @@ module BOMEngine
       write_all_status(directory, 'in_progress', records)
       begin
         progress.call(stage: :PREPARING_ALL, processed: 0, total: 0, output_directory: directory, profile: :visual)
-        Dir.mktmpdir('bomc-candidates') do |cache_dir|
+        Dir.mktmpdir('bomc-candidates', parent) do |cache_dir|
           cache = { directory: cache_dir, entries: {}, hits: 0, jpeg_quality: {}, jpeg_quality_hits: 0 }
           [:visual, :research, :exact].each do |profile|
             active_profile = profile
@@ -410,7 +417,9 @@ module BOMEngine
     end
 
     def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE, diagnostics: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil, processing: nil, performance_trace: nil)
-      texture_directory = Dir.mktmpdir('bomc-textures')
+      parent = File.dirname(File.expand_path(output_path))
+      FileUtils.mkdir_p(parent)
+      texture_directory = Dir.mktmpdir('bomc-textures', parent)
       effective_cache = candidate_cache
       unless effective_cache
         cache_directory = File.join(texture_directory, 'candidate-cache')

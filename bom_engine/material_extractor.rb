@@ -133,7 +133,34 @@ module BOMEngine
             checkpoint.call(stage: :snapshot_textures, processed: index + 1, total: total, force: true) if checkpoint
           rescue => e
             raise if e.class.ancestors.any? { |ancestor| ancestor.respond_to?(:name) && ancestor.name.to_s.end_with?('Cancelled', 'TranscodeCancelledError') }
-            Logger.warn("Could not write texture for '#{mat.name}': #{e.message}") if defined?(Logger)
+            raise if e.class.name.to_s.end_with?('ModelChanged')
+            if optimize_textures
+              # An embedded SketchUp texture is authoritative even when its
+              # original disk path points at another machine. Never silently
+              # fall back to the stale external filename after staging fails.
+              fallback_path = File.join(texture_dir, "#{safe_name}.fallback.png")
+              begin
+                rep = tex.image_rep(true)
+                rep.save_file(fallback_path)
+                raise 'Displayed-pixel fallback could not be saved' unless File.file?(fallback_path) && File.size(fallback_path).positive?
+                fallback_bytes = File.binread(fallback_path).b.freeze
+                entry[:texture][:filename] = File.basename(fallback_path)
+                entry[:texture][:bytes] = fallback_bytes
+                entry[:texture][:byte_length] = fallback_bytes.bytesize
+                entry[:texture][:sha256] = Digest::SHA256.hexdigest(fallback_bytes).freeze
+                entry[:texture][:staging_evidence] = {
+                  selected: :staged_png, reason: :displayed_pixel_fallback,
+                  original_error: "#{e.class}: #{e.message}",
+                  selected_sha256: entry[:texture][:sha256]
+                }
+                written += 1
+                checkpoint.call(stage: :snapshot_textures, processed: index + 1, total: total, force: true) if checkpoint
+              rescue StandardError => fallback_error
+                raise ArgumentError, "Cannot capture embedded texture '#{mat.name}' (#{e.message}); displayed-pixel fallback failed: #{fallback_error.message}"
+              end
+            else
+              Logger.warn("Could not write texture for '#{mat.name}': #{e.message}") if defined?(Logger)
+            end
           end
         end
 

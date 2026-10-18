@@ -164,6 +164,9 @@ module BOMEngine
     end
 
     def export(model, engine:, profile:, output_path:, processing: nil, progress: nil, active_model: nil, performance_trace: nil)
+      if Gem.win_platform? && Dir.exist?('D:/') && !File.expand_path(output_path).match?(/\AD:[\\\/]/i)
+        raise ArgumentError, 'Simpan hasil ekspor Evolution di drive D:.'
+      end
       engine = normalize_engine(engine)
       profile = normalize_profile(profile)
       output_path = normalize_output_path(output_path, engine: engine, profile: profile)

@@ -14,18 +14,36 @@ module BOMEngine
   module EvolutionValidator
     class ValidationError < StandardError; end
     UINT32_NONE = 0xffff_ffff
+    E1_STREAM_READBACK_MIN_BYTES = 256 * 1024 * 1024
     module_function
 
     def validate_file!(path, engine:, expected_profile: nil, source_document: nil, artifact_sha256: nil)
       raise ValidationError, "Evolution candidate missing: #{path}" unless File.file?(path) && File.size(path).positive?
-      decoded = PerformanceTrace.stage(:evolution_readback, counts: { bytes: File.size(path) }) { read(path, engine: engine) }
+      streamed_e1 = engine.to_s.downcase == 'e1' && File.size(path) >= E1_STREAM_READBACK_MIN_BYTES
+      if streamed_e1 && !source_document
+        raise ValidationError, 'Large E1 readback requires the original detached document for streaming verification'
+      end
+      streamed_comparison = nil
+      decoded = PerformanceTrace.stage(:evolution_readback, counts: { bytes: File.size(path) }) do
+        if streamed_e1
+          streamed_comparison = verify_large_e1!(path, source_document)
+          { engine: 'e1', profile: source_document.fetch('profile'), assets: source_document.fetch('assets') }
+        else
+          read(path, engine: engine)
+        end
+      end
       profile = decoded.fetch(:profile)
       if expected_profile && profile != expected_profile.to_s
         raise ValidationError, "Profile mismatch: expected #{expected_profile}, got #{profile}"
       end
-      comparison = source_document ? PerformanceTrace.stage(:evolution_compare) { compare!(source_document, decoded) } : nil
+      comparison = streamed_comparison || (source_document ? PerformanceTrace.stage(:evolution_compare) { compare!(source_document, decoded) } : nil)
       sha256 = if artifact_sha256
-                 normalize_sha256(artifact_sha256)
+                 expected_sha = normalize_sha256(artifact_sha256)
+                 if streamed_e1
+                   actual_sha = Digest::SHA256.file(path).hexdigest
+                   raise ValidationError, 'Large E1 readback SHA-256 differs from written candidate' unless actual_sha == expected_sha
+                 end
+                 expected_sha
                else
                  PerformanceTrace.stage(:artifact_hash, counts: { bytes: File.size(path) }) { Digest::SHA256.file(path).hexdigest }
                end
@@ -37,6 +55,24 @@ module BOMEngine
         sha256: sha256,
         comparison: comparison,
         decoded: decoded
+      }
+    end
+
+    def verify_large_e1!(path, source_document)
+      raise ValidationError, 'Large E1 readback requires an E1 detached document' unless source_document['engine'] == 'e1'
+      begin
+        verified_bytes = EvolutionTreeWriter.verify_stream!(path, source_document)
+      rescue ArgumentError => error
+        raise ValidationError, "Large E1 streaming readback mismatch: #{error.message}"
+      end
+      raise ValidationError, 'Large E1 readback byte count differs' unless verified_bytes == File.size(path)
+
+      counts = occurrence_geometry_counts(source_document.fetch('graph'))
+      {
+        mode: 'world-expanded-byte-exact-stream', occurrences: counts.fetch(:faces),
+        edges: counts.fetch(:edges), scenes: Array(source_document.dig('graph', 'scenes')).length,
+        clip_planes: Array(source_document.dig('graph', 'clip_planes')).length,
+        assets: Array(source_document['assets']).length, verified_bytes: verified_bytes
       }
     end
 

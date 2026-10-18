@@ -132,6 +132,33 @@ class TestEvolutionProfiles < Test::Unit::TestCase
     end
   end
 
+  def test_e1_streaming_readback_detects_mutation_truncation_and_trailing_bytes
+    with_document(:e1, :exact) do |dir, document|
+      path = File.join(dir, 'stream-readback.json')
+      BOMEngine::EvolutionTreeWriter.write(path, document)
+      expected = File.binread(path)
+      assert_equal expected.bytesize, BOMEngine::EvolutionTreeWriter.verify_stream!(path, document)
+      proof = BOMEngine::EvolutionValidator.verify_large_e1!(path, document)
+      assert_equal 'world-expanded-byte-exact-stream', proof.fetch(:mode)
+      assert_equal 2, proof.fetch(:occurrences)
+
+      File.open(path, 'r+b') { |file| file.seek(1); file.write('x') }
+      assert_raise(BOMEngine::EvolutionValidator::ValidationError) do
+        BOMEngine::EvolutionValidator.verify_large_e1!(path, document)
+      end
+
+      File.binwrite(path, expected.byteslice(0, expected.bytesize - 1))
+      assert_raise(BOMEngine::EvolutionValidator::ValidationError) do
+        BOMEngine::EvolutionValidator.verify_large_e1!(path, document)
+      end
+
+      File.binwrite(path, expected + 'junk')
+      assert_raise(BOMEngine::EvolutionValidator::ValidationError) do
+        BOMEngine::EvolutionValidator.verify_large_e1!(path, document)
+      end
+    end
+  end
+
   def test_compact_e2_e3_validation_never_builds_world_e1_tree
     original = BOMEngine::EvolutionTreeWriter.method(:build)
     BOMEngine::EvolutionTreeWriter.define_singleton_method(:build) do |_document|

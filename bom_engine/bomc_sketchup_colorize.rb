@@ -7,9 +7,11 @@ module BOMEngine
     EQUAL_TOL = 1.0e-3
     module_function
 
-    def verify(uncolorized:, colorized:, mode:, deltas:, checkpoint: nil)
+    def verify(uncolorized:, colorized:, mode:, deltas:, checkpoint: nil, max_seconds: nil)
       source=frame(uncolorized); target=frame(colorized)
       return {passed:false,reason: :dimension_mismatch} unless source[:width]==target[:width] && source[:height]==target[:height]
+      deadline = max_seconds && Process.clock_gettime(Process::CLOCK_MONOTONIC) + max_seconds
+      return {passed:false,reason: :time_budget_exceeded,processed:0} if deadline && max_seconds <= 0
       h,l,s=normalize_deltas(deltas); shift=mode.to_s=='shift'
       digest=Digest::SHA256.new; base_digest=Digest::SHA256.new
       processed=0
@@ -21,7 +23,12 @@ module BOMEngine
           return {passed:false,reason: :pixel_mismatch,processed:processed} unless [rr,rg,rb,sa]==[tr,tg,tb,ta]
           base_digest.update([sr,sg,sb,sa].pack('C4')); digest.update([rr,rg,rb,sa].pack('C4'))
           so+=source[:channels]; to+=target[:channels]; processed+=1
-          checkpoint.call(processed,source[:width]*source[:height]) if checkpoint && (processed%32_768).zero?
+          if (processed%32_768).zero?
+            checkpoint.call(processed,source[:width]*source[:height]) if checkpoint
+            if deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+              return {passed:false,reason: :time_budget_exceeded,processed:processed}
+            end
+          end
         end
       end
       {passed:true,width:source[:width],height:source[:height],pixels:processed,

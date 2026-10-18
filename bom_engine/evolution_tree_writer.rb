@@ -7,6 +7,38 @@ require_relative 'performance_trace'
 
 module BOMEngine
   module EvolutionTreeWriter
+    # Verifies arbitrarily large E1 artifacts without allocating the entire
+    # JSON document or a second world-expanded tree. The expected byte stream
+    # is emitted from the validated detached document.
+    class ReadbackSink
+      CHUNK_BYTES = 1024 * 1024
+
+      def initialize(reader)
+        @reader = reader
+        @offset = 0
+      end
+
+      def write(value)
+        bytes = value.to_s.b
+        cursor = 0
+        while cursor < bytes.bytesize
+          length = [CHUNK_BYTES, bytes.bytesize - cursor].min
+          expected = bytes.byteslice(cursor, length)
+          actual = @reader.read(length)
+          raise ArgumentError, "E1 readback differs at byte #{@offset}" unless actual == expected
+
+          cursor += length
+          @offset += length
+        end
+        bytes.bytesize
+      end
+
+      def finish!
+        raise ArgumentError, 'E1 readback has trailing bytes' unless @reader.read(1).nil?
+        @offset
+      end
+    end
+
     module_function
 
     def build(document)
@@ -48,47 +80,12 @@ module BOMEngine
 
     def write(path, document)
       PerformanceTrace.stage(:e1_serialize) do
-        EvolutionDocument.validate!(document)
-        graph = document.fetch('graph')
-        definitions = index_by_id(graph['definitions'])
-        meshes = index_by_id(graph['meshes'])
-        nodes = index_by_id(graph['nodes'])
-        transforms = Array(graph['transforms'])
-        prepared_definitions = prepare_definitions(definitions, meshes)
-        root = Array(graph['nodes']).find { |node| node['kind'] == 'root' }
-        raise ArgumentError, 'E1 requires exactly one root node' unless root
-        root_matrix = transform_at(transforms, root['transform_id'])
         result = nil
         PerformanceTrace.stage(:e1_file_write) do
           File.open(path, 'wb') do |file|
             digest_io = EvolutionStream::DigestIO.new(file)
             io = EvolutionStream::BufferedIO.new(digest_io)
-            io.write('{')
-            write_pair(io, 'schema_version', '2.2', true)
-            write_pair(io, 'format', 'sibambo-evolution-e1')
-            write_pair(io, 'profile', document.fetch('profile'))
-            write_pair(io, 'evolution', graph.fetch('evolution'))
-            write_pair(io, 'units', graph['units'] || {})
-            write_pair(io, 'coordinate_system', graph['coordinate_system'] || {})
-            write_pair(io, 'source', graph['source'] || {})
-            write_pair(io, 'metadata', graph['metadata'] || {})
-            write_pair(io, 'tags', graph['tags'] || [])
-            write_pair(io, 'materials', graph['materials'] || [])
-            io.write(',')
-            io.write(JSON.generate('assets'))
-            io.write(':')
-            EvolutionStream.write_assets(io, document.fetch('assets'))
-            write_pair(io, 'scenes', graph['scenes'] || [])
-            write_pair(io, 'clip_planes', graph['clip_planes'] || [])
-            write_pair(io, 'scene_fidelity_manifest', graph['scene_fidelity_manifest'] || {})
-            io.write(',')
-            io.write(JSON.generate('entities'))
-            io.write(':')
-            write_definition_entities(
-              io, root.fetch('definition_id'), root_matrix, root.fetch('id'), nil,
-              prepared_definitions: prepared_definitions, nodes: nodes, transforms: transforms, ancestry: []
-            )
-            io.write('}')
+            emit(io, document)
             io.flush
             digest_io.flush
             result = { path: path, bytes: digest_io.bytes, sha256: digest_io.sha256 }
@@ -96,6 +93,56 @@ module BOMEngine
         end
         result
       end
+    end
+
+    def verify_stream!(path, document)
+      EvolutionDocument.validate!(document)
+      File.open(path, 'rb') do |reader|
+        sink = ReadbackSink.new(reader)
+        io = EvolutionStream::BufferedIO.new(sink)
+        emit(io, document)
+        io.flush
+        sink.finish!
+      end
+    end
+
+    def emit(io, document)
+      EvolutionDocument.validate!(document)
+      graph = document.fetch('graph')
+      definitions = index_by_id(graph['definitions'])
+      meshes = index_by_id(graph['meshes'])
+      nodes = index_by_id(graph['nodes'])
+      transforms = Array(graph['transforms'])
+      prepared_definitions = prepare_definitions(definitions, meshes)
+      root = Array(graph['nodes']).find { |node| node['kind'] == 'root' }
+      raise ArgumentError, 'E1 requires exactly one root node' unless root
+      root_matrix = transform_at(transforms, root['transform_id'])
+      io.write('{')
+      write_pair(io, 'schema_version', '2.2', true)
+      write_pair(io, 'format', 'sibambo-evolution-e1')
+      write_pair(io, 'profile', document.fetch('profile'))
+      write_pair(io, 'evolution', graph.fetch('evolution'))
+      write_pair(io, 'units', graph['units'] || {})
+      write_pair(io, 'coordinate_system', graph['coordinate_system'] || {})
+      write_pair(io, 'source', graph['source'] || {})
+      write_pair(io, 'metadata', graph['metadata'] || {})
+      write_pair(io, 'tags', graph['tags'] || [])
+      write_pair(io, 'materials', graph['materials'] || [])
+      io.write(',')
+      io.write(JSON.generate('assets'))
+      io.write(':')
+      EvolutionStream.write_assets(io, document.fetch('assets'))
+      write_pair(io, 'scenes', graph['scenes'] || [])
+      write_pair(io, 'clip_planes', graph['clip_planes'] || [])
+      write_pair(io, 'scene_fidelity_manifest', graph['scene_fidelity_manifest'] || {})
+      io.write(',')
+      io.write(JSON.generate('entities'))
+      io.write(':')
+      write_definition_entities(
+        io, root.fetch('definition_id'), root_matrix, root.fetch('id'), nil,
+        prepared_definitions: prepared_definitions, nodes: nodes, transforms: transforms, ancestry: []
+      )
+      io.write('}')
     end
 
     def instantiate_definition(definition_id, world, path, inherited_material_id, prepared_definitions:, nodes:, transforms:, ancestry:)

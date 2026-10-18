@@ -16,6 +16,18 @@ class TestBOMCSemanticColorize < Test::Unit::TestCase
     assert_equal [147, 156, 158], rgb
   end
 
+  def test_semantic_verification_can_decline_an_over_budget_proof
+    frame = Struct.new(:width, :height, :bits_per_pixel, :row_padding, :data).new(
+      1, 1, 32, 0, "\x80\x80\x80\xff".b
+    )
+    result = BOMEngine::BOMCSketchupColorize.verify(
+      uncolorized: frame, colorized: frame, mode: :shift,
+      deltas: { h: 0, l: 0, s: 0 }, max_seconds: 0
+    )
+    assert_equal false, result[:passed]
+    assert_equal :time_budget_exceeded, result[:reason]
+  end
+
   def test_material_v2_round_trips_parametric_colorization
     graph = {
       materials: [{

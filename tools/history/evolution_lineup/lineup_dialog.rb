@@ -13,7 +13,11 @@ module SibamboHistory
       class << self
         def default_path(slot, model, profile = 'visual')
           source = model.path.to_s
-          directory = source.empty? ? File.join(Dir.home, 'Documents', 'BOMEngineExports') : File.dirname(source)
+          directory = if Gem.win_platform? && Dir.exist?('D:/')
+                        source.match?(/\AD:[\\\/]/i) ? File.dirname(source) : 'D:/SibamboExports'
+                      else
+                        source.empty? ? File.join(Dir.home, 'Documents', 'BOMEngineExports') : File.dirname(source)
+                      end
           base = source.empty? ? 'Untitled' : File.basename(source, File.extname(source))
           extension = case slot.fetch('engine')
                       when 'e1' then '.json'
@@ -34,6 +38,9 @@ module SibamboHistory
           path = values.fetch(:output_path).to_s.strip
           raise ArgumentError, 'Lokasi output belum diisi.' if path.empty?
           raise ArgumentError, 'Gunakan lokasi output lengkap.' unless Pathname.new(path).absolute?
+          if Gem.win_platform? && Dir.exist?('D:/') && !File.expand_path(path).match?(/\AD:[\\\/]/i)
+            raise ArgumentError, 'Pilih lokasi ekspor di drive D:.'
+          end
           actual = target.normalize_output_path(path, profile)
           raise ArgumentError, "Nama output untuk profil ini harus: #{actual}" unless actual == path
           { output_path: path, batch_size: batch, profile: profile.to_sym }
