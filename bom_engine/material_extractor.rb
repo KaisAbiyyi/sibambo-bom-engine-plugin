@@ -3,6 +3,7 @@
 # BOMC texture staging is evidence-gated and remains independent of geometry.
 
 require 'digest'
+require 'zlib'
 require_relative 'bomc_texture_optimizer'
 require_relative 'performance_trace'
 
@@ -13,6 +14,61 @@ module BOMEngine
     # @param tw          [Sketchup::TextureWriter]
     # @param texture_dir [String, nil] output directory; nil means skip texture export
     # @return            [Array<Hash>] material descriptors
+    def self.write_pixel_fallback_png(rep, path)
+      width = Integer(rep.width)
+      height = Integer(rep.height)
+      bits = Integer(rep.bits_per_pixel)
+      padding = Integer(rep.row_padding)
+      raise ArgumentError, 'Invalid embedded pixel dimensions' if width <= 0 || height <= 0 || padding < 0
+      raise ArgumentError, "Unsupported embedded pixel format #{bits}" unless [24, 32].include?(bits)
+
+      channels = bits / 8
+      row_bytes = width * channels
+      stride = row_bytes + padding
+      data = rep.data
+      unless data.is_a?(String) && data.bytesize == stride * height
+        raise ArgumentError, 'Embedded texture pixel buffer is unavailable or incomplete'
+      end
+      windows_bgr = Gem.win_platform?
+      chunk = lambda do |io, type, bytes|
+        io.write([bytes.bytesize].pack('N'))
+        io.write(type)
+        io.write(bytes)
+        io.write([Zlib.crc32(type + bytes)].pack('N'))
+      end
+      File.open(path, 'wb') do |io|
+        io.write("\x89PNG\r\n\x1a\n".b)
+        chunk.call(io, 'IHDR'.b, [width, height, 8, channels == 4 ? 6 : 2, 0, 0, 0].pack('NNCCCCC'))
+        compressor = Zlib::Deflate.new(Zlib::DEFAULT_COMPRESSION)
+        begin
+          height.times do |row_index|
+            row = data.byteslice(row_index * stride, row_bytes)
+            if windows_bgr
+              offset = 0
+              while offset < row_bytes
+                blue = row.getbyte(offset)
+                row.setbyte(offset, row.getbyte(offset + 2))
+                row.setbyte(offset + 2, blue)
+                offset += channels
+              end
+            end
+            encoded = compressor.deflate("\x00".b + row)
+            chunk.call(io, 'IDAT'.b, encoded) unless encoded.empty?
+          end
+          final = compressor.finish
+          chunk.call(io, 'IDAT'.b, final) unless final.empty?
+        ensure
+          compressor.close
+        end
+        chunk.call(io, 'IEND'.b, ''.b)
+      end
+      raise 'Lossless pixel fallback PNG was not written' unless File.file?(path) && File.size(path).positive?
+      path
+    rescue StandardError
+      File.delete(path) if File.file?(path)
+      raise
+    end
+
     def self.extract(model, tw, texture_dir, checkpoint: nil, optimize_textures: false, profile: :visual, semantic_class: :class_b, material_classes: nil, allow_jpeg_color_map: false, allow_semantic_colorize: true, record_reference_pixel_hash: false, prepared_color_maps: nil, candidate_cache: nil)
       Dir.mkdir(texture_dir) if texture_dir && !Dir.exist?(texture_dir)
       written = 0
@@ -141,7 +197,18 @@ module BOMEngine
               fallback_path = File.join(texture_dir, "#{safe_name}.fallback.png")
               begin
                 rep = tex.image_rep(true)
-                rep.save_file(fallback_path)
+                fallback_method = :image_rep_save
+                begin
+                  rep.save_file(fallback_path)
+                  raise 'SketchUp ImageRep save produced no PNG' unless File.file?(fallback_path) && File.size(fallback_path).positive?
+                rescue StandardError => save_error
+                  # SketchUp can expose embedded pixels even when its native
+                  # file serializer refuses to save the image. Encode those
+                  # exact displayed pixels as lossless PNG; no stale source
+                  # path or fabricated placeholder is permitted.
+                  write_pixel_fallback_png(rep, fallback_path)
+                  fallback_method = :raw_pixel_png
+                end
                 raise 'Displayed-pixel fallback could not be saved' unless File.file?(fallback_path) && File.size(fallback_path).positive?
                 fallback_bytes = File.binread(fallback_path).b.freeze
                 entry[:texture][:filename] = File.basename(fallback_path)
@@ -150,6 +217,7 @@ module BOMEngine
                 entry[:texture][:sha256] = Digest::SHA256.hexdigest(fallback_bytes).freeze
                 entry[:texture][:staging_evidence] = {
                   selected: :staged_png, reason: :displayed_pixel_fallback,
+                  fallback_method: fallback_method,
                   original_error: "#{e.class}: #{e.message}",
                   selected_sha256: entry[:texture][:sha256]
                 }

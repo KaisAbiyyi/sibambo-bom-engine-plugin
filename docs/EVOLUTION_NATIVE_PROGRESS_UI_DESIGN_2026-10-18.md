@@ -4,6 +4,8 @@ Date: 2026-10-18 (Asia/Jakarta). Status: **IMPLEMENTED IN SOURCE / HEADLESS-VERI
 
 Implementation location: `bom_engine/conversion_job.rb` owns backend envelopes, pass identities and named phases; `bom_engine/bomc_processing.rb` forwards labels and units; `bom_engine/material_extractor.rb` supplies texture/material names; `bom_engine/ui/conversion_dialog.html` renders the five stages, elapsed heartbeat, pass-local counters and invalid-count warnings. `bom_engine/bomc_export_job.rb` labels synthetic stage transition indices as **pipeline milestones**, which are displayed without a phase percentage or overall ETA. `bom_engine/tests/test_conversion_job.rb` and `bom_engine/tests/test_dialog_html.rb` provide synthetic and actual headless Chrome assertions. Current backend event semantics support **phase-local progress and diagnostic stall detection**; detailed per-codec pass names and backend-authoritative full-job ETA remain proposed future enhancements. Capture may resume after the nested texture phase without resetting the displayed texture completion.
 
+2026-10-19 native corrective follow-up: `CanonicalGraphBuilder` reports **recursive work checkpoints**, not root entity counts. The prior `SNAPSHOT_ENTITIES` processed/total pair incorrectly mixed these units (e.g. 2,658,368/198). Backend now emits `unit: 'langkah kanonis'`, `total: 0` (unknown), with the true recursive processed count. Dialog shows **N langkah kanonis diproses · total belum diketahui** without a fabricated ratio/percentage. The native terminal campaign must likewise report this as open-ended work rather than an impossible entity count. No whole-job ETA is proven.
+
 ## User-visible layout
 
 ```

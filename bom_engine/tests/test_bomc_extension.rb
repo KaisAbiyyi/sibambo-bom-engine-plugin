@@ -30,6 +30,9 @@ module BOMEngine
       end
 
       def run
+        counter = BOMCExtension.send(:canonical_work_checkpoint, { processed: 2_658_368 })
+        assert(counter[:processed] == 2_658_368 && counter[:total] == 0 && counter[:unit] == 'langkah kanonis',
+          'recursive canonical work is open-ended and is never divided by root entity count')
         saved = BOMCExtension.output_path(FakeModel.new('D:/models/RUMAH_L.skp'))
         unsaved = BOMCExtension.output_path(FakeModel.new(''))
         assert(

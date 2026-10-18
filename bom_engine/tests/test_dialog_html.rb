@@ -84,6 +84,22 @@ class DialogHtmlTest < Minitest::Test
     assert_nil result['globalPercent']
   end
 
+  def test_canonical_recursive_work_count_is_open_ended_not_divided_by_root_entities
+    result = render('conversion_dialog.html', <<~JS)
+      initializeConversion({job_id:36,sequence:1,state:'capturing',output_path:'D:/exports/model.bomc'});
+      updateProgress({job_id:36,sequence:2,state:'capturing',phase_id:'capture',stage:'SNAPSHOT_ENTITIES',unit:'langkah kanonis',processed:2658368,total:0});
+      window.qa={counter:document.getElementById('processed').textContent,
+        percentHidden:document.getElementById('percent').hidden,
+        warningHidden:document.getElementById('counter-warning').hidden,
+        globalPercent:document.getElementById('track').getAttribute('aria-valuenow')};
+    JS
+    assert_includes result['counter'], 'langkah kanonis diproses'
+    assert_includes result['counter'], 'total belum diketahui'
+    assert result['percentHidden']
+    assert result['warningHidden']
+    assert_nil result['globalPercent']
+  end
+
   def test_texture_capture_returns_to_entity_capture_without_rewinding_completed_texture
     result = render('conversion_dialog.html', <<~JS)
       initializeConversion({job_id:33,sequence:1,state:'capturing',output_path:'D:/exports/model.bomc'});

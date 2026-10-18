@@ -222,6 +222,8 @@
     var total = Number(data.total);
     var processed = Number(data.processed);
     var valid = data.total != null && data.processed != null && Number.isFinite(total) && total > 0 && Number.isFinite(processed) && processed >= 0 && processed <= total;
+    var openEnded = data.total != null && total === 0 && data.processed != null &&
+      Number.isFinite(processed) && processed >= 0 && data.unit === 'langkah kanonis';
     var pipelineMilestone = data.unit === 'tahap pipeline';
     var key = [data.profile || '',phase,String(data.stage || ''),String(data.pass_id || '')].join('|');
     if (key !== currentCounterKey) {
@@ -241,6 +243,12 @@
       el('processed').hidden = false;
       el('percent').textContent = percent.toFixed(1) + '% dari fase';
       el('percent').hidden = pipelineMilestone;
+      el('counter-warning').hidden = true;
+    } else if (openEnded) {
+      previousCounter = processed;
+      el('processed').textContent = processed.toLocaleString() + ' langkah kanonis diproses · total belum diketahui';
+      el('processed').hidden = false;
+      el('percent').hidden = true;
       el('counter-warning').hidden = true;
     } else {
       el('processed').hidden = true;

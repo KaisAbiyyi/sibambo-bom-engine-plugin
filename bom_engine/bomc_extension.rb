@@ -718,11 +718,7 @@ module BOMEngine
                   spatial: {},
                   texture_writer: texture_writer,
                   progress: lambda do |event|
-                    checkpoint.call(
-                      stage: :snapshot_entities,
-                      processed: event[:processed].to_i,
-                      total: entity_total
-                    )
+                    checkpoint.call(canonical_work_checkpoint(event))
                   end,
                   # Probe the adaptive controller frequently without paying a
                   # callback on every entity. The controller still owns the
@@ -759,6 +755,18 @@ module BOMEngine
       )
     end
     private_class_method :snapshot_model
+
+    def canonical_work_checkpoint(event)
+      {
+        stage: :snapshot_entities,
+        processed: event[:processed].to_i,
+        # CanonicalGraphBuilder counts recursive work checkpoints, NOT root
+        # entities. Its final work count is unknown during traversal.
+        total: 0,
+        unit: 'langkah kanonis'
+      }
+    end
+    private_class_method :canonical_work_checkpoint
 
     def validate_compiled_result(result)
       decoded = BOMCDecoder.decode(result.fetch(:bytes))
