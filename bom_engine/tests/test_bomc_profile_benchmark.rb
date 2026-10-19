@@ -306,23 +306,46 @@ class TestBOMCProfileBenchmark < Test::Unit::TestCase
     assert_equal 2, rumah_g.count { |c| ['research', 'visual'].include?(c[:profile]) && c[:availability] == 'missing' && c[:status] == 'incomplete' }
   end
 
-  def test_evolution_corpus_runs_and_passes_all_profiles
+  # A clean GitHub checkout intentionally has no private SketchUp source models.
+  # This test must still exercise all profile codecs and retain an incomplete
+  # certification status rather than manufacturing source evidence.
+  def test_evolution_corpus_respects_local_only_source_models
     corpus_path = File.join(@root, 'bom_engine', 'benchmarks', 'evolution-corpus.json')
+    manifest = JSON.parse(File.read(corpus_path), symbolize_names: true)
     results = BOMEngine::BOMCProfileBenchmark.run_corpus(corpus_path)
     assert_equal 7, results.length
+    assert_equal manifest[:items].map { |item| item[:id] }, results.map { |r| r[:id] }
 
-    results.each do |r|
-      assert_equal 'pass', r[:status], "fixture #{r[:id]} expected to pass, got #{r[:status]} (missing: #{r[:missing_evidence].inspect})"
-      assert_equal 'pass', r[:validation_status]
-      assert_empty r[:missing_evidence]
-      [:exact, :research, :visual].each do |prof|
-        assert_equal 'pass', r.dig(:profiles, prof, :status), "profile #{prof} for #{r[:id]} failed"
+    missing_models = 0
+    manifest[:items].zip(results).each do |item, result|
+      assert_equal 'local_untracked', item[:availability], "#{item[:id]} source SKP must be kept out of Git"
+      root_skp = File.join(@root, item.fetch(:skp_path))
+      sibling_skp = File.expand_path(File.join(@root, '..', 'model-eval', item.fetch(:skp_path)))
+      source = [root_skp, sibling_skp].find { |path| File.file?(path) }
+      available = !source.nil?
+      if available
+        assert_equal item.fetch(:skp_bytes), File.size(source), "source size drift: #{item[:id]}"
+        assert_equal item.fetch(:skp_sha256), Digest::SHA256.file(source).hexdigest, "source SHA drift: #{item[:id]}"
+        assert_equal 'pass', result[:status], "real source must pass all profiles: #{item[:id]}"
+        assert_empty result[:missing_evidence]
+      else
+        missing_models += 1
+        assert_equal 'incomplete', result[:status], "missing source cannot certify: #{item[:id]}"
+        assert_include result[:missing_evidence], 'source_skp: missing'
+      end
+      assert_equal 'pass', result[:validation_status], "fixture codec validation failed: #{item[:id]}"
+      [:exact, :research, :visual].each do |profile|
+        row = result.fetch(:profiles).fetch(profile)
+        assert_equal available ? 'pass' : 'incomplete', row.fetch(:status), "profile #{profile}: #{item[:id]}"
+        assert_equal 'pass', row.fetch(:validation_status)
+        assert_include row[:missing_evidence], 'source_skp: missing' unless available
       end
     end
 
     report = BOMEngine::BOMCProfileBenchmark.generate_report(results)
-    assert_equal 'ready', report[:certification_status]
-    assert_equal 21, report.dig(:aggregates, :passed_runs)
     assert_equal 21, report.dig(:aggregates, :total_runs)
+    assert_equal (7 - missing_models) * 3, report.dig(:aggregates, :passed_runs)
+    assert_equal missing_models, report.dig(:aggregates, :incomplete_fixtures)
+    assert_equal missing_models.zero? ? 'ready' : 'incomplete', report[:certification_status]
   end
 end
