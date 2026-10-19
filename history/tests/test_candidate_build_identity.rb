@@ -26,7 +26,7 @@ class TestCandidateBuildIdentity < Test::Unit::TestCase
         { 'label' => record['title'], 'commit_sha' => sha }, 'identity_test')
       extracted = File.join(dir, 'extracted')
       FileUtils.mkdir_p(extracted)
-      _out, err, status = Open3.capture3('tar', '-xf', package, '-C', extracted)
+      _out, err, status = Open3.capture3('unzip', '-q', '-o', package, '-d', extracted)
       assert status.success?, err
       script = <<~'RUBY'
         require 'json'
