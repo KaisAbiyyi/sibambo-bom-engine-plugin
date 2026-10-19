@@ -1,6 +1,6 @@
 # Agent instructions — Sibambo BOM Engine Plugin
 
-Before edits, read `README.md`, `SKETCHUP_PLUGIN_DEV.md`, `BOM_ENGINE_EVOLUTION.md`, `MANUAL_ACCEPTANCE.md` and current format contracts. Protect tracked `skps/` fixture models, manual receipts and independent E4 candidate status. Run appropriate Ruby syntax/fixture checks, but mark actual SketchUp Ruby API and model-export qualification as separate local/human gates.
+Before edits, read `README.md`, `SKETCHUP_PLUGIN_DEV.md`, `BOM_ENGINE_EVOLUTION.md`, `MANUAL_ACCEPTANCE.md` and current format contracts. Keep all `.skp` models local-only and out of Git; preserve user-owned D: source models, safe JSON fixtures and manual receipts without deleting local files. Independent E4 candidate status remains pending. Run appropriate Ruby syntax/fixture checks, but mark actual SketchUp Ruby API and model-export qualification as separate local/human gates.
 
 ## Shared multi-agent development (required)
 
