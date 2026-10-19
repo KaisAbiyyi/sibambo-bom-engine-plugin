@@ -4,9 +4,19 @@ require 'digest'
 require 'json'
 require 'open3'
 require 'rbconfig'
+require 'tmpdir'
+require 'fileutils'
+require_relative '../../tools/history/build_evolution_lab'
 
 root = File.expand_path('../..', __dir__)
-dist_dir = File.join(root, 'dist', 'history')
+# Archive verification is independent of the active release packaging lane.
+# Always build the historical 19-slot catalog into isolated test-owned output;
+# never assume the current active/lineup build produced those artifacts.
+test_root = Dir.mktmpdir('evolution_archive_integrity_')
+at_exit { FileUtils.remove_entry(test_root) if File.directory?(test_root) }
+dist_dir = File.join(test_root, 'dist')
+generated_dir = File.join(test_root, 'generated')
+EvolutionLabBuilder.build(catalog: 'archive', dist_dir: dist_dir, generated_dir: generated_dir)
 checksums_path = File.join(dist_dir, 'CHECKSUMS.sha256')
 manifest_path = File.join(dist_dir, 'MANIFEST.md')
 versions_path = File.join(root, 'history', 'versions.json')
@@ -69,7 +79,7 @@ puts "  PASS: All #{versions.length} standalone RBZ packages match CHECKSUMS.sha
 # 3. Verify all staged milestone Ruby files are syntactically valid
 versions.each do |ver|
   disp = ver['display_version']
-  staged_dir = File.join(root, 'history', 'generated', disp, 'staged')
+  staged_dir = File.join(generated_dir, disp, 'staged')
 
   Dir.glob(File.join(staged_dir, '**', '*.rb')).each do |rb_file|
     _out, err, status = Open3.capture3(RbConfig.ruby, '-c', rb_file)
@@ -81,9 +91,9 @@ end
 puts "  PASS: All #{versions.length} staged milestone source snapshots are syntactically valid"
 
 # 4. Verify runtime distribution packages exclude development test suites and include all engines
-stdout, stderr, status = Open3.capture3('tar', '-tf', master_rbz_path)
+stdout, stderr, status = Open3.capture3('unzip', '-Z', '-1', master_rbz_path)
 unless status.success?
-  raise "Failed to inspect Master RBZ archive with tar: #{stderr}"
+  raise "Failed to inspect ZIP-format Master RBZ with unzip: #{stderr}"
 end
 
 entries = stdout.lines.map(&:strip)
@@ -104,7 +114,7 @@ puts "  PASS: Master RBZ archive verified directly (#{entries.length} entries; 0
 # 5. Verify specialized dialog provenance and menu routing for the latest milestone.
 latest_ver = versions.last
 raise "Latest version must be SBE-2026.08.29-01" unless latest_ver['display_version'] == 'SBE-2026.08.29-01'
-latest_staged = File.join(root, 'history', 'generated', latest_ver['display_version'], 'staged')
+latest_staged = File.join(generated_dir, latest_ver['display_version'], 'staged')
 latest_entry = File.join(latest_staged, 'entry_sbe_2026_08_29_01.rb')
 latest_html = File.join(latest_staged, 'bom_engine', 'ui', 'export_dialog.html')
 latest_ui_dialog = File.join(latest_staged, 'bom_engine', 'ui_dialog.rb')
