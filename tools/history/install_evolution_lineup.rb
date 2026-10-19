@@ -22,7 +22,7 @@ module EvolutionLineupInstaller
     raise 'This installer accepts candidate packages only' unless manifest['certified'] == false
     rbz = File.join(package, manifest.fetch('package'))
     raise 'Package archive checksum mismatch' unless Digest::SHA256.file(rbz).hexdigest == manifest.fetch('packageSha256')
-    entries, listing_error, listing_status = Open3.capture3('tar', '-tf', rbz)
+    entries, listing_error, listing_status = Open3.capture3('unzip', '-Z', '-1', rbz)
     raise "Cannot inspect package: #{listing_error}" unless listing_status.success?
     names = entries.lines.map(&:strip)
     raise 'Unsafe archive member' if names.any? { |name| name.start_with?('/', '\\') || name.match?(/\A[A-Za-z]:/) || name.split('/').include?('..') }
@@ -40,7 +40,7 @@ module EvolutionLineupInstaller
     end
 
     Dir.mktmpdir('evolution-lineup-install-') do |unpacked|
-      _out, extract_error, extract_status = Open3.capture3('tar', '-xf', rbz, '-C', unpacked)
+      _out, extract_error, extract_status = Open3.capture3('unzip', '-q', '-o', rbz, '-d', unpacked)
       raise "Cannot unpack package: #{extract_error}" unless extract_status.success?
       source_folder = File.join(unpacked, FOLDER)
       source_loader = File.join(unpacked, LOADER)
