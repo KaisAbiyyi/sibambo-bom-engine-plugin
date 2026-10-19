@@ -144,7 +144,7 @@ class JpegColorMapTest < Minitest::Test
 
     packed=BOMEngine::BOMCWriter.pack(graph,profile: :exact)
     blob=packed.dig(:metrics,:sections,:textures)
-    assert_include [0,1],blob[:codec], 'container may keep or additionally deflate an already-compressed JCM payload'
+    assert_includes [0,1],blob[:codec], 'container may keep or additionally deflate an already-compressed JCM payload'
     decoded=BOMEngine::BOMCDecoder.decode(packed[:bytes],allow_jpeg_color_map:true)
     assert_equal texture,decoded[:textures][0][:bytes], 'container decode retains exact JCM payload bytes'
     assert_equal target,codec.reconstruct(decoded[:textures][0][:bytes],base)
@@ -165,7 +165,7 @@ class JpegColorMapTest < Minitest::Test
   end
   def test_writer_enforces_consumer_aggregate_mapped_pixel_budget_after_texture_deduplication
     # Metadata-boundary fixtures only, not a claim of decoded image fidelity.
-    payloads=3.times.map do |index|
+    payloads=5.times.map do |index|
       bytes=encode
       jpeg=JPEG.dup;jpeg[7,4]=[4000,8000].pack('n2');jpeg.setbyte(jpeg.bytesize-3,index+1)
       bytes[12,8]=[8000,4000].pack('V2')
@@ -174,8 +174,8 @@ class JpegColorMapTest < Minitest::Test
     end
     graph={materials:[],definitions:[{id:'d',kind:'root',node_ids:[]}],nodes:[{id:'root',kind:'root',definition_id:'d',transform_id:0}],transforms:[BOMEngine::BOMC::ModelAdapter::IDENTITY],meshes:[],tags:[]}
     add=lambda { |bytes,index| {id:"m#{index}",texture:{bytes:bytes,filename:"#{index}.jcm",image_width_px:8000,image_height_px:4000}} }
-    graph[:materials]=[payloads[0],payloads[1],payloads[0]].each_with_index.map(&add)
-    assert BOMEngine::BOMCWriter.pack(graph,profile: :exact)[:bytes], 'two unique 32M textures fit, duplicate is free'
+    graph[:materials]=[payloads[0],payloads[1],payloads[2],payloads[3],payloads[0]].each_with_index.map(&add)
+    assert BOMEngine::BOMCWriter.pack(graph,profile: :exact)[:bytes], 'four unique 32M textures exactly fit the 128M budget, duplicate is free'
     graph[:materials]=payloads.each_with_index.map(&add)
     error=assert_raises(RuntimeError) { BOMEngine::BOMCWriter.pack(graph,profile: :exact) }
     assert_match(/aggregate pixel budget/,error.message)

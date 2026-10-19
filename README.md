@@ -55,7 +55,7 @@ Important rules:
 
 ## Data and documentation
 
-- `skps/` contains tracked `.skp` source models and JSON exports used for manual validation. Do not remove it from version control.
+- `.skp` source models are deliberately **local-only** and ignored by Git (including those formerly tracked in `skps/`); never re-add them to a PR. Keep safe JSON fixtures, hashes, size/provenance manifests and user-approved local SketchUp qualification separate. Historical Git commits may still contain prior SKP bytes; this change does not rewrite history.
 - [Plugin development guide](SKETCHUP_PLUGIN_DEV.md)
 - [Canonical v3 format](FORMAT_V3.md)
 - [BOME2 format](BOME2_FORMAT.md)

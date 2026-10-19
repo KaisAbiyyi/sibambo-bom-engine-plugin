@@ -12,9 +12,8 @@ raise 'Sibambo BOMC Engine submenu was not registered.' unless product_menu
 
 expected = [
   'Sibambo BOMC Engine: Export BOMC 1.2...',
-  'Sibambo BOMC Engine: Experimental Exact size candidate (JCM)...',
   'About Sibambo BOMC Engine'
 ]
 raise "Unexpected product menu: #{product_menu.items.inspect}" unless product_menu.items == expected
 
-puts 'Sibambo BOMC Engine menu: standard export and explicit experimental Exact candidate PASS'
+puts 'Sibambo BOMC Engine menu: production export and About only PASS'

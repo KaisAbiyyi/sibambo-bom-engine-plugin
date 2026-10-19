@@ -4,6 +4,9 @@
 # already open. Folder batching belongs exclusively to the separate batch item.
 
 require 'json'
+require 'tmpdir'
+require 'fileutils'
+require_relative '../../tools/history/build_evolution_lab'
 
 class FakeMenu
   attr_reader :items, :submenus
@@ -66,8 +69,26 @@ raise 'release version IDs must be non-empty' if expected_ids.empty?
 raise 'duplicate release version IDs' unless expected_ids.uniq.length == expected_ids.length
 raise 'every release version must have a 2-digit sequence ID in label' unless expected_ids.length == release_versions.length
 
-menu_path = File.join(root, 'dist', 'history', 'staging', 'evolution_lab', 'master_menu.rb')
-raise "master menu missing: #{menu_path}" unless File.file?(menu_path)
+# The default build now creates a four-engine lineup, not the historical
+# 19-slot master menu. Generate this menu from its canonical builder into
+# isolated test output and bind it to unchanged committed historical entries.
+# Archive-package integrity is tested independently in test_artifact_integrity.
+menu_sandbox = Dir.mktmpdir('evolution-menu-dispatch-')
+at_exit { FileUtils.remove_entry(menu_sandbox) if File.directory?(menu_sandbox) }
+menu_dir = File.join(menu_sandbox, 'evolution_lab')
+FileUtils.mkdir_p(menu_dir)
+versions.each do |ver|
+  key = ver.fetch('display_version').gsub(/[^A-Za-z0-9_]/, '_').downcase
+  entry_name = "entry_#{key}.rb"
+  source_entry = File.join(root, 'history', 'generated', ver.fetch('display_version'), 'staged', entry_name)
+  raise "Pinned historical entry missing: #{source_entry}" unless File.file?(source_entry)
+  target_dir = File.join(menu_dir, "engine_#{key}")
+  FileUtils.mkdir_p(target_dir)
+  FileUtils.cp(source_entry, File.join(target_dir, entry_name))
+end
+EvolutionLabBuilder.create_master_loader(menu_sandbox, menu_dir, versions)
+menu_path = File.join(menu_dir, 'master_menu.rb')
+raise "generated historical master menu missing: #{menu_path}" unless File.file?(menu_path)
 
 load menu_path
 
