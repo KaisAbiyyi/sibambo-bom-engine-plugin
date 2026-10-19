@@ -64,3 +64,7 @@ Important rules:
 ## License
 
 GPL-3.0-only. See [LICENSE](LICENSE).
+
+## Multi-agent orchestration
+
+See [AGENTS.md](AGENTS.md) and [docs/AGENT-ORCHESTRATION.md](docs/AGENT-ORCHESTRATION.md) for unassigned tasks, exclusive agent claims, pushed checkpoint/recovery, author attribution, and cross-repository Sibambo integration acceptance. SketchUp-specific manual acceptance and E4 qualification remain required.
