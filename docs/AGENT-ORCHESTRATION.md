@@ -43,7 +43,7 @@ Each handoff must give: `PROJECT, REPO(S), TASK_ID, CLAIM_STATUS/OWNER/GENERATIO
 
 ## Repository-specific qualification boundary
 
-Producer repository for SketchUp Ruby BOMC 1.2 and Evolution E1–E4. Syntax-only Ruby checks cannot prove SketchUp API behavior or E4 cross-model qualification. Protect tracked SKP model fixtures and manual validation artifacts.
+Producer repository for SketchUp Ruby BOMC 1.2 and Evolution E1–E4. Syntax-only Ruby checks cannot prove SketchUp API behavior or E4 cross-model qualification. Keep all `.skp` source models strictly local-only (never re-add tracked Git SKPs); preserve safe JSON fixtures, source SHA/size provenance and manual qualification receipts.
 
 Current phase/dependency evidence: [MANUAL_ACCEPTANCE.md](../MANUAL_ACCEPTANCE.md). This policy does **not** claim any existing phase as complete or start/stop another agent. No task registry, lock controller, checkpoint automation or agent dispatch API is installed by this docs change; these are enforceable operating requirements for agents and a specification for a future controller.
 
