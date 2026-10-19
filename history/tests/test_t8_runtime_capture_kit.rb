@@ -25,8 +25,8 @@ class TestT8RuntimeCaptureKit < Test::Unit::TestCase
   def setup
     # This suite loads a pinned local T8 capture kit not distributed in GitHub.
     # Keep these tests for operator/local qualification without manufacturing its files.
-    omit 'LOCAL ONLY: historical T8 capture kit unavailable in clean GitHub CI' unless File.file?(MANIFEST_PATH) && File.file?(CAPTURE_SCRIPT_PATH) && File.file?(VERIFIER_PATH)
     @temp_dir = Dir.mktmpdir('t8-test-capture')
+    omit 'LOCAL ONLY: historical T8 capture kit unavailable in clean GitHub CI' unless File.file?(MANIFEST_PATH) && File.file?(CAPTURE_SCRIPT_PATH) && File.file?(VERIFIER_PATH)
   end
 
   # Runtime doubles exercise the runner, not just generated-source strings.
