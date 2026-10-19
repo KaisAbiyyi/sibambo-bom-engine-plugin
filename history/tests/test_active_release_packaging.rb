@@ -52,9 +52,9 @@ Dir.mktmpdir('active_packaging_test_') do |temp_root|
 
   puts "  PASS: Checksums and Manifest are internally consistent (byte reproducibility not tested)"
 
-  # 3. Inspect Master RBZ archive entries
-  stdout, stderr, status = Open3.capture3('tar', '-tf', master_rbz_path)
-  raise "Failed to inspect Master RBZ with tar: #{stderr}" unless status.success?
+  # 3. Inspect RBZ as ZIP (never TAR); verify actual packaged entries
+  stdout, stderr, status = Open3.capture3('unzip', '-Z', '-1', master_rbz_path)
+  raise "Failed to inspect ZIP-format Master RBZ with unzip: #{stderr}" unless status.success?
 
   entries = stdout.lines.map(&:strip)
 
