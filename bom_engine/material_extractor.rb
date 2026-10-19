@@ -114,13 +114,12 @@ module BOMEngine
 
         if mat.texture && !texture_dir.nil?
           tex       = mat.texture
-          safe_name = mat.name.gsub(/[^\w\-]/, '_')
-          if optimize_textures
-            safe_name = "material_#{index + 1}" if safe_name.empty?
-            if File.file?(File.join(texture_dir, "#{safe_name}.png")) || File.file?(File.join(texture_dir, "#{safe_name}.jpg"))
-              safe_name = "#{safe_name}_#{index + 1}"
-            end
-          end
+          # Native SketchUp serializers and embedded Ruby can reject paths over
+          # MAX_PATH even when portable Ruby accepts them. Keep export-local
+          # asset names short, unique across every PNG/fallback/codec variant,
+          # and independent of user material names. Display/source names above
+          # remain intact; historical non-optimized exports keep their naming.
+          safe_name = optimize_textures ? "m#{index + 1}" : mat.name.gsub(/[^\w\-]/, '_')
           tex_filename = "#{safe_name}.png"
 
           mat_class = if material_classes

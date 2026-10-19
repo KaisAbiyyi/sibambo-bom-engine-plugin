@@ -158,7 +158,10 @@ module BOMEngine
           assert(legacy.fetch(0).dig(:texture, :filename) == 'Wood.png', 'non-BOMC material extraction keeps its existing lossless PNG behavior')
           extracted = MaterialExtractor.extract(FakeModel.new([material]), nil, extraction_dir, optimize_textures: true)
           staged = extracted.fetch(0).fetch(:texture)
-          assert(staged[:filename] == 'Wood.jpg', 'material extraction stages an unavailable embedded JPEG in its compact native format')
+          assert(File.extname(staged[:filename]) == '.jpg' && extracted.fetch(0)[:name] == 'Wood',
+            'material extraction keeps the compact JPEG format and original material identity')
+          assert(File.binread(File.join(extraction_dir, staged[:filename])) == staged[:bytes],
+            'the short asset filename resolves to the selected embedded bytes')
           assert(staged.dig(:staging_evidence, :selected) == :jpeg_candidate, 'material extraction carries the optimizer quality and byte evidence forward')
 
           cancelled = false

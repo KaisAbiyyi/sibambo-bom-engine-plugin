@@ -235,7 +235,7 @@ class TestProfilePublication < Test::Unit::TestCase
     optimizer = BOMEngine::BOMCTextureOptimizer
     original = optimizer.method(:stage)
     optimizer.define_singleton_method(:stage) do |**kwargs, &block|
-      calls << [kwargs[:basename], kwargs[:texture].image_width * kwargs[:texture].image_height]
+      calls << [kwargs[:source_path], kwargs[:texture].image_width * kwargs[:texture].image_height]
       path = File.join(kwargs[:directory], "#{kwargs[:basename]}.png")
       File.binwrite(path, 'x')
       { path: path, filename: File.basename(path), evidence: { selected: :staged_png } }
@@ -256,7 +256,7 @@ class TestProfilePublication < Test::Unit::TestCase
       assert_equal ['Small', 'Png', 'Large'], result.map { |row| row[:name] },
         'material output order must stay source-stable'
     end
-    assert_equal ['Large', 'Small', 'Png'], calls.map(&:first),
+    assert_equal ['large.jpg', 'small.jpg', 'large.png'], calls.map(&:first),
       'Exact JCM must measure the largest JPEG-backed textures before lower-impact candidates'
   ensure
     optimizer.define_singleton_method(:stage, original) if original

@@ -27,7 +27,7 @@ class TestBOMCJcmBudgetPriority < Minitest::Test
     optimizer = BOMEngine::BOMCTextureOptimizer
     original = optimizer.method(:stage)
     optimizer.define_singleton_method(:stage) do |**kwargs, &block|
-      calls << [kwargs[:basename], kwargs[:color_map_budget][:remaining_pixels]]
+      calls << [kwargs[:source_path], kwargs[:color_map_budget][:remaining_pixels]]
       path = File.join(kwargs[:directory], "#{kwargs[:basename]}.png")
       File.binwrite(path, 'x')
       { path: path, filename: File.basename(path), evidence: { selected: :staged_png } }
@@ -44,7 +44,7 @@ class TestBOMCJcmBudgetPriority < Minitest::Test
       assert_equal ['Small', 'Png', 'Large'], result.map { |row| row[:name] }
     end
 
-    assert_equal ['Large', 'Small', 'Png'], calls.map(&:first)
+    assert_equal ['large.jpg', 'small.jpg', 'large.png'], calls.map(&:first)
     assert_equal [128_000_000], calls.map { |row| row[1] }.uniq
   ensure
     optimizer.define_singleton_method(:stage, original) if original
