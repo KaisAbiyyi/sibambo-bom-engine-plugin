@@ -45,7 +45,7 @@ class TestMatrixCaptureKit < Test::Unit::TestCase
     original = File.join(workspace, 'scratch/t8-capture-kit')
     # This qualification depends on a private local capture kit, source SKP assets,
     # and a separate consumer checkout. None are shipped to a GitHub runner.
-    skip 'LOCAL ONLY: original T8 capture kit, SKP corpus and consumer checkout are not in GitHub CI' unless File.file?(File.join(original, 'manifest.json'))
+    omit 'LOCAL ONLY: original T8 capture kit, SKP corpus and consumer checkout are not in GitHub CI' unless File.file?(File.join(original, 'manifest.json'))
     before = Digest::SHA256.file(File.join(original, 'manifest.json')).hexdigest
     out = File.join(@temp, 'kit')
     result = MatrixCaptureKitBuilder.build(source_kit: original,
