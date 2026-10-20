@@ -37,7 +37,7 @@ class TestEvolutionLineup < Test::Unit::TestCase
       assert_match(/\A[0-9a-f]{64}\z/, manifest.fetch('e4SourceTreeSha256'))
       assert_equal manifest.fetch('sharedSourceTreeSha256'), manifest.fetch('e4SourceTreeSha256')
 
-      archive, error, status = Open3.capture3('tar', '-tf', result.fetch(:rbz))
+      archive, error, status = Open3.capture3('unzip', '-Z', '-1', result.fetch(:rbz))
       assert status.success?, error
       assert_include archive, 'sibambo_evolution_lineup_loader.rb'
       %w[e1_json e2_canonical_gzip e3_cleanpkg e4_bomc].each do |key|

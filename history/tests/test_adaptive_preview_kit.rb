@@ -248,7 +248,7 @@ class AdaptivePreviewKitTest < Minitest::Test
       assert_equal sha, Digest::SHA256.file(File.join(output, 'install', relative)).hexdigest
     end
     exporter = File.join(output, 'install', manifest['folder'], 'bom_engine/bomc_extension.rb')
-    code = "require #{exporter.inspect}; abort 'wrong policy' unless SibamboHistory::#{manifest['namespace']}::BOMCTextureOptimizer::POLICY_REVISION == 'adaptive-texture-3'"
+    code = "require #{exporter.inspect}; abort 'wrong policy' unless SibamboHistory::#{manifest['namespace']}::BOMCTextureOptimizer::POLICY_REVISION == 'adaptive-texture-7'"
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, '-e', code)
     assert status.success?, "Staged exporter load failed: #{stdout} #{stderr}"
     entry = File.join(output, 'install', manifest['folder'], 'entry.rb')
