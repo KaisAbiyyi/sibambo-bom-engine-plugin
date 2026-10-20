@@ -45,7 +45,7 @@ class TestExactHiddenGeometry < Test::Unit::TestCase
     face = model.entities.add_face([0, 0, 0], [10, 0, 0], [0, 10, 0])
     face.hidden = true
     Dir.mktmpdir('exact-hidden-snapshot') do |directory|
-      checkpoint = ->(**_event) {}
+      checkpoint = ->(_event) {}
       visual = BOMEngine::BOMCExtension.send(:snapshot_model, model, directory, checkpoint, profile: :visual)
       exact = BOMEngine::BOMCExtension.send(:snapshot_model, model, directory, checkpoint, profile: :exact)
       assert_equal 0, visual[:meshes].sum { |mesh| mesh[:faces].length }

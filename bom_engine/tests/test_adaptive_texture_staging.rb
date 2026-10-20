@@ -24,13 +24,20 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
   end
   class Cancelled < StandardError; end
 
+  # SketchUp ImageRep uses BGRA on Windows, RGBA on other platforms.
+  # Test pixels are specified in logical RGBA order.
+  def image_frame(r, g, b, a)
+    channels = Gem.win_platform? ? [b, g, r, a] : [r, g, b, a]
+    Frame.new(1, 1, 32, 0, channels.pack('C*'))
+  end
+
   def test_exact_semantic_colorization_bypasses_baked_png_when_verified
     Dir.mktmpdir do |dir|
-      source = Frame.new(1, 1, 32, 0, [115, 137, 98, 128].pack('C*'))
+      source = image_frame(115, 137, 98, 128)
       expected_rgb = BOMEngine::BOMCSketchupColorize.colorize_pixel(
         115, 137, 98, 92.58741048890613, 0.13725490868091583, -0.11229892646129502, true
       )
-      target = Frame.new(1, 1, 32, 0, (expected_rgb + [128]).pack('C*'))
+      target = image_frame(*expected_rgb, 128)
       texture = Object.new
       texture.define_singleton_method(:image_rep) { |colorized| colorized ? target : source }
       texture.define_singleton_method(:write) do |path, colorized|
@@ -58,11 +65,11 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
 
   def test_exact_semantic_colorization_does_not_depend_on_source_filename_extension
     Dir.mktmpdir do |dir|
-      source = Frame.new(1, 1, 32, 0, [115, 137, 98, 128].pack('C*'))
+      source = image_frame(115, 137, 98, 128)
       expected_rgb = BOMEngine::BOMCSketchupColorize.colorize_pixel(
         115, 137, 98, 92.58741048890613, 0.13725490868091583, -0.11229892646129502, true
       )
-      target = Frame.new(1, 1, 32, 0, (expected_rgb + [128]).pack('C*'))
+      target = image_frame(*expected_rgb, 128)
       texture = Object.new
       texture.define_singleton_method(:image_rep) { |colorized| colorized ? target : source }
       texture.define_singleton_method(:write) do |path, colorized|
@@ -203,14 +210,22 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
     end
   end
 
-  def test_color_map_is_opt_in_and_conflicts_or_alpha_keep_verified_fallback
+  def test_color_map_is_opt_in_and_alpha_keeps_verified_fallback
     with_codec do
-      [{enabled:false},{conflict:true},{alpha:127}].each do |options|
+      [{enabled:false},{alpha:127}].each do |options|
         Dir.mktmpdir do |dir|
           selected=stage_color_map(dir,**options)
           assert_equal '.webp',File.extname(selected[:path])
           assert_equal 0,selected.dig(:evidence,:quality,:max_channel_error)
         end
+      end
+      # Conflicting base RGB values can still be losslessly mapped with the
+      # residual codec; a verified smaller JCM is valid in that case.
+      Dir.mktmpdir do |dir|
+        selected=stage_color_map(dir,conflict:true)
+        assert_equal '.jcm',File.extname(selected[:path])
+        assert_equal :jpeg_color_map_candidate,selected.dig(:evidence,:selected)
+        assert_equal 0,selected.dig(:evidence,:quality,:max_channel_error)
       end
     end
   end
