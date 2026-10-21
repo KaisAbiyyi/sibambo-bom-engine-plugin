@@ -55,3 +55,15 @@ jobs:
             echo "Running $f..."
             ruby "$f"
           done
+
+      - name: Build current Evolution lineup candidate
+        run: ruby tools/history/build_evolution_lineup.rb --output "$RUNNER_TEMP/evolution-lineup-candidate"
+
+      - name: Preserve candidate RBZ and identity manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: evolution-lineup-candidate-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/evolution-lineup-candidate/*.rbz
+            ${{ runner.temp }}/evolution-lineup-candidate/manifest.json
+          if-no-files-found: error
