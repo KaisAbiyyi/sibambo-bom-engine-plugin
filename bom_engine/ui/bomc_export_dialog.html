@@ -39,12 +39,11 @@
   <section class="section">
     <div class="section-head"><h2>Profil hasil</h2><span class="hint" id="profile-hint">Satu file untuk setiap ekspor</span></div>
     <div class="profile-grid" role="radiogroup" aria-label="Profil hasil">
-      <label class="choice"><span class="choice-title"><input type="radio" id="profile-visual" name="profile-choice" value="visual" checked onchange="updateProfilePath()"><strong>Visual</strong></span><small>Ringkas; gambar bisa berubah.</small></label>
-      <label class="choice"><span class="choice-title"><input type="radio" id="profile-research" name="profile-choice" value="research" onchange="updateProfilePath()"><strong>Research</strong></span><small>Batas galat terukur.</small></label>
       <label class="choice"><span class="choice-title"><input type="radio" id="profile-exact" name="profile-choice" value="exact" onchange="updateProfilePath()"><strong>Exact</strong></span><small>Piksel asli; tidak menjamin file kecil.</small></label>
-      <label class="choice"><span class="choice-title"><input type="radio" id="profile-all" name="profile-choice" value="all" onchange="updateProfilePath()"><strong>Export All</strong></span><small>Tiga profil berurutan, dalam folder baru.</small></label>
+      <label class="choice"><span class="choice-title"><input type="radio" id="profile-visual" name="profile-choice" value="visual" checked onchange="updateProfilePath()"><strong>Visual</strong></span><small>Ringkas; gambar bisa berubah.</small></label>
+      <label class="choice"><span class="choice-title"><input type="radio" id="profile-all" name="profile-choice" value="all" onchange="updateProfilePath()"><strong>Export All</strong></span><small>Dua profil berurutan, dalam folder baru.</small></label>
     </div>
-    <select id="profile" hidden aria-hidden="true"><option value="visual">visual</option><option value="research">research</option><option value="exact">exact</option><option value="all">all</option></select>
+    <select id="profile" hidden aria-hidden="true"><option value="exact">exact</option><option value="visual" selected>visual</option><option value="all">all</option></select>
   </section>
 
   <section class="section">
@@ -94,12 +93,12 @@
     input.value = normalizeOutputPath(input.value, profile);
     var all = profile === 'all';
     document.getElementById('suffix').textContent = input.value ?
-      (all ? 'Tiga BOMC dibuat dalam folder baru dari nama dasar: ' : 'Nama final: ') + input.value.split(/[\\/]/).pop() : 'Pilih lokasi keluaran.';
-    document.getElementById('profile-hint').textContent = all ? 'Tiga file; folder baru agar hasil lama aman' : 'Satu file untuk setiap ekspor';
+      (all ? 'Dua BOMC dibuat dalam folder baru dari nama dasar: ' : 'Nama final: ') + input.value.split(/[\\/]/).pop() : 'Pilih lokasi keluaran.';
+    document.getElementById('profile-hint').textContent = all ? 'Dua file; folder baru agar hasil lama aman' : 'Satu file untuk setiap ekspor';
     document.getElementById('intro').textContent = all ?
-      'Export All menjalankan tiga profil berurutan. Model harus tersimpan; jika satu gagal, hasil sebelumnya tetap ada dan proses ditandai parsial.' :
+      'Export All menjalankan dua profil berurutan. Model harus tersimpan; jika satu gagal, hasil sebelumnya tetap ada dan proses ditandai parsial.' :
       'Pilih satu profil dan lokasi BOMC. Status ukuran dan validasi tampil setelah ekspor.';
-    document.getElementById('export-button').textContent = all ? 'Ekspor 3 profil' : 'Ekspor BOMC';
+    document.getElementById('export-button').textContent = all ? 'Ekspor 2 profil' : 'Ekspor BOMC';
   }
   function refreshBatchMode() {
     var manual = document.querySelector('input[name="batch-mode"]:checked').value === 'manual';

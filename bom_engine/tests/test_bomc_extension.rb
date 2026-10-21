@@ -45,14 +45,14 @@ module BOMEngine
         )
         dialog = BOMCExtension.normalize_dialog_settings(
           output_path: 'D:/exports/RUMAH_L.bomc',
-          profile: 'research',
+          profile: 'exact',
           batch_size: '1024'
         )
         assert(
-          dialog[:output_path].tr('\\', '/').end_with?('/RUMAH_L__SIBAMBO-BOMC-v1.2.0__RESEARCH.bomc'),
+          dialog[:output_path].tr('\\', '/').end_with?('/RUMAH_L__SIBAMBO-BOMC-v1.2.0__EXACT.bomc'),
           'dialog enforces current extension version tag'
         )
-        assert(dialog[:profile] == :research, 'dialog profile reaches exporter')
+        assert(dialog[:profile] == :exact, 'dialog profile reaches exporter')
         assert(BOMCExtension.normalize_output_path('D:/exports/house.skp', profile: :exact).end_with?('/house__SIBAMBO-BOMC-v1.2.0__EXACT.bomc'),
           'typed SKP source path produces a clean BOMC filename')
         assert(
@@ -65,7 +65,7 @@ module BOMEngine
         assert(BOMCExtension::FORMAT_EXTENSION == '.bomc', 'compiled user-facing extension is stable')
         assert(ConversionJob::TIMER_INTERVAL_SECONDS <= 0.001, 'cooperative runner resumes work without a 10 ms idle tax')
         assert(ConversionJob::UI_PROGRESS_INTERVAL_SECONDS >= 0.05, 'HTML progress rendering is throttled independently from work scheduling')
-        [:exact, :research, :visual].each do |profile|
+        [:exact, :visual].each do |profile|
           filename = BOMCExtension.normalize_output_path(
             'D:/exports/House__SIBAMBO-BOMC-v1.2.0__VISUAL.bomc', profile: profile
           )
@@ -173,7 +173,7 @@ module BOMEngine
         output_dir = Dir.mktmpdir('bomc-extension-test')
         begin
           path = File.join(output_dir, 'nested', 'fixture.bomc')
-          published = BOMCExtension.publish_graph(path, fixture_graph, profile: :production)
+          published = BOMCExtension.publish_graph(path, fixture_graph, profile: :visual)
           assert(File.file?(path), 'pure extension boundary publishes one BOMC file')
           assert(Dir.glob(File.join(output_dir, '**', '*')).select { |entry| File.file?(entry) }.length == 1, 'publication requires no companion files')
           assert(published[:path] == path && published[:bytes] == File.size(path), 'extension boundary reports path and bytes')

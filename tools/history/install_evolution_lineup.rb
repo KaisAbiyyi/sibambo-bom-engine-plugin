@@ -13,13 +13,14 @@ module EvolutionLineupInstaller
   LOADER = 'sibambo_evolution_lineup_loader.rb'.freeze
   RETIRED_LOADERS = %w[sibambo_evolution_lab_loader.rb sibambo_e4_jcm_8b5d7b07a2ea6094.rb].freeze
   ENGINE_IDS = %w[e1-json e2-canonical-gzip e3-cleanpkg e4-bomc].freeze
+  ACTIVE_ENGINE_IDS = %w[e2-canonical-gzip e3-cleanpkg e4-bomc].freeze
 
   def self.install(package_dir:, plugins_dir:, copy_tree: nil)
     package = File.realpath(package_dir)
     plugins = File.realpath(plugins_dir)
     manifest = JSON.parse(File.read(File.join(package, 'manifest.json')))
     package_schema = manifest['schemaVersion']
-    unless %w[sibambo-evolution-lineup-package-v1 sibambo-evolution-lineup-package-v2].include?(package_schema)
+    unless %w[sibambo-evolution-lineup-package-v1 sibambo-evolution-lineup-package-v2 sibambo-evolution-lineup-package-v3].include?(package_schema)
       raise 'Wrong package schema'
     end
     raise 'This installer accepts candidate packages only' unless manifest['certified'] == false
@@ -53,12 +54,22 @@ module EvolutionLineupInstaller
       source_loader = File.join(unpacked, LOADER)
       raise 'Package is incomplete' unless File.directory?(source_folder) && File.file?(source_loader)
       engines = JSON.parse(File.read(File.join(source_folder, 'engines.json')))
-      raise 'Expected four engine generations' unless engines.map { |engine| engine.fetch('id') } == ENGINE_IDS
+      ids = package_schema == 'sibambo-evolution-lineup-package-v3' ? ACTIVE_ENGINE_IDS : ENGINE_IDS
+      raise 'Unexpected engine generations for package schema' unless engines.map { |engine| engine.fetch('id') } == ids
       raise 'E4 source identity mismatch' unless engines.last.fetch('sha') == manifest.fetch('e4SourceTreeSha256')
       e4_build_sha_path = File.join(source_folder, 'engine_e4_bomc', 'bom_engine', 'BUILD_SHA.txt')
       raise 'Packaged E4 build identity is missing or mismatched' unless File.file?(e4_build_sha_path) && File.read(e4_build_sha_path).strip == manifest.fetch('e4SourceTreeSha256')
-      if package_schema == 'sibambo-evolution-lineup-package-v2'
-        raise 'Every Evolution slot must expose Visual/Research/Exact' unless engines.all? { |engine| engine.fetch('profiles') == %w[visual research exact] }
+      if package_schema != 'sibambo-evolution-lineup-package-v1'
+        profiles = package_schema == 'sibambo-evolution-lineup-package-v3' ? %w[exact visual] : %w[visual research exact]
+        raise 'Unexpected profiles for package schema' unless engines.all? { |engine| engine.fetch('profiles') == profiles }
+        if package_schema == 'sibambo-evolution-lineup-package-v3'
+          raise 'Historical slot orders changed' unless engines.map { |engine| engine.fetch('order') } == [2, 3, 4]
+          rows = manifest.fetch('engines')
+          raise 'Manifest engine rows differ from packaged engine rows' unless rows.map { |row| row.fetch('id') } == ACTIVE_ENGINE_IDS && rows.all? do |row|
+            engine = engines.find { |slot| slot.fetch('id') == row.fetch('id') }
+            %w[id engine order kind formatVersion state sha historicalBaselineSha profiles].all? { |key| engine[key] == row[key] }
+          end
+        end
         shared_build_sha_path = File.join(source_folder, 'runtime', 'bom_engine', 'BUILD_SHA.txt')
         raise 'Packaged shared runtime identity is missing or mismatched' unless File.file?(shared_build_sha_path) && File.read(shared_build_sha_path).strip == manifest.fetch('sharedSourceTreeSha256')
         raise 'Shared runtime and E4 identities diverged' unless manifest.fetch('sharedSourceTreeSha256') == manifest.fetch('e4SourceTreeSha256')
@@ -141,7 +152,7 @@ module EvolutionLineupInstaller
     end
 
     engines = JSON.parse(File.read(File.join(folder, 'engines.json')))
-    raise 'Existing Evolution install has unexpected engine slots' unless engines.map { |engine| engine.fetch('id') } == ENGINE_IDS
+    raise 'Existing Evolution install has unexpected engine slots' unless [ENGINE_IDS, ACTIVE_ENGINE_IDS].include?(engines.map { |engine| engine.fetch('id') })
     e4_sha = engines.last.fetch('sha')
     build_sha_path = File.join(folder, 'engine_e4_bomc', 'bom_engine', 'BUILD_SHA.txt')
     unless e4_sha.match?(/\A[0-9a-f]{64}\z/) && File.file?(build_sha_path) && File.read(build_sha_path).strip == e4_sha

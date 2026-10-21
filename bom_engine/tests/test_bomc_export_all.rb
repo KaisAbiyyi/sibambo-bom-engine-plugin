@@ -19,7 +19,7 @@ class TestBOMCExportAll < Minitest::Test
     extension.define_singleton_method(:export, original) if original
   end
 
-  def test_all_choice_creates_three_distinct_validated_outputs_without_overwriting_old_files
+  def test_all_choice_creates_two_distinct_validated_outputs_without_overwriting_old_files
     Dir.mktmpdir('bomc-all-test-') do |root|
       model = FakeModel.new(File.join(root, 'house.skp'))
       base = File.join(root, 'house')
@@ -44,11 +44,11 @@ class TestBOMCExportAll < Minitest::Test
       end) do
         result = BOMEngine::BOMCExtension.export_all_profiles(model, output_path: base,
           settings: options[:processing], progress: ->(event) { events << event })
-        assert_equal %i[visual research exact], calls
-        assert_equal %i[visual research exact], events.select { |event| event[:stage] == :SCAN_MODEL }.map { |event| event[:profile] }
+        assert_equal %i[exact visual], calls
+        assert_equal %i[exact visual], events.select { |event| event[:stage] == :SCAN_MODEL }.map { |event| event[:profile] }
         assert_equal 'old', File.binread(old_visual)
         assert_equal 'complete', JSON.parse(File.read(File.join(result[:path], 'export-status.json'))).fetch('status')
-        assert_equal %w[exact research visual], result[:profiles].keys.map(&:to_s).sort
+        assert_equal %w[exact visual], result[:profiles].keys.map(&:to_s).sort
         result[:profiles].each do |profile, item|
           assert_equal profile.to_s, File.binread(item.fetch(:path))
           assert_includes item.fetch(:path), "__#{profile.to_s.upcase}.bomc"
@@ -75,21 +75,21 @@ class TestBOMCExportAll < Minitest::Test
       calls = []
       with_export_stub(lambda do |_model, output_path:, profile:, **_kwargs|
         calls << profile
-        raise 'research codec failed' if profile == :research
-        File.binwrite(output_path, 'visual')
+        raise 'visual codec failed' if profile == :visual
+        File.binwrite(output_path, 'exact')
         { path: output_path, bytes: 6, source_info: { path: model.path, bytes: 100 } }
       end) do
         error = assert_raises(BOMEngine::BOMCExtension::ExportAllError) do
           BOMEngine::BOMCExtension.export_all_profiles(model, output_path: File.join(root, 'house'),
             settings: BOMEngine::BOMCProcessing.settings(:balanced), progress: ->(_event) {})
         end
-        assert_equal %i[visual research], calls
-        assert_includes error.message, 'research'
-        assert File.file?(File.join(error.directory, 'house__SIBAMBO-BOMC-v1.2.0__VISUAL.bomc'))
+        assert_equal %i[exact visual], calls
+        assert_includes error.message, 'visual'
+        assert File.file?(File.join(error.directory, 'house__SIBAMBO-BOMC-v1.2.0__EXACT.bomc'))
         status = JSON.parse(File.read(File.join(error.directory, 'export-status.json')))
         assert_equal 'partial_failed', status.fetch('status')
-        assert_equal %w[visual], status.fetch('profiles').keys
-        refute File.exist?(File.join(error.directory, 'house__SIBAMBO-BOMC-v1.2.0__EXACT.bomc'))
+        assert_equal %w[exact], status.fetch('profiles').keys
+        refute File.exist?(File.join(error.directory, 'house__SIBAMBO-BOMC-v1.2.0__VISUAL.bomc'))
       end
     end
   end

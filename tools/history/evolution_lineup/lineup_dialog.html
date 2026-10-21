@@ -14,10 +14,10 @@
   <main class="shell">
     <div class="brand"><span class="brand-name">Sibambo BOM Engine Evolution</span><span class="build" id="build"></span></div>
     <h1 id="title">Memuat engine…</h1>
-    <p class="intro">E1–E3 memakai capture runtime yang sama dengan E4 kandidat. Pilih profil fidelity untuk model SketchUp yang sedang terbuka.</p>
+    <p class="intro">E2–E3 memakai capture runtime yang sama dengan E4 kandidat. Pilih profil fidelity untuk model SketchUp yang sedang terbuka.</p>
     <section class="section settings-grid">
       <label class="field-label" for="profile">PROFILE</label>
-      <select id="profile" class="select batch-select"><option value="visual">Visual</option><option value="research">Research</option><option value="exact">Exact</option></select>
+      <select id="profile" class="select batch-select"><option value="exact">Exact</option><option value="visual" selected>Visual</option></select>
       <label class="field-label" for="output">OUTPUT FILE</label>
       <div class="path-row"><input id="output" class="text-input" type="text" spellcheck="false"><button class="button" id="browse" type="button">Browse</button></div>
       <p class="path-note" id="path-note"></p>
@@ -31,7 +31,7 @@
   <script>
     let config = null;
     const byId = id => document.getElementById(id);
-    const extension = engine => engine === 'e1' ? '.json' : engine === 'e2' ? '.json.gz' : '.cleanpkg';
+    const extension = engine => engine === 'e2' ? '.json.gz' : '.cleanpkg';
     function normalizePath() {
       if (!config) return;
       const profile = byId('profile').value.toUpperCase();

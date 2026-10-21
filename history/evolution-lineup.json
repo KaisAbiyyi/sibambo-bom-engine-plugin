@@ -1,20 +1,7 @@
 {
-  "schemaVersion": "sibambo-evolution-lineup-v2",
-  "selectionBasis": "Four format generations on one current fidelity capture runtime; historical commits are retained only as baseline identities. This is not certification or a performance ranking.",
+  "schemaVersion": "sibambo-evolution-lineup-v3",
+  "selectionBasis": "Three active formats on one current fidelity capture runtime; E1/Research remain historical read-only. Not certification or a performance ranking.",
   "slots": [
-    {
-      "id": "e1-json",
-      "engine": "e1",
-      "order": 1,
-      "title": "E1 — World-expanded JSON 2.2",
-      "kind": "tiered_json",
-      "formatVersion": "2.2",
-      "source": "working-tree",
-      "historyVersion": "SBE-2026.05.11-02",
-      "profiles": ["visual", "research", "exact"],
-      "reason": "Modern E1 world-expanded tree writer on the shared current capture runtime.",
-      "state": "development"
-    },
     {
       "id": "e2-canonical-gzip",
       "engine": "e2",
@@ -24,7 +11,10 @@
       "formatVersion": "3.1.0",
       "source": "working-tree",
       "historyVersion": "SBE-2026.07.16-01",
-      "profiles": ["visual", "research", "exact"],
+      "profiles": [
+        "exact",
+        "visual"
+      ],
       "reason": "Modern canonical DAG writer on the shared current capture runtime.",
       "state": "development"
     },
@@ -37,7 +27,10 @@
       "formatVersion": "1.1.0",
       "source": "working-tree",
       "historyVersion": "SBE-2026.08.12-01",
-      "profiles": ["visual", "research", "exact"],
+      "profiles": [
+        "exact",
+        "visual"
+      ],
       "reason": "Modern sectioned binary writer with Float64 fidelity on the shared current capture runtime.",
       "state": "development"
     },
@@ -50,9 +43,20 @@
       "formatVersion": "1.2",
       "source": "working-tree",
       "baseProducerSha": "bd6782691ef8ba98f9d3baab698bc1cd961ce393",
-      "profiles": ["visual", "research", "exact"],
+      "profiles": [
+        "exact",
+        "visual"
+      ],
       "reason": "Current BOMC writer on the same shared current capture runtime.",
       "state": "development"
     }
-  ]
+  ],
+  "historicalReadOnly": {
+    "engines": [
+      "e1"
+    ],
+    "profiles": [
+      "research"
+    ]
+  }
 }

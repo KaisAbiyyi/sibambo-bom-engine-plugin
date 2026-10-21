@@ -6,7 +6,7 @@ require_relative 'lineup_dialog'
 module SibamboHistory
   module EvolutionLab
     MENU_TITLE = 'Sibambo BOM Engine Evolution'
-    ENGINES = JSON.parse(File.read(File.join(__dir__, 'engines.json'))).freeze
+    ENGINES = JSON.parse(File.read(File.join(__dir__, 'engines.json'))).select { |slot| %w[e2 e3 e4].include?(slot.fetch('engine')) }.freeze
 
     class << self
       def open_engine(id, model = Sketchup.active_model)
@@ -39,7 +39,7 @@ module SibamboHistory
         end
         active_menu.add_separator
         active_menu.add_item('Tentang Evolution') do
-          UI.messagebox('Empat format Evolution memakai capture runtime kandidat yang sama. E1–E3 menyimpan commit historis hanya sebagai baseline identitas. Belum tersertifikasi lintas model.', MB_OK)
+          UI.messagebox('Tiga format Evolution memakai capture runtime kandidat yang sama. E2–E3 menyimpan commit historis hanya sebagai baseline identitas. Belum tersertifikasi lintas model.', MB_OK)
         end
       end
     end

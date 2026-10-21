@@ -14,6 +14,7 @@ require_relative 'evolution_canonical_writer'
 require_relative 'evolution_cleanpkg_writer'
 require_relative 'evolution_validator'
 require_relative 'performance_trace'
+require_relative 'evolution_export_policy'
 
 module BOMEngine
   module EvolutionExporter
@@ -27,7 +28,7 @@ module BOMEngine
       e2: { writer: EvolutionCanonicalWriter, id: 'evolution-canonical-3.1.0', extension: '.json.gz', format: 'canonical-v3', version: '3.1.0' },
       e3: { writer: EvolutionCleanPKGWriter, id: 'evolution-cleanpkg-1.1.0', extension: '.cleanpkg', format: 'cleanpkg', version: '1.1.0' }
     }.freeze
-    PROFILES = %i[visual research exact].freeze
+    PROFILES = EvolutionExportPolicy::PROFILES
     SOURCE_EXCLUDED = %w[tests tools benchmarks graphify-out].freeze
 
     class ModelChanged < StandardError; end
@@ -128,15 +129,13 @@ module BOMEngine
     end
 
     def normalize_engine(value)
-      engine = value.to_s.downcase.to_sym
+      engine = EvolutionExportPolicy.engine(value)
       raise ArgumentError, "Unsupported Evolution engine: #{value}" unless WRITERS.key?(engine)
       engine
     end
 
     def normalize_profile(value)
-      profile = value.to_s.downcase.to_sym
-      raise ArgumentError, "Unsupported Evolution profile: #{value}" unless PROFILES.include?(profile)
-      profile
+      EvolutionExportPolicy.profile(value)
     end
 
     def normalize_output_path(path, engine:, profile:)
@@ -164,11 +163,11 @@ module BOMEngine
     end
 
     def export(model, engine:, profile:, output_path:, processing: nil, progress: nil, active_model: nil, performance_trace: nil)
+      engine = normalize_engine(engine)
+      profile = normalize_profile(profile)
       if Gem.win_platform? && Dir.exist?('D:/') && !File.expand_path(output_path).match?(/\AD:[\\\/]/i)
         raise ArgumentError, 'Simpan hasil ekspor Evolution di drive D:.'
       end
-      engine = normalize_engine(engine)
-      profile = normalize_profile(profile)
       output_path = normalize_output_path(output_path, engine: engine, profile: profile)
       info = WRITERS.fetch(engine)
       trace = performance_trace || PerformanceTrace.new(

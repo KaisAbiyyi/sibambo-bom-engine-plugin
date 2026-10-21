@@ -30,12 +30,12 @@ end
 class TestEvolutionLineupMenu < Test::Unit::TestCase
   SOURCE = File.expand_path('../../tools/history/evolution_lineup', __dir__)
 
-  def test_four_version_items_route_to_format_dialog_or_e4
+  def test_three_active_version_items_route_to_format_dialog_or_e4
     Dir.mktmpdir('lineup-menu-') do |dir|
       %w[master_menu.rb lineup_dialog.rb].each { |name| FileUtils.cp(File.join(SOURCE, name), File.join(dir, name)) }
-      slots = %w[tiered_json canonical_v3 cleanpkg bomc_three_profile].each_with_index.map do |kind, i|
-        name = "FakeE#{i + 1}"
-        engine = File.join(dir, "e#{i + 1}")
+      slots = %w[canonical_v3 cleanpkg bomc_three_profile].each_with_index.map do |kind, i|
+        name = "FakeE#{i + 2}"
+        engine = File.join(dir, "e#{i + 2}")
         FileUtils.mkdir_p(engine)
         File.write(File.join(engine, 'entry.rb'), <<~RUBY)
           module SibamboHistory
@@ -49,17 +49,17 @@ class TestEvolutionLineupMenu < Test::Unit::TestCase
             end
           end
         RUBY
-        { 'id' => "e#{i + 1}", 'engine' => "e#{i + 1}", 'title' => "E#{i + 1} — #{kind}", 'kind' => kind,
-          'formatVersion' => 'test', 'profiles' => %w[visual research exact], 'sha' => (i + 1).to_s * 64,
-          'entry' => "e#{i + 1}/entry.rb", 'moduleName' => "SibamboHistory::#{name}" }
+        { 'id' => "e#{i + 2}", 'engine' => "e#{i + 2}", 'title' => "E#{i + 2} — #{kind}", 'kind' => kind,
+          'formatVersion' => 'test', 'profiles' => %w[exact visual], 'sha' => (i + 2).to_s * 64,
+          'entry' => "e#{i + 2}/entry.rb", 'moduleName' => "SibamboHistory::#{name}" }
       end
       File.write(File.join(dir, 'engines.json'), JSON.generate(slots))
       load File.join(dir, 'master_menu.rb')
 
       submenu = UI.menu('Extensions').items.last.last
       labels = submenu.items.select { |name, _| name.is_a?(String) && name.start_with?('E') }.map(&:first)
-      assert_equal 4, labels.length
-      assert_equal %w[E1 E2 E3 E4], labels.map { |label| label.split.first }
+      assert_equal 3, labels.length
+      assert_equal %w[E2 E3 E4], labels.map { |label| label.split.first }
       assert labels.all? { |label| label.include?('·') }
 
       captured = nil
@@ -67,10 +67,10 @@ class TestEvolutionLineupMenu < Test::Unit::TestCase
         captured = [slot.fetch('id'), model, target, block]
       end
       submenu.items[0].last.call
-      assert_equal 'e1', captured[0]
+      assert_equal 'e2', captured[0]
       assert_same Sketchup.active_model, captured[1]
       assert_nil $e4_called
-      submenu.items[3].last.call
+      submenu.items[2].last.call
       assert_equal true, $e4_called
       assert_equal [], UI.messages
 

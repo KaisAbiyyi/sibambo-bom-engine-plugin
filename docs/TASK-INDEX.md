@@ -32,3 +32,9 @@ The clean CI result on PR #2 proves that tracked `.skp` files were deleted from 
 ## F1I contract checkpoint and user execution override
 
 [Dual-profile v2 contract](contracts/evolution-dual-profile-v2.md) and [machine-readable pins](contracts/evolution-dual-profile-v2.json) define the six target choices and historical-read boundary. F1I documentation contract is FROZEN_REVIEWED; no runtime migration is implied. F1J is **HOLD BY USER**. F1K proceeds only with isolated proof tooling until Rooms resource release; its native acceptance also waits F1J. [Coordination record](https://github.com/KaisAbiyyi/sibambo/issues/2).
+
+## Latest execution override — bounded F1J cloud implementation
+
+Latest user correction supersedes the earlier J HOLD for feasible cloud code: resume F1J new-export routing/menu/lineup and portable checks, then F1L/F1M; further F1K is deferred. F1I JSON remains an immutable reviewed snapshot, not current task status.
+
+CLAIM SIB-F1J; session sib-f1jlm-20261021, generation 1; branch codex/sib-f1j-active-exports-20261021; base 0602b2e4fca39792b1f8ca30c3ba27d7be718d0a; lock producer-runtime. [Claim and checkpoints](https://github.com/KaisAbiyyi/sibambo-bom-engine-plugin/issues/4). Active E2/E3/E4 × Exact/Visual, historical codecs unchanged. Package v3 represents three original slots 2/3/4, while installer accepts v1/v2 archives. Native D-drive package/install and 30-row model evidence stay Local/Human gates; no cloud PASS transfers.
