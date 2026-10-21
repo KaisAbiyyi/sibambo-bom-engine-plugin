@@ -1,0 +1,127 @@
+{
+  "schema": "sibambo-perf-observation-v1",
+  "measurement_kind": "synthetic",
+  "run_id": "fixture-only-001",
+  "source": {
+    "model_id": "synthetic-model",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bytes": 8192
+  },
+  "environment": {
+    "os": "SYNTHETIC - no real host",
+    "sketchup_version": "not-run",
+    "ruby_version": "mock",
+    "host_id": "fixture-only",
+    "source_tree_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "rbz_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "export": {
+    "wire_engine_id": "e4",
+    "profile": "exact",
+    "mode": "single",
+    "cache": "cold",
+    "replicate": 1
+  },
+  "outcome": {
+    "status": "success",
+    "wall_ms": 220,
+    "peak_rss_bytes": null,
+    "artifact_bytes": 512,
+    "artifact_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "fidelity": "pending"
+  },
+  "trace": {
+    "schema": "sibambo-performance-trace-v1",
+    "enabled": true,
+    "status": "success",
+    "total_wall_ms": 200,
+    "metadata": {
+      "engine": "e4",
+      "profile": "exact"
+    },
+    "counters": {
+      "example_objects": 1
+    },
+    "stages": [
+      {
+        "id": "stage-1",
+        "parent_id": null,
+        "name": "capture",
+        "started_ms": 0,
+        "finished_ms": 100,
+        "duration_ms": 100,
+        "status": "success",
+        "counts": {
+          "entities": 2
+        }
+      },
+      {
+        "id": "stage-2",
+        "parent_id": "stage-1",
+        "name": "image_rep",
+        "started_ms": 10,
+        "finished_ms": 75,
+        "duration_ms": 65,
+        "status": "success",
+        "counts": {
+          "pixels": 4
+        }
+      },
+      {
+        "id": "stage-3",
+        "parent_id": null,
+        "name": "compile",
+        "started_ms": 100,
+        "finished_ms": 200,
+        "duration_ms": 100,
+        "status": "success"
+      }
+    ]
+  },
+  "materials": [
+    {
+      "material_id": "synthetic-material-1",
+      "pixels": 4,
+      "source_bytes": 140,
+      "output_bytes": 98,
+      "source_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "output_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "codec": "synthetic",
+      "verify_ms": 2,
+      "encode_ms": 5,
+      "decode_ms": 3,
+      "transcode_ms": 0,
+      "candidate_attempts": 2,
+      "rejected_candidates": 1,
+      "cache_hits": 0,
+      "cache_misses": 1,
+      "exact_rgba_alpha_pass": false
+    }
+  ],
+  "checkpoints": [
+    {
+      "elapsed_ms": 0,
+      "stage": "capture",
+      "phase": "capturing",
+      "processed": 0,
+      "total": 1,
+      "force": true
+    },
+    {
+      "elapsed_ms": 90,
+      "stage": "capture",
+      "phase": "capturing",
+      "processed": 1,
+      "total": 1,
+      "force": false
+    },
+    {
+      "elapsed_ms": 200,
+      "stage": "compile",
+      "phase": "compiling",
+      "processed": 1,
+      "total": 1,
+      "force": true
+    }
+  ]
+}
