@@ -5,10 +5,15 @@ require 'tmpdir'
 require 'fileutils'
 require 'json'
 require_relative '../../bom_engine/evolution_exporter'
+require_relative '../../bom_engine/tests/support/evolution_fixture'
 
 class TestEvolutionExportAll < Test::Unit::TestCase
   FakeModel = Struct.new(:path) do
     def modified? = false
+    def observers = (@observers ||= [])
+    def add_observer(observer) = observers << observer
+    def remove_observer(observer) = observers.delete(observer)
+    def commit_edit = observers.each { |observer| observer.onTransactionCommit(self) }
   end
 
   def setup
@@ -17,10 +22,12 @@ class TestEvolutionExportAll < Test::Unit::TestCase
     File.binwrite(@source, 'sketchup saved source')
     @model = FakeModel.new(@source)
     @original_export = BOMEngine::EvolutionExporter.method(:export)
+    @original_capture = BOMEngine::BOMCExtension.method(:capture_graph)
   end
 
   def teardown
     BOMEngine::EvolutionExporter.define_singleton_method(:export, @original_export)
+    BOMEngine::BOMCExtension.define_singleton_method(:capture_graph, @original_capture)
     FileUtils.remove_entry(@root) if File.directory?(@root)
   end
 
@@ -72,4 +79,91 @@ class TestEvolutionExportAll < Test::Unit::TestCase
     @model.path = @source
     assert_raise(ArgumentError) { BOMEngine::EvolutionExporter.export_all_profiles(@model, engine: :e1, output_base_path: File.join(@root, 'bad')) }
   end
+  def test_edit_and_save_between_profiles_stops_batch_and_preserves_exact
+    install_fake_export
+    progress = lambda do |event|
+      @model.commit_edit if event[:stage] == :preparing_all && event[:profile] == :visual
+    end
+    error = assert_raise(BOMEngine::EvolutionExporter::ExportAllError) do
+      BOMEngine::EvolutionExporter.export_all_profiles(@model, engine: :e2,
+        output_base_path: File.join(@root, 'edited'), progress: progress)
+    end
+    status = JSON.parse(File.read(File.join(error.directory, 'export-status.json')))
+    assert_equal 'partial_failed', status['status']
+    assert_equal ['exact'], status.fetch('profiles').keys
+    assert_equal [], Dir.glob(File.join(error.directory, '*__VISUAL*'))
+    assert_empty @model.observers, 'batch revision observer must be removed after failure'
+  end
+
+  def test_cancel_on_visual_preserves_exact_and_records_cancelled
+    install_fake_export
+    progress = lambda do |event|
+      raise BOMEngine::ConversionJob::Cancelled if event[:stage] == :preparing_all && event[:profile] == :visual
+    end
+    assert_raise(BOMEngine::ConversionJob::Cancelled) do
+      BOMEngine::EvolutionExporter.export_all_profiles(@model, engine: :e3,
+        output_base_path: File.join(@root, 'cancelled'), progress: progress)
+    end
+    directory = Dir.glob(File.join(@root, 'cancelled__E3__ALL-*')).fetch(0)
+    status = JSON.parse(File.read(File.join(directory, 'export-status.json')))
+    assert_equal 'cancelled', status['status']
+    assert_equal 'visual', status['failed_profile']
+    exact = status.fetch('profiles').fetch('exact').fetch('path')
+    assert File.file?(exact)
+    assert File.file?("#{exact}.provenance.json")
+    assert_empty @model.observers
+  end
+
+  def test_source_replacement_before_visual_does_not_publish_visual
+    install_fake_export
+    progress = lambda do |event|
+      File.binwrite(@source, 'different saved source') if event[:stage] == :preparing_all && event[:profile] == :visual
+    end
+    error = assert_raise(BOMEngine::EvolutionExporter::ExportAllError) do
+      BOMEngine::EvolutionExporter.export_all_profiles(@model, engine: :e2,
+        output_base_path: File.join(@root, 'replaced'), progress: progress)
+    end
+    assert_equal [], Dir.glob(File.join(error.directory, '*__VISUAL*'))
+    status = JSON.parse(File.read(File.join(error.directory, 'export-status.json')))
+    assert_equal ['exact'], status.fetch('profiles').keys
+    assert_empty @model.observers
+  end
+
+  def test_source_change_at_publication_preserves_only_the_previous_profile
+    BOMEngine::BOMCExtension.define_singleton_method(:capture_graph) { |_model, **_| EvolutionFixture.graph }
+    progress = lambda do |event|
+      if event[:stage] == :publication && event[:profile] == :visual
+        File.binwrite(@source, 'source replaced immediately before publication')
+      end
+    end
+    error = assert_raise(BOMEngine::EvolutionExporter::ExportAllError) do
+      BOMEngine::EvolutionExporter.export_all_profiles(@model, engine: :e2,
+        output_base_path: File.join(@root, 'publication'), progress: progress)
+    end
+    status = JSON.parse(File.read(File.join(error.directory, 'export-status.json')))
+    exact = status.fetch('profiles').fetch('exact').fetch('path')
+    assert File.file?(exact)
+    assert File.file?("#{exact}.provenance.json")
+    assert_equal [], Dir.glob(File.join(error.directory, '*__VISUAL.json.gz*')).reject { |path| path.end_with?('.performance.error.json') }
+    assert_empty @model.observers
+  end
+
+  def test_both_profiles_use_real_writers_and_independent_readback_for_each_format
+    BOMEngine::BOMCExtension.define_singleton_method(:capture_graph) { |_model, **_| EvolutionFixture.graph }
+    %i[e2 e3].each do |engine|
+      result = BOMEngine::EvolutionExporter.export_all_profiles(@model, engine: engine,
+        output_base_path: File.join(@root, "real-#{engine}"))
+      assert_equal 'complete', result.fetch(:status)
+      result.fetch(:profiles).each do |profile, record|
+        validation = BOMEngine::EvolutionValidator.validate_file!(record.fetch(:path),
+          engine: engine, expected_profile: profile, artifact_sha256: record.fetch(:sha256))
+        assert_equal true, validation.fetch(:passed)
+        provenance = JSON.parse(File.read("#{record.fetch(:path)}.provenance.json"))
+        assert_equal Digest::SHA256.file(@source).hexdigest, provenance.dig('model', 'sourceSha256')
+        assert_equal profile.to_s, provenance.dig('artifact', 'profile')
+      end
+    end
+    assert_empty @model.observers
+  end
+
 end

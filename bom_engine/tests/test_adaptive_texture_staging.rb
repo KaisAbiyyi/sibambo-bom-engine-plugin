@@ -223,9 +223,14 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
       # residual codec; a verified smaller JCM is valid in that case.
       Dir.mktmpdir do |dir|
         selected=stage_color_map(dir,conflict:true)
-        assert_equal '.jcm',File.extname(selected[:path])
-        assert_equal :jpeg_color_map_candidate,selected.dig(:evidence,:selected)
-        assert_equal 0,selected.dig(:evidence,:quality,:max_channel_error)
+        if Gem.win_platform?
+          assert_equal '.jcm', File.extname(selected[:path])
+          assert_equal :jpeg_color_map_candidate, selected.dig(:evidence, :selected)
+        else
+          assert_equal '.webp', File.extname(selected[:path])
+          assert_equal :webp_candidate, selected.dig(:evidence, :selected)
+        end
+        assert_equal 0, selected.dig(:evidence, :quality, :max_channel_error)
       end
     end
   end

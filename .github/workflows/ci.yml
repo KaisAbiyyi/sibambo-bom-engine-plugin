@@ -4,8 +4,7 @@ on:
   push:
     branches: [main, feat/*, 'feat/**']
     tags: ['*']
-  pull_request:
-    branches: [main]
+  pull_request: {}
 
 jobs:
   test:
@@ -21,6 +20,16 @@ jobs:
         with:
           ruby-version: '3.2'
 
+      - name: Set up Node for dialog checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install isolated Chromium test tooling
+        run: |
+          npm install --prefix "$RUNNER_TEMP/sibambo-ui" @playwright/test@1.61.1
+          "$RUNNER_TEMP/sibambo-ui/node_modules/.bin/playwright" install --with-deps chromium
+
       - name: Fetch provenance source histories
         run: |
           git fetch origin feature/clean-json-export
@@ -28,6 +37,7 @@ jobs:
 
       - name: Run BOM Engine Production Tests
         run: |
+          set -euo pipefail
           for f in bom_engine/tests/test_*.rb; do
             echo "Running $f..."
             ruby -I . "$f"
@@ -37,7 +47,10 @@ jobs:
         run: ruby tools/history/build_evolution_lab.rb
 
       - name: Run History & Provenance Tests
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/sibambo-ui/node_modules/@playwright/test
         run: |
+          set -euo pipefail
           for f in history/tests/test_*.rb; do
             echo "Running $f..."
             ruby "$f"

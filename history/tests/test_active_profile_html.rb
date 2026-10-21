@@ -16,8 +16,9 @@ class TestActiveProfileHtml < Test::Unit::TestCase
     Dir.mktmpdir('active-profile-ui-') do |directory|
       FileUtils.cp(File.join(ROOT, 'bom_engine/ui/bomc_theme.css'), File.join(directory, 'bomc_theme.css'))
       html = File.read(File.join(ROOT, relative))
-      stub = '<script>window.sketchup={onReady(){},browse(){},cancel(){},export(value){window.sent=JSON.parse(value)}};</script>'
+      stub = '<script>window.sketchup={ready(){},onReady(){},browse(){},cancel(){},export(value){window.sent=JSON.parse(value)}};</script>'
       html.sub!('<script>', stub + '<script>')
+      html.sub!('<link rel="stylesheet" href="bomc_theme.css">', "<style>#{File.read(File.join(directory, 'bomc_theme.css'))}</style>")
       html.sub!('</body>', "<script>#{script};document.body.setAttribute('data-qa',encodeURIComponent(JSON.stringify(window.qa)));</script></body>")
       path = File.join(directory, 'dialog.html')
       File.write(path, html)
@@ -25,21 +26,21 @@ class TestActiveProfileHtml < Test::Unit::TestCase
       File.write(driver, <<~'JS')
         const { chromium } = require(process.env.PLAYWRIGHT_MODULE);
         (async () => {
-          const browser = await chromium.launch({headless:true});
+          const browser = await chromium.launch({headless:true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? {executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE} : {})});
           try {
             const page = await browser.newPage();
             const errors = [];
             page.on('pageerror', error => errors.push(error.message));
             page.on('dialog', async dialog => { errors.push(dialog.message()); await dialog.dismiss(); });
-            await page.goto(process.argv[2]);
+            await page.setContent(require('node:fs').readFileSync(process.argv[2], 'utf8'));
             await page.waitForFunction(() => document.body.dataset.qa);
             const result = await page.evaluate(() => JSON.parse(decodeURIComponent(document.body.dataset.qa)));
             console.log(JSON.stringify({...result, scriptErrors:errors}));
           } finally { await browser.close(); }
         })().catch(error => { console.error(error); process.exitCode=1; });
       JS
-      stdout, stderr, status = Open3.capture3('node', driver, "file://#{path}")
-      assert status.success?, stderr.lines.last(3).join
+      stdout, stderr, status = Open3.capture3('node', driver, path)
+      assert status.success?, stderr
       result = JSON.parse(stdout)
       assert_equal [], result.fetch('scriptErrors')
       result
@@ -84,8 +85,28 @@ class TestActiveProfileHtml < Test::Unit::TestCase
       JS
       assert_equal 'all', all.dig('sent', 'profile')
       assert_equal '/tmp/model', all.dig('sent', 'output_path')
-      assert_include all.fetch('text'), 'dua profil'
+      assert_include all.fetch('text'), 'Ekspor 2 profil'
       assert_not_include all.fetch('text'), 'Research'
     end
   end
+  def test_export_all_completion_reports_two_profiles_for_every_active_format
+    %w[json.gz cleanpkg bomc].each do |extension|
+      result = inspect_dialog('bom_engine/ui/conversion_dialog.html', <<~JS)
+        initializeConversion({job_id:42,sequence:1,state:'capturing',output_path:'/tmp/model.#{extension}'});
+        completeConversion({job_id:42,sequence:2,state:'completed',batch_export:true,
+          path:'/tmp/results',profiles:{exact:{bytes:2048},visual:{bytes:1024}}});
+        window.qa={title:document.getElementById('title').textContent,
+          stage:document.getElementById('stage').textContent,
+          note:document.getElementById('outcome-note').textContent,
+          rows:document.getElementById('result-rows').innerText};
+      JS
+      assert_equal '2 profil selesai', result.fetch('title')
+      assert_equal '2 file tersimpan di folder baru', result.fetch('stage')
+      assert_include result.fetch('rows'), 'Exact'
+      assert_include result.fetch('rows'), 'Visual'
+      assert_not_include result.fetch('rows'), 'Research'
+      assert_not_include result.fetch('note'), 'Ketiga'
+    end
+  end
+
 end
