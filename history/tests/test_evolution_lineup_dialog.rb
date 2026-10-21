@@ -26,7 +26,6 @@ class TestEvolutionLineupDialog < Test::Unit::TestCase
 
   def test_shared_batch_and_profile_are_validated_for_every_active_format
     cases = [
-      [Tiered, { output_path: File.join(OUTPUT_ROOT, 'model__E1__EXACT.json') }],
       [Canonical, { output_path: File.join(OUTPUT_ROOT, 'model__E2__EXACT.json.gz') }],
       [Cleanpkg, { output_path: File.join(OUTPUT_ROOT, 'model__E3__EXACT.cleanpkg') }]
     ]

@@ -28,7 +28,7 @@ class TestEvolutionProfiles < Test::Unit::TestCase
     end
   end
 
-  def test_nine_new_writer_profile_combinations_round_trip
+  def test_historical_codec_combinations_round_trip_without_active_export_routing
     %i[e1 e2 e3].product(%i[visual research exact]).each do |engine, profile|
       with_document(engine, profile) do |dir, document|
         extension = engine == :e1 ? '.json' : engine == :e2 ? '.json.gz' : '.cleanpkg'

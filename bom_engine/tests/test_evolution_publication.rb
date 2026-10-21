@@ -95,9 +95,9 @@ class TestEvolutionPublication < Test::Unit::TestCase
   end
 
   def test_output_name_normalization_is_idempotent
-    first = BOMEngine::EvolutionExporter.normalize_output_path('C:/out/house', engine: :e2, profile: :research)
-    second = BOMEngine::EvolutionExporter.normalize_output_path(first, engine: :e2, profile: :research)
-    assert_equal 'C:/out/house__E2__RESEARCH.json.gz', first
+    first = BOMEngine::EvolutionExporter.normalize_output_path('C:/out/house', engine: :e2, profile: :exact)
+    second = BOMEngine::EvolutionExporter.normalize_output_path(first, engine: :e2, profile: :exact)
+    assert_equal 'C:/out/house__E2__EXACT.json.gz', first
     assert_equal first, second
   end
 

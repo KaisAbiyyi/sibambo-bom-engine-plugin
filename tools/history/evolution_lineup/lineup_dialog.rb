@@ -8,10 +8,12 @@ module SibamboHistory
   module EvolutionLab
     module LineupDialog
       BATCH_SIZES = [96, 128, 256, 512, 1_024, 2_048, 4_096, 8_192].freeze
-      PROFILES = %w[visual research exact].freeze
+      PROFILES = %w[exact visual].freeze
 
       class << self
         def default_path(slot, model, profile = 'visual')
+          raise ArgumentError, 'retired_for_new_exports: e1' if slot.fetch('engine') == 'e1'
+          raise ArgumentError, 'Pilih Exact atau Visual.' unless PROFILES.include?(profile.to_s)
           source = model.path.to_s
           directory = if Gem.win_platform? && Dir.exist?('D:/')
                         source.match?(/\AD:[\\\/]/i) ? File.dirname(source) : 'D:/SibamboExports'
@@ -20,7 +22,6 @@ module SibamboHistory
                       end
           base = source.empty? ? 'Untitled' : File.basename(source, File.extname(source))
           extension = case slot.fetch('engine')
-                      when 'e1' then '.json'
                       when 'e2' then '.json.gz'
                       when 'e3' then '.cleanpkg'
                       else raise ArgumentError, "Unsupported Evolution writer: #{slot.fetch('engine')}"
@@ -30,11 +31,12 @@ module SibamboHistory
 
         def validated_settings(slot, raw, target)
           raise ArgumentError, 'Pengaturan export tidak valid.' unless raw.is_a?(Hash)
+          raise ArgumentError, 'retired_for_new_exports: e1' unless %w[e2 e3].include?(slot.fetch('engine'))
           values = raw.transform_keys(&:to_sym)
           batch = Integer(values.fetch(:batch_size))
           raise ArgumentError, 'Pilih batch 96–8192 dari daftar.' unless BATCH_SIZES.include?(batch)
           profile = values.fetch(:profile).to_s.downcase
-          raise ArgumentError, 'Profil harus Visual, Research, atau Exact.' unless PROFILES.include?(profile) && slot.fetch('profiles').include?(profile)
+          raise ArgumentError, 'Profil harus Exact atau Visual.' unless PROFILES.include?(profile) && slot.fetch('profiles').include?(profile)
           path = values.fetch(:output_path).to_s.strip
           raise ArgumentError, 'Lokasi output belum diisi.' if path.empty?
           raise ArgumentError, 'Gunakan lokasi output lengkap.' unless Pathname.new(path).absolute?

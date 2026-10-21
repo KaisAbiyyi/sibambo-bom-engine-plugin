@@ -17,6 +17,7 @@ require_relative 'bomc_validator'
 require_relative 'conversion_job'
 require_relative 'capture_ir'
 require_relative 'performance_trace'
+require_relative 'evolution_export_policy'
 
 if defined?(Sketchup) && defined?(UI)
   require_relative 'core'
@@ -67,7 +68,7 @@ module BOMEngine
 
     def normalize_output_path(path, profile: DEFAULT_PROFILE)
       base = output_base_path(path)
-      normalized_profile = normalize_profile(profile)
+      normalized_profile = EvolutionExportPolicy.profile(profile)
       "#{base}__SIBAMBO-BOMC-v#{Branding::EXTENSION_VERSION}__#{normalized_profile.to_s.upcase}#{FORMAT_EXTENSION}"
     end
 
@@ -89,7 +90,7 @@ module BOMEngine
     def normalize_dialog_settings(payload)
       values = payload.transform_keys(&:to_sym)
       requested = values[:profile].to_s.downcase
-      raise ArgumentError, 'Pilih Visual, Research, Exact, atau Semua profil.' unless %w[visual research exact all].include?(requested)
+      EvolutionExportPolicy.profile(requested) unless requested == 'all'
       profile = requested.to_sym
       base = output_base_path(values[:output_path])
       raise ArgumentError, 'Pilih lokasi keluaran terlebih dahulu.' if base.empty?
@@ -129,6 +130,8 @@ module BOMEngine
           raise_target_not_met!(candidate, source_info, bytes.bytesize)
         end
       end
+
+      require_active_candidate_profile!(bytes, report)
 
       directory = File.dirname(output_path)
       FileUtils.mkdir_p(directory) unless Dir.exist?(directory)
@@ -175,8 +178,49 @@ module BOMEngine
       }
     end
 
+    # A passing historical validator report does not authorize a new export.
+    # Inspect only the small encoding contract, without decoding model geometry.
+    def require_active_candidate_profile!(bytes, report)
+      sections = BOMC::Container.read_directory(bytes).fetch(:sections).select do |section|
+        section[:type] == BOMC::SECTION_ENCODING_CONTRACT
+      end
+      unless sections.length == 1 && sections.first[:raw_size] == BOMCEncodingContract::SECTION_BYTE_SIZE
+        raise ArgumentError, 'Cannot publish: expected one complete BOMC encoding contract.'
+      end
+      section = sections.first
+      stored = bytes.byteslice(section[:offset], section[:stored_size])
+      raise ArgumentError, 'Cannot publish: encoding contract checksum mismatch.' unless Zlib.crc32(stored) == section[:crc32]
+      raw = case section[:codec]
+            when BOMC::CODEC_STORE then stored
+            when BOMC::CODEC_DEFLATE
+              result = ''.b
+              inflater = Zlib::Inflate.new
+              begin
+                inflater.inflate(stored) do |chunk|
+                  if result.bytesize + chunk.bytesize > BOMCEncodingContract::SECTION_BYTE_SIZE
+                    raise ArgumentError, 'Cannot publish: encoding contract exceeds its fixed size.'
+                  end
+                  result << chunk
+                end
+                raise ArgumentError, 'Cannot publish: truncated encoding contract.' unless inflater.finished?
+                result
+              ensure
+                inflater.close
+              end
+            else
+              raise ArgumentError, 'Cannot publish: unsupported encoding contract codec.'
+            end
+      actual = EvolutionExportPolicy.profile(BOMCEncodingContract.decode(raw).fetch(:profile))
+      claimed = report[:profile] || report['profile']
+      if claimed && EvolutionExportPolicy.profile(claimed) != actual
+        raise ArgumentError, 'Cannot publish: validation report profile differs from candidate bytes.'
+      end
+      actual
+    end
+    private_class_method :require_active_candidate_profile!
+
     def publish_graph(path, graph, profile: DEFAULT_PROFILE, base_path: nil, source_info: nil, allow_jpeg_color_map: nil)
-      prof = normalize_profile(profile)
+      prof = EvolutionExportPolicy.profile(profile)
       jcm_enabled = resolve_jpeg_color_map(prof, allow_jpeg_color_map)
       src_info = source_info || (graph.is_a?(Hash) ? graph[:source_info] : nil)
       if src_info.nil? && BOMCProfile.fetch(prof).requires_source_size?
@@ -203,10 +247,10 @@ module BOMEngine
     end
 
     def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil, allow_jpeg_color_map: nil, prepared_color_maps: nil, candidate_cache: nil, performance_trace: nil)
+      profile = EvolutionExportPolicy.profile(profile)
       if Gem.win_platform? && Dir.exist?('D:/') && !File.expand_path(output_path).match?(/\AD:[\\\/]/i)
         raise ArgumentError, 'Simpan hasil ekspor BOMC di drive D:.'
       end
-      profile = normalize_profile(profile)
       jcm_enabled = resolve_jpeg_color_map(profile, allow_jpeg_color_map)
       processing = settings || BOMCProcessing.settings(:balanced)
       yield_callback = progress || ->(_event) {}
@@ -230,7 +274,7 @@ module BOMEngine
     def export_all_profiles(model, output_path:, settings:, progress:)
       base = output_base_path(output_path)
       raise ArgumentError, 'Export All membutuhkan lokasi lengkap dan nama dasar keluaran.' unless absolute_output_base?(base) && !base.match?(/[\\\/]\z/)
-      raise ArgumentError, 'Simpan model sebelum Export All agar ketiga profil memakai sumber yang sama.' if model.path.to_s.empty? || (model.respond_to?(:modified?) && model.modified?)
+      raise ArgumentError, 'Simpan model sebelum Export All agar kedua profil memakai sumber yang sama.' if model.path.to_s.empty? || (model.respond_to?(:modified?) && model.modified?)
 
       parent = File.dirname(base)
       FileUtils.mkdir_p(parent)
@@ -243,7 +287,7 @@ module BOMEngine
         progress.call(stage: :PREPARING_ALL, processed: 0, total: 0, output_directory: directory, profile: :visual)
         Dir.mktmpdir('bomc-candidates', parent) do |cache_dir|
           cache = { directory: cache_dir, entries: {}, hits: 0, jpeg_quality: {}, jpeg_quality_hits: 0 }
-          [:visual, :research, :exact].each do |profile|
+          EvolutionExportPolicy::PROFILES.each do |profile|
             active_profile = profile
             assert_all_model_unchanged!(model)
             path = normalize_output_path(File.join(directory, File.basename(base)), profile: profile)
