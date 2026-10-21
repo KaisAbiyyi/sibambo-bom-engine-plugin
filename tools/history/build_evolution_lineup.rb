@@ -167,22 +167,26 @@ module EvolutionLineupBuilder
             end
             def self.export_current_model(model, settings)
               runtime = load_engine
-              processing = runtime::BOMCProcessing.from_ui(batch_mode: 'manual', batch_size: settings.fetch(:batch_size))
+              batch_mode = settings.fetch(:batch_mode, 'manual')
+              processing = runtime::BOMCProcessing.from_ui(batch_mode: batch_mode, batch_size: settings[:batch_size])
+              all = settings.fetch(:profile) == :all
               runtime::ConversionJob.start(
                 title: "Sibambo Evolution — \#{ENGINE.upcase} \#{settings.fetch(:profile).to_s.upcase}",
                 output_path: settings.fetch(:output_path),
-                batch_size: settings.fetch(:batch_size),
-                kind: :export
+                batch_size: processing[:max_items],
+                kind: all ? :batch_export : :export
               ) do |progress|
-                runtime::EvolutionExporter.export(
-                  model,
-                  engine: ENGINE,
-                  profile: settings.fetch(:profile),
-                  output_path: settings.fetch(:output_path),
-                  processing: processing,
-                  progress: progress,
-                  active_model: -> { Sketchup.active_model }
-                )
+                if all
+                  runtime::EvolutionExporter.export_all_profiles(
+                    model, engine: ENGINE, output_base_path: settings.fetch(:output_path),
+                    processing: processing, progress: progress, active_model: -> { Sketchup.active_model }
+                  )
+                else
+                  runtime::EvolutionExporter.export(
+                    model, engine: ENGINE, profile: settings.fetch(:profile), output_path: settings.fetch(:output_path),
+                    processing: processing, progress: progress, active_model: -> { Sketchup.active_model }
+                  )
+                end
               end
             end
           end

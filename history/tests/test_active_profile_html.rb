@@ -61,18 +61,31 @@ class TestActiveProfileHtml < Test::Unit::TestCase
     assert_not_include result.fetch('text'), 'Research'
   end
 
-  def test_e2_and_e3_dialogs_publish_only_their_selected_profile_and_own_extension
+  def test_e2_and_e3_dialogs_offer_identical_exact_visual_and_export_all_choices
     { 'e2' => '.json.gz', 'e3' => '.cleanpkg' }.each do |engine, extension|
       config = { engine: engine, title: engine, sha: 'a' * 64, formatVersion: 'test', output_path: "/tmp/model#{extension}" }
       result = inspect_dialog('tools/history/evolution_lineup/lineup_dialog.html', <<~JS)
         setConfig(#{config.to_json});
-        document.getElementById('profile').value='exact';normalizePath();
+        document.querySelector('input[name="profile-choice"][value="exact"]').checked=true;
+        updateProfilePath();
         document.getElementById('export').click();
-        window.qa={profiles:Array.from(document.querySelectorAll('#profile option'),e=>e.value),sent:window.sent};
+        window.qa={profiles:Array.from(document.querySelectorAll('input[name="profile-choice"]'),e=>e.value),sent:window.sent};
       JS
-      assert_equal %w[exact visual], result.fetch('profiles')
+      assert_equal %w[exact visual all], result.fetch('profiles')
       assert_equal 'exact', result.dig('sent', 'profile')
       assert_equal "/tmp/model__#{engine.upcase}__EXACT#{extension}", result.dig('sent', 'output_path')
+
+      all = inspect_dialog('tools/history/evolution_lineup/lineup_dialog.html', <<~JS)
+        setConfig(#{config.to_json});
+        document.querySelector('input[name="profile-choice"][value="all"]').checked=true;
+        updateProfilePath();
+        document.getElementById('export').click();
+        window.qa={sent:window.sent,text:document.body.innerText};
+      JS
+      assert_equal 'all', all.dig('sent', 'profile')
+      assert_equal '/tmp/model', all.dig('sent', 'output_path')
+      assert_include all.fetch('text'), 'dua profil'
+      assert_not_include all.fetch('text'), 'Research'
     end
   end
 end
