@@ -131,6 +131,8 @@ module BOMEngine
         end
       end
 
+      require_active_candidate_profile!(bytes, report)
+
       directory = File.dirname(output_path)
       FileUtils.mkdir_p(directory) unless Dir.exist?(directory)
 
@@ -175,6 +177,47 @@ module BOMEngine
         size_target: source_info ? :under_source : nil
       }
     end
+
+    # A passing historical validator report does not authorize a new export.
+    # Inspect only the small encoding contract, without decoding model geometry.
+    def require_active_candidate_profile!(bytes, report)
+      sections = BOMC::Container.read_directory(bytes).fetch(:sections).select do |section|
+        section[:type] == BOMC::SECTION_ENCODING_CONTRACT
+      end
+      unless sections.length == 1 && sections.first[:raw_size] == BOMCEncodingContract::SECTION_BYTE_SIZE
+        raise ArgumentError, 'Cannot publish: expected one complete BOMC encoding contract.'
+      end
+      section = sections.first
+      stored = bytes.byteslice(section[:offset], section[:stored_size])
+      raise ArgumentError, 'Cannot publish: encoding contract checksum mismatch.' unless Zlib.crc32(stored) == section[:crc32]
+      raw = case section[:codec]
+            when BOMC::CODEC_STORE then stored
+            when BOMC::CODEC_DEFLATE
+              result = ''.b
+              inflater = Zlib::Inflate.new
+              begin
+                inflater.inflate(stored) do |chunk|
+                  if result.bytesize + chunk.bytesize > BOMCEncodingContract::SECTION_BYTE_SIZE
+                    raise ArgumentError, 'Cannot publish: encoding contract exceeds its fixed size.'
+                  end
+                  result << chunk
+                end
+                raise ArgumentError, 'Cannot publish: truncated encoding contract.' unless inflater.finished?
+                result
+              ensure
+                inflater.close
+              end
+            else
+              raise ArgumentError, 'Cannot publish: unsupported encoding contract codec.'
+            end
+      actual = EvolutionExportPolicy.profile(BOMCEncodingContract.decode(raw).fetch(:profile))
+      claimed = report[:profile] || report['profile']
+      if claimed && EvolutionExportPolicy.profile(claimed) != actual
+        raise ArgumentError, 'Cannot publish: validation report profile differs from candidate bytes.'
+      end
+      actual
+    end
+    private_class_method :require_active_candidate_profile!
 
     def publish_graph(path, graph, profile: DEFAULT_PROFILE, base_path: nil, source_info: nil, allow_jpeg_color_map: nil)
       prof = EvolutionExportPolicy.profile(profile)

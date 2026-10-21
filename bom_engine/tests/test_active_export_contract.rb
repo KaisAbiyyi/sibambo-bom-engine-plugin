@@ -35,6 +35,48 @@ class TestActiveExportContract < Test::Unit::TestCase
     end
   end
 
+  def test_publication_reads_actual_profile_before_creating_or_replacing_output
+    graph = JSON.parse(File.read(File.expand_path('../../examples/model-eval-json-v1-small.json', __dir__)), symbolize_names: true)
+    candidate = BOMEngine::BOMCWriter.pack(graph, profile: :research)
+    report = BOMEngine::BOMCValidator.validate_profile!(source: graph,
+      decoded: BOMEngine::BOMCDecoder.decode(candidate[:bytes]), profile: :research)
+    assert_equal true, report[:passed]
+    [report, { passed: true, profile: :exact }].each do |claimed_report|
+      Dir.mktmpdir do |root|
+        destination = File.join(root, 'new-directory', 'research.bomc')
+        error = assert_raise(ArgumentError) do
+          BOMEngine::BOMCExtension.publish_validated(candidate: candidate, report: claimed_report, output_path: destination)
+        end
+        assert_include error.message, 'retired_for_new_exports'
+        assert_equal false, File.exist?(File.dirname(destination))
+        preserved = File.join(root, 'existing.bomc')
+        File.binwrite(preserved, 'previous validated artifact')
+        assert_raise(ArgumentError) do
+          BOMEngine::BOMCExtension.publish_validated(candidate: candidate, report: claimed_report, output_path: preserved)
+        end
+        assert_equal 'previous validated artifact', File.binread(preserved)
+        assert_equal [], Dir.glob("#{preserved}.*.part")
+      end
+    end
+  end
+
+  def test_publication_rejects_mismatched_or_oversized_encoding_contract
+    contract = BOMEngine::BOMCEncodingContract.encode(:exact)
+    descriptor = { type: BOMEngine::BOMC::SECTION_ENCODING_CONTRACT, bytes: contract, count: 1 }
+    exact = BOMEngine::BOMC::Container.pack([descriptor])
+    oversized = BOMEngine::BOMC::Container.pack([descriptor.merge(
+      codec: BOMEngine::BOMC::CODEC_DEFLATE, stored_bytes: Zlib::Deflate.deflate(contract + ('x' * 65_536)))])
+    [[exact, { passed: true, profile: :visual }], [oversized, { passed: true, profile: :exact }]].each do |bytes, report|
+      Dir.mktmpdir do |root|
+        destination = File.join(root, 'not-created', 'artifact.bomc')
+        assert_raise(ArgumentError) do
+          BOMEngine::BOMCExtension.publish_validated(candidate: bytes, report: report, output_path: destination)
+        end
+        assert_equal false, File.exist?(File.dirname(destination))
+      end
+    end
+  end
+
   def test_six_active_choices_preserve_original_slots_and_independent_formats
     slots = EvolutionLineupBuilder.load_slots
     assert_equal %w[e2 e3 e4], slots.map { |slot| slot.fetch('engine') }
