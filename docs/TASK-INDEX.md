@@ -28,3 +28,7 @@ A command `ambil F1C` can be interpreted unambiguously here. The agent checks ev
 ## F1A acceptance note
 
 The clean CI result on PR #2 proves that tracked `.skp` files were deleted from the current Git tree and that portable corpus regressions stay fail-closed. It does **not** purge historical Git object blobs, nor qualify private SketchUp source-model captures. Real F1C/F1D evidence remains local; GitHub CI must never treat a missing model as completed validation.
+
+## F1I contract checkpoint and user execution override
+
+[Dual-profile v2 contract](contracts/evolution-dual-profile-v2.md) and [machine-readable pins](contracts/evolution-dual-profile-v2.json) define the six target choices and historical-read boundary. F1I documentation contract is FROZEN_REVIEWED; no runtime migration is implied. F1J is **HOLD BY USER**. F1K proceeds only with isolated proof tooling until Rooms resource release; its native acceptance also waits F1J. [Coordination record](https://github.com/KaisAbiyyi/sibambo/issues/2).
