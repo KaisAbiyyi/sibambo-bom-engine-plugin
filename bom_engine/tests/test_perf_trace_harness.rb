@@ -84,22 +84,23 @@ class PerfTraceHarnessTest < Minitest::Test
   def test_repeated_native_cohort_percentiles_and_matched_speedup
     before = [native, native]
     before[0]['run_id'] = 'before-1'
+    before[0]['outcome']['wall_ms'] = 400
     before[1]['run_id'] = 'before-2'
     before[1]['export']['replicate'] = 2
-    before[1]['outcome']['wall_ms'] = 320
+    before[1]['outcome']['wall_ms'] = 500
     after = Marshal.load(Marshal.dump(before))
-    after[0]['outcome']['wall_ms'] = 150
-    after[1]['outcome']['wall_ms'] = 250
+    after[0]['outcome']['wall_ms'] = 300
+    after[1]['outcome']['wall_ms'] = 400
     summary = SibamboPerf.report(before)
     assert_equal 2, summary[:qualified_native_rows]
     assert_equal 1, summary[:cohorts].length
-    assert_in_delta 270, summary[:cohorts].first.dig(:wall_ms, :p50), 0.0001
-    assert_in_delta 315, summary[:cohorts].first.dig(:wall_ms, :p95), 0.0001
+    assert_in_delta 450, summary[:cohorts].first.dig(:wall_ms, :p50), 0.0001
+    assert_in_delta 495, summary[:cohorts].first.dig(:wall_ms, :p95), 0.0001
     comparison = SibamboPerf.compare(before, after)
     assert_equal 1, comparison[:paired].size
     assert comparison[:paired].first[:repeated]
-    assert_in_delta 25.926, comparison[:paired].first[:speedup_pct], 0.001
-    after[0]['environment']['host_id'] = 'other-host'
+    assert_in_delta 22.222, comparison[:paired].first[:speedup_pct], 0.001
+    after.each { |row| row['environment']['host_id'] = 'other-host' }
     assert_empty SibamboPerf.compare(before, after)[:paired]
   end
 
