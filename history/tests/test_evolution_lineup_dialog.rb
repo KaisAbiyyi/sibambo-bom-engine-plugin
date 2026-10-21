@@ -8,8 +8,8 @@ class TestEvolutionLineupDialog < Test::Unit::TestCase
   # Synthetic output paths are D:-scoped on Windows and absolute on Unix CI.
   OUTPUT_ROOT = Gem.win_platform? ? 'D:/SibamboExports/lineup-fixture' : File.join(Dir.tmpdir, 'sibambo-lineup-fixture')
   Tiered = { 'engine' => 'e1', 'kind' => 'tiered_json', 'profiles' => %w[visual research exact] }.freeze
-  Canonical = { 'engine' => 'e2', 'kind' => 'canonical_v3', 'profiles' => %w[visual research exact] }.freeze
-  Cleanpkg = { 'engine' => 'e3', 'kind' => 'cleanpkg', 'profiles' => %w[visual research exact] }.freeze
+  Canonical = { 'engine' => 'e2', 'kind' => 'canonical_v3', 'profiles' => %w[exact visual] }.freeze
+  Cleanpkg = { 'engine' => 'e3', 'kind' => 'cleanpkg', 'profiles' => %w[exact visual] }.freeze
 
   module CanonicalTarget
     def self.normalize_output_path(path, profile)
@@ -52,6 +52,35 @@ class TestEvolutionLineupDialog < Test::Unit::TestCase
     assert_raise(ArgumentError) do
       SibamboHistory::EvolutionLab::LineupDialog.validated_settings(
         Canonical, { output_path: File.join(OUTPUT_ROOT, 'model__E2__STANDARD.json.gz'), batch_size: 512, profile: 'standard' }, CanonicalTarget
+      )
+    end
+  end
+
+  def test_export_all_accepts_base_path_without_profile_suffix_for_both_formats
+    [Canonical, Cleanpkg].each do |slot|
+      settings = SibamboHistory::EvolutionLab::LineupDialog.validated_settings(
+        slot, { output_path: File.join(OUTPUT_ROOT, 'model'), batch_mode: 'auto', profile: 'all' }, CanonicalTarget
+      )
+      assert_equal :all, settings[:profile]
+      assert_equal 'auto', settings[:batch_mode]
+      assert_nil settings[:batch_size]
+      assert_raise(ArgumentError) do
+        SibamboHistory::EvolutionLab::LineupDialog.validated_settings(
+          slot, { output_path: File.join(OUTPUT_ROOT, 'model__E2__VISUAL.json.gz'), batch_mode: 'auto', profile: 'all' }, CanonicalTarget
+        )
+      end
+    end
+  end
+
+  def test_export_all_fails_closed_on_retired_profile_and_noncanonical_output_base
+    assert_raise(ArgumentError) do
+      SibamboHistory::EvolutionLab::LineupDialog.validated_settings(
+        Canonical, { output_path: File.join(OUTPUT_ROOT, 'model'), batch_mode: 'auto', profile: 'research' }, CanonicalTarget
+      )
+    end
+    assert_raise(ArgumentError) do
+      SibamboHistory::EvolutionLab::LineupDialog.validated_settings(
+        Cleanpkg, { output_path: File.join(OUTPUT_ROOT, 'model.cleanpkg'), batch_mode: 'manual', batch_size: 512, profile: 'all' }, CanonicalTarget
       )
     end
   end
