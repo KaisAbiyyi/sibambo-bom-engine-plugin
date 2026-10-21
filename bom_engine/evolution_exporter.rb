@@ -3,6 +3,7 @@
 require 'digest'
 require 'fileutils'
 require 'json'
+require 'pathname'
 require 'securerandom'
 require 'tmpdir'
 require 'time'
@@ -32,6 +33,15 @@ module BOMEngine
     SOURCE_EXCLUDED = %w[tests tools benchmarks graphify-out].freeze
 
     class ModelChanged < StandardError; end
+
+    class ExportAllError < StandardError
+      attr_reader :directory
+
+      def initialize(directory, message)
+        @directory = directory
+        super(message)
+      end
+    end
 
     ObserverBase = if defined?(Sketchup::ModelObserver)
                      Sketchup::ModelObserver
@@ -147,6 +157,58 @@ module BOMEngine
       base = base.sub(/(?:\.json(?:\.gz)?|\.cleanpkg)\z/i, '')
       "#{base}__#{engine.to_s.upcase}__#{profile.to_s.upcase}#{WRITERS.fetch(engine).fetch(:extension)}"
     end
+
+    # Two independent, validated format-specific artifacts. Never overwrite prior exports.
+    # Preserve successfully published files and provenance if a later profile fails.
+    def export_all_profiles(model, engine:, output_base_path:, processing: nil, progress: nil, active_model: nil)
+      engine = normalize_engine(engine)
+      raise ArgumentError, 'Export All hanya untuk Canonical dan CleanPKG.' unless %i[e2 e3].include?(engine)
+      base = output_base_path.to_s.strip
+      base = base.sub(/__E[23]__(?:EXACT|VISUAL)(?:\.json\.gz|\.cleanpkg)\z/i, '')
+                 .sub(/(?:\.json\.gz|\.cleanpkg|\.skp)\z/i, '')
+      raise ArgumentError, 'Export All membutuhkan lokasi lengkap dan nama dasar file.' if base.empty? || !Pathname.new(base).absolute? || base.match?(/[\\\/]\z/)
+      if Gem.win_platform? && Dir.exist?('D:/') && !File.expand_path(base).match?(/\AD:[\\\/]/i)
+        raise ArgumentError, 'Simpan hasil ekspor Evolution di drive D:.'
+      end
+      raise ArgumentError, 'Simpan model SketchUp sebelum Export All.' if model.path.to_s.empty? || (model.respond_to?(:modified?) && model.modified?)
+
+      parent = File.dirname(base)
+      FileUtils.mkdir_p(parent)
+      directory = Dir.mktmpdir("#{File.basename(base)}__#{engine.to_s.upcase}__ALL-", parent)
+      records = {}
+      current_profile = nil
+      original_source = BOMCSizeGate.source_info(model.path.to_s)
+      write_all_status(directory, 'in_progress', records)
+      begin
+        PROFILES.each do |profile|
+          current_profile = profile
+          raise ModelChanged, 'Model SketchUp berubah selama Export All.' if (active_model && !active_model.call.equal?(model)) || (model.respond_to?(:modified?) && model.modified?)
+          path = normalize_output_path(File.join(directory, File.basename(base)), engine: engine, profile: profile)
+          progress.call(stage: :preparing_all, processed: records.length, total: PROFILES.length, profile: profile, output_directory: directory) if progress
+          result = export(model, engine: engine, profile: profile, output_path: path, processing: processing,
+            progress: ->(event) { progress.call(event.merge(profile: profile, output_directory: directory)) if progress }, active_model: active_model)
+          raise ModelChanged, 'Sumber SKP berubah selama Export All.' unless BOMCSizeGate.source_info(model.path.to_s) == original_source
+          records[profile] = { path: result.fetch(:path), bytes: result.fetch(:bytes), sha256: result.fetch(:sha256) }
+          write_all_status(directory, 'in_progress', records)
+        end
+        write_all_status(directory, 'complete', records)
+        { path: directory, profiles: records, status: 'complete', source_info: original_source }
+      rescue ConversionJob::Cancelled
+        write_all_status(directory, 'cancelled', records, failed_profile: current_profile)
+        raise
+      rescue StandardError => error
+        write_all_status(directory, 'partial_failed', records, failed_profile: current_profile, error: "#{error.class}: #{error.message}")
+        raise ExportAllError.new(directory, "#{current_profile || 'Persiapan'} gagal; #{records.length} profil selesai. Hasil parsial tetap di #{directory}. #{error.message}")
+      end
+    end
+
+    def write_all_status(directory, status, records, failed_profile: nil, error: nil)
+      data = { status: status, certified: false, profiles: records }
+      data[:failed_profile] = failed_profile if failed_profile
+      data[:error] = error if error
+      File.write(File.join(directory, 'export-status.json'), JSON.pretty_generate(data) + "\n", encoding: 'UTF-8')
+    end
+    private_class_method :write_all_status
 
     def performance_receipt_path(output_path, status: :success)
       normalized = status.to_s
