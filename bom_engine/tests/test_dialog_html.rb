@@ -186,20 +186,20 @@ class DialogHtmlTest < Minitest::Test
     assert_includes result['text'], 'tidak menjamin'
   end
 
-  def test_export_dialog_all_is_a_fourth_choice_with_one_base_path
+  def test_export_dialog_all_is_a_third_choice_with_one_base_path
     result = render('bomc_export_dialog.html', <<~JS)
       setDefaultPath('D:/exports/house.skp');
       document.getElementById('profile-all').checked=true;updateProfilePath();doExport();
       window.qa={sent:window.sent,text:document.body.innerText,
-        choices:document.querySelectorAll('input[name="profile-choice"]').length,
+        choices:Array.from(document.querySelectorAll('input[name="profile-choice"]')).map(input=>input.value),
         height:document.documentElement.scrollHeight,viewport:window.innerHeight};
     JS
-    assert_equal 4, result['choices']
+    assert_equal %w[exact visual all], result['choices']
     assert_equal 'all', result.dig('sent', 'profile')
     assert_equal 'D:/exports/house', result.dig('sent', 'output_path')
     assert_includes result['text'], 'folder'
     refute_includes result['text'], 'adaptif sampai 2048'
-    assert_operator result['height'], :<=, result['viewport'], 'four choices and action must fit the export dialog'
+    assert_operator result['height'], :<=, result['viewport'], 'three choices and action must fit the export dialog'
   end
 
   def test_all_completion_lists_three_files_without_claiming_certification
