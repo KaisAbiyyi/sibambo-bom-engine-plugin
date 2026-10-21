@@ -93,6 +93,9 @@ module SibamboPerf
     require_value(errors, trace['schema'], 'trace.schema', trace['schema'] == TRACE_SCHEMA)
     require_value(errors, trace['enabled'], 'trace.enabled', trace['enabled'] == true)
     require_value(errors, trace['total_wall_ms'], 'trace.total_wall_ms', num?(trace['total_wall_ms']))
+    if num?(trace['total_wall_ms']) && num?(outcome['wall_ms']) && trace['total_wall_ms'] > outcome['wall_ms'] + 5.0
+      errors << 'trace.total_wall_ms exceeds end-to-end outcome.wall_ms'
+    end
     stages = trace['stages']
     errors << 'trace.stages must be a nonempty array' unless stages.is_a?(Array) && !stages.empty?
     stage_by_id = {}
