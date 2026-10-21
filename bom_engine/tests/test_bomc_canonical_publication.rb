@@ -12,7 +12,7 @@ class TestBOMCCanonicalPublication < Test::Unit::TestCase
     @graph = JSON.parse(File.read(File.expand_path('../../examples/canonical-v3-small.json', __dir__)), symbolize_names: true)
   end
 
-  [:visual, :research, :exact].each do |profile|
+  [:exact, :visual].each do |profile|
     define_method("test_canonical_root_publishes_with_#{profile}_validation") do
       Dir.mktmpdir('bomc-canonical-publication') do |dir|
         path = File.join(dir, 'model.bomc')
@@ -31,6 +31,24 @@ class TestBOMCCanonicalPublication < Test::Unit::TestCase
         ensure
           context[:cleanup].call
         end
+      end
+    end
+  end
+
+  def test_historical_research_still_decodes_but_cannot_publish_a_new_export
+    Dir.mktmpdir('bomc-canonical-research') do |dir|
+      path = File.join(dir, 'model.bomc')
+      context = BOMEngine::BOMCExtension.send(:export_context, path, ->(*) {}, profile: :research)
+      begin
+        candidate = context[:compile].call(@graph, { available: true, bytes: 1_000_000 }, path, ->(**_) {})
+        validation = context[:validate].call(candidate, @graph)
+        assert_equal true, validation[:report][:passed]
+        error = assert_raise(ArgumentError) { context[:publish].call(candidate, validation, path) }
+        assert_include error.message, 'retired_for_new_exports'
+        assert_false File.exist?(path)
+        assert_equal 'model_definition', BOMEngine::BOMCDecoder.decode(candidate.fetch(:bytes)).dig(:definitions, 0, :kind)
+      ensure
+        context[:cleanup].call
       end
     end
   end
