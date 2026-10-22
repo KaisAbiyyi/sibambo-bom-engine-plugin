@@ -31,17 +31,30 @@ class ExactJcmExportTest < Minitest::Test
     BOMEngine::BOMCSizeGate.source_info(path)
   end
 
-  def test_standard_exact_publishes_jcm_without_source_size_gate
+  def test_saved_skp_exact_jcm_requires_smaller_candidate
     Dir.mktmpdir do |dir|
       file = File.join(dir, 'candidate.bomc')
+      File.binwrite(file, 'keep-previous')
+      assert_raises(BOMEngine::BOMCSizeGate::TargetNotMet) do
+        BOMEngine::BOMCExtension.publish_graph(
+          file, graph, profile: :exact, source_info: source_info_for(file, 1)
+        )
+      end
+      assert_equal 'keep-previous', File.binread(file)
+      assert_empty Dir.glob(File.join(dir, '*.part'))
+
+      source = source_info_for(file, 10_000)
       result = BOMEngine::BOMCExtension.publish_graph(
-        file, graph, profile: :exact, source_info: source_info_for(file, 1)
+        file, graph, profile: :exact, source_info: source
       )
       assert_equal true, result[:published]
       assert_equal File.size(file), result[:bytes]
       assert_equal 'bomc-next-jcm-v1', result[:required_loader]
-      assert_equal :jpeg_color_map, BOMEngine::BOMCDecoder.decode(File.binread(file))[:textures][0][:media_type]
-      assert_operator File.size(file), :>, 1, 'Exact publication is observational and may exceed source SKP bytes'
+      decoded = BOMEngine::BOMCDecoder.decode(File.binread(file))
+      assert_equal :jpeg_color_map, decoded[:textures][0][:media_type]
+      assert_equal source[:bytes], decoded.dig(:encoding_contract, :source_skp_bytes)
+      assert_equal source[:bytes] - 1, decoded.dig(:encoding_contract, :target_bytes)
+      assert_operator File.size(file), :<, source[:bytes], 'Saved-SKP Exact JCM must pass strict size gate'
     end
   end
 
