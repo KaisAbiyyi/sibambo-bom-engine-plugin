@@ -63,7 +63,7 @@ class TestProfilePublication < Test::Unit::TestCase
   end
 
   def test_strict_native_exact_rechecks_saved_source_at_publication
-    Dir.mktmpdir('bomc-strict-publish', 'D:/projects/sibambo/scratch') do |directory|
+    Dir.mktmpdir('bomc-strict-publish') do |directory|
       source_path = File.join(directory, 'original.skp')
       output_path = File.join(directory, 'result.bomc')
       File.binwrite(source_path, 'a' * 1_000_000)

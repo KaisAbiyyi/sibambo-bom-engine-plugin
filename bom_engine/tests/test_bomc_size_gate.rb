@@ -60,7 +60,7 @@ module BOMEngine
       end
 
       def test_strict_exact_saved_skp_gate
-        directory = Dir.mktmpdir('bomc-exact-strict', 'D:/projects/sibambo/scratch')
+        directory = Dir.mktmpdir('bomc-exact-strict')
         begin
           source = File.join(directory, 'native.skp')
           output = File.join(directory, 'native.bomc')
