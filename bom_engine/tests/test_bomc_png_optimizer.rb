@@ -21,6 +21,35 @@ class TestBOMCPngOptimizer < Minitest::Test
       chunk('IDAT',Zlib::Deflate.deflate(raw,Zlib::NO_COMPRESSION)) + chunk('IEND',''.b)
   end
 
+  def build_png_with_filters(width,height)
+    pixels=(0...height).map do |y|
+      width.times.flat_map { |x| [x*13%256,y*17%256,(x+y)*7%256,255] }.pack('C*').bytes
+    end
+    encoded=(0...height).map do |y|
+      type=y%5
+      previous=y.zero? ? Array.new(width*4,0) : pixels[y-1]
+      filtered=pixels[y].each_with_index.map do |value,x|
+        left=x>=4 ? pixels[y][x-4] : 0
+        up=previous[x]
+        upper_left=x>=4 ? previous[x-4] : 0
+        predictor=case type
+                  when 0 then 0
+                  when 1 then left
+                  when 2 then up
+                  when 3 then (left+up)/2
+                  when 4
+                    p=left+up-upper_left
+                    pa,pb,pc=(p-left).abs,(p-up).abs,(p-upper_left).abs
+                    pa<=pb && pa<=pc ? left : (pb<=pc ? up : upper_left)
+                  end
+        (value-predictor)&255
+      end
+      type.chr.b + filtered.pack('C*')
+    end.join.b
+    BOMEngine::BOMCPngOptimizer::SIGNATURE + chunk('IHDR',[width,height,8,6,0,0,0].pack('NNC5'))+
+      chunk('IDAT',Zlib::Deflate.deflate(encoded,Zlib::NO_COMPRESSION)) + chunk('IEND',''.b)
+  end
+
   def decoded_samples(bytes)
     width,height,depth,color = bytes.byteslice(16,10).unpack('NNCC')
     raise 'fixture layout' unless depth == 8 && color == 6
@@ -83,6 +112,20 @@ class TestBOMCPngOptimizer < Minitest::Test
       File.binwrite(source,'not-a-png')
       assert_nil BOMEngine::BOMCPngOptimizer.optimize(source_path:source,output_path:output)
       refute File.exist?(output)
+    end
+  end
+
+  def test_all_five_png_filters_remain_exact_after_repack
+    Dir.mktmpdir do |dir|
+      source=File.join(dir,'all-filters.png')
+      output=File.join(dir,'repacked.png')
+      File.binwrite(source,build_png_with_filters(120,125))
+      original=File.binread(source)
+      optimized=BOMEngine::BOMCPngOptimizer.optimize(source_path:source,output_path:output)
+      refute_nil optimized
+      assert_equal decoded_samples(original),decoded_samples(File.binread(output)),
+        'the fused row-filter search preserves every byte of RGBA image samples'
+      assert_operator optimized[:bytes],:<,original.bytesize
     end
   end
 end

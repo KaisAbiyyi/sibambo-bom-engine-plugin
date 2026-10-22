@@ -58,6 +58,39 @@ class TestBOMCSemanticColorize < Test::Unit::TestCase
     assert_equal :pixel_mismatch, mismatch[:reason]
   end
 
+  def test_rgba32_accelerated_proof_matches_conservative_rgb24_proof
+    colorize = BOMEngine::BOMCSketchupColorize
+    deltas = {h: 92.58741048890613, l: 0.13725490868091583, s: -0.11229892646129502}
+    rgb = [[115,137,98], [0,0,0], [24,32,48], [255,255,255], [10,90,222]]
+    # The 24-bit conservative path is an independent transform oracle;
+    # opaque alpha makes normalized SHA-256 comparable across both layouts.
+    rows = 5.times.map do |y|
+      9.times.map do |x|
+        r,g,b = rgb[(x*3+y)%rgb.length]
+        a = 255
+        [[r,g,b,a], colorize.colorize_pixel(r,g,b,*deltas.values,true)+[a]]
+      end
+    end
+    make = lambda do |bit_depth,pick|
+      channels = bit_depth/8
+      row_padding = channels == 4 ? 5 : 3
+      data = rows.map do |row|
+        row.map do |tuple|
+          rgba = tuple[pick]
+          pixel = channels == 4 ? rgba : rgba[0,3]
+          (Gem.win_platform? ? pixel[0,3].reverse + Array(pixel[3]) : pixel).pack('C*')
+        end.join.b + ('x'*row_padding)
+      end.join.b
+      Struct.new(:width,:height,:bits_per_pixel,:row_padding,:data).new(9,5,bit_depth,row_padding,data)
+    end
+    accelerated = colorize.verify(uncolorized: make.call(32,0),colorized: make.call(32,1),
+      mode: :shift,deltas: deltas,max_seconds: 30)
+    conservative = colorize.verify(uncolorized: make.call(24,0),colorized: make.call(24,1),
+      mode: :shift,deltas: deltas,max_seconds: 30)
+    assert_equal true,accelerated[:passed]
+    assert_equal conservative,accelerated
+  end
+
   def test_material_v2_round_trips_parametric_colorization
     graph = {
       materials: [{

@@ -204,6 +204,7 @@ module BOMEngine
           attempts: [{ strategy: :exact, candidate_bytes: 200, status: :fail }],
           dominant_sections: [{ name: :textures, stored_bytes: 180 }],
           texture_diagnostics: [{ bytes: 150, selected: 'staged_png',
+            material: 'private-name', decision: { path: 'D:/private/file.png' },
             semantic_fallback: 'time_budget_exceeded' }]
         )
         context = {
@@ -229,6 +230,8 @@ module BOMEngine
           'failed native Exact persists measured gate bytes in existing performance error receipt')
         assert(gate[:largest_texture_decisions][0][:semantic_fallback] == 'time_budget_exceeded',
           'failed native Exact persists bounded codec fallback evidence without output publication')
+        assert(!gate.inspect.include?('private-name') && !gate.inspect.include?('D:/private'),
+          'public failed-export telemetry strips private material and codec paths')
       end
     end
   end

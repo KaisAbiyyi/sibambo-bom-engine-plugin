@@ -13,6 +13,14 @@ module BOMEngine
       deadline = max_seconds && Process.clock_gettime(Process::CLOCK_MONOTONIC) + max_seconds
       return {passed:false,reason: :time_budget_exceeded,processed:0} if deadline && max_seconds <= 0
       h,l,s=normalize_deltas(deltas); shift=mode.to_s=='shift'
+      # BGRA32 (Windows) / RGBA32 (other hosts) dominates large SketchUp
+      # materials. Pack and compare complete native 32-bit pixels in bulk;
+      # the published colorization math and strict per-channel proof are
+      # identical to the fallback below. 24-bit/mixed layouts stay on the
+      # conservative per-pixel implementation.
+      if source[:channels] == 4 && target[:channels] == 4
+        return verify_rgba32(source,target,h,l,s,shift,checkpoint,deadline)
+      end
       digest=Digest::SHA256.new; base_digest=Digest::SHA256.new
       processed=0
       # Memoize only repeated RGB conversions; never cache the observed target.
@@ -46,6 +54,54 @@ module BOMEngine
       {passed:true,width:source[:width],height:source[:height],pixels:processed,
        base_pixel_sha256:base_digest.hexdigest,output_pixel_sha256:digest.hexdigest}
     end
+
+    def verify_rgba32(source,target,h,l,s,shift,checkpoint,deadline)
+      width=source[:width]; height=source[:height]; total=width*height
+      windows=Gem.win_platform?
+      digest=Digest::SHA256.new; base_digest=Digest::SHA256.new
+      color_cache={}; processed=0
+      height.times do |row|
+        base=source[:data].byteslice(row*source[:stride],width*4).unpack('V*')
+        displayed=target[:data].byteslice(row*target[:stride],width*4).unpack('V*')
+        normalized=Array.new(width); transformed=Array.new(width)
+        base.each_with_index do |value,index|
+          alpha=value & 0xff000000
+          if windows
+            blue=value & 255; green=(value>>8)&255; red=(value>>16)&255
+          else
+            red=value & 255; green=(value>>8)&255; blue=(value>>16)&255
+          end
+          key=(red<<16)|(green<<8)|blue
+          mapped=color_cache[key]
+          unless mapped
+            rr,rg,rb=colorize_pixel(red,green,blue,h,l,s,shift)
+            native=windows ? ((rb)|(rg<<8)|(rr<<16)) : ((rr)|(rg<<8)|(rb<<16))
+            rgba=(rr)|(rg<<8)|(rb<<16)
+            mapped=[native,rgba]
+            color_cache.clear if color_cache.size>=65_536
+            color_cache[key]=mapped
+          end
+          # No tolerance: every RGB channel and alpha byte must match the
+          # actual displayed ImageRep, including fully transparent pixels.
+          return {passed:false,reason: :pixel_mismatch,processed:processed} unless
+            (mapped[0]|alpha)==displayed[index]
+          normalized[index]=((red)|(green<<8)|(blue<<16))|alpha
+          transformed[index]=mapped[1]|alpha
+          processed+=1
+          if (processed%32_768).zero?
+            checkpoint.call(processed,total) if checkpoint
+            if deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC)>=deadline
+              return {passed:false,reason: :time_budget_exceeded,processed:processed}
+            end
+          end
+        end
+        base_digest.update(normalized.pack('V*'))
+        digest.update(transformed.pack('V*'))
+      end
+      {passed:true,width:width,height:height,pixels:processed,
+       base_pixel_sha256:base_digest.hexdigest,output_pixel_sha256:digest.hexdigest}
+    end
+    private_class_method :verify_rgba32
 
     def colorize_pixel(r,g,b,h_delta,l_delta,s_delta,shift)
       h,l,s=rgb2hls(r,g,b)

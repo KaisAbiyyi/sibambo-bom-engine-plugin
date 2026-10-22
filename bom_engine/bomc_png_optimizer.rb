@@ -90,6 +90,15 @@ module BOMEngine
       height.times do |y|
         base = y * (stride + 1)
         filter = raw.getbyte(base)
+        # ImageRep PNGs with filter=0 need no Ruby per-byte inverse filter.
+        # Keep the exact decoded samples while avoiding millions of redundant
+        # predictor operations on large unfiltered image rows.
+        if filter == 0
+          rows[y] = raw.byteslice(base + 1, stride)
+          previous = rows[y].bytes
+          checkpoint.call((y+1)*width, width*height) if checkpoint && ((y & 31).zero? || y+1 == height)
+          next
+        end
         row = raw.byteslice(base + 1, stride).bytes
         row.each_index do |x|
           left = x >= bpp ? row[x-bpp] : 0
@@ -120,34 +129,29 @@ module BOMEngine
       rows.each_with_index do |row_string,y|
         row = row_string.bytes
         previous_bytes = previous ? previous.bytes : nil
-        best_type = 0
-        best_bytes = row
-        best_score = score(row)
-
-        [1,2,3,4].each do |type|
-          filtered = Array.new(stride)
-          x = 0
-          while x < stride
-            value = row[x]
-            left = x >= bpp ? row[x-bpp] : 0
-            up = previous_bytes ? previous_bytes[x] : 0
-            upper_left = previous_bytes && x >= bpp ? previous_bytes[x-bpp] : 0
-            predictor = case type
-                        when 1 then left
-                        when 2 then up
-                        when 3 then (left + up) / 2
-                        when 4 then paeth(left, up, upper_left)
-                        end
-            filtered[x] = (value - predictor) & 255
-            x += 1
-          end
-          candidate_score = score(filtered)
-          if candidate_score < best_score
-            best_type = type
-            best_bytes = filtered
-            best_score = candidate_score
-          end
+        filtered = [row, Array.new(stride), Array.new(stride), Array.new(stride), Array.new(stride)]
+        scores = [0,0,0,0,0]
+        x = 0
+        while x < stride
+          value = row[x]
+          left = x >= bpp ? row[x-bpp] : 0
+          up = previous_bytes ? previous_bytes[x] : 0
+          upper_left = previous_bytes && x >= bpp ? previous_bytes[x-bpp] : 0
+          b1=(value-left)&255
+          b2=(value-up)&255
+          b3=(value-((left+up)/2))&255
+          b4=(value-paeth(left,up,upper_left))&255
+          filtered[1][x]=b1; filtered[2][x]=b2
+          filtered[3][x]=b3; filtered[4][x]=b4
+          scores[0]+=value<128 ? value : 256-value
+          scores[1]+=b1<128 ? b1 : 256-b1
+          scores[2]+=b2<128 ? b2 : 256-b2
+          scores[3]+=b3<128 ? b3 : 256-b3
+          scores[4]+=b4<128 ? b4 : 256-b4
+          x+=1
         end
+        best_type=(0..4).min_by { |type| [scores[type],type] }
+        best_bytes=filtered[best_type]
 
         out << best_type.chr << best_bytes.pack('C*')
         previous = row_string
@@ -156,11 +160,6 @@ module BOMEngine
       out
     end
     private_class_method :refilter_adaptive
-
-    def score(bytes)
-      bytes.inject(0) { |sum,value| sum + (value < 128 ? value : 256-value) }
-    end
-    private_class_method :score
 
     def paeth(a,b,c)
       p = a + b - c
