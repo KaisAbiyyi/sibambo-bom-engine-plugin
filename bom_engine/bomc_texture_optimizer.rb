@@ -25,8 +25,13 @@ module BOMEngine
     MAX_PNG_REPACK_BYTES = 4 * 1024 * 1024
     MAX_PNG_REPACK_PIXELS = 2_000_000
     POLICY_REVISION = 'adaptive-texture-7'.freeze
-    SEMANTIC_COLORIZE_REVISION = 'exact-semantic-colorize-1'.freeze
+    SEMANTIC_COLORIZE_REVISION = 'exact-semantic-colorize-2'.freeze
     SEMANTIC_VERIFY_BUDGET_SECONDS = 30.0
+    # Benchmarked on Windows Ruby 3.2: 1,048,576 high-entropy pixels at
+    # ~280k px/s; budget 200k px/s with a 180s ceiling for large sources.
+    # This is a bounded verifier cost, never a fidelity relaxation.
+    SEMANTIC_VERIFY_BUDGET_PIXELS_PER_SECOND = 200_000.0
+    SEMANTIC_VERIFY_MAX_SECONDS = 180.0
     LOSSLESS_SEARCH_REVISION = 'exact-webp-m4q75-m6q100mt-1'.freeze
     JCM_POLICY_REVISION = 'exact-jcm-2'.freeze
 
@@ -303,10 +308,12 @@ module BOMEngine
       timings = {}
       png_path = File.join(directory, "#{basename}.png")
       loader = image_rep_loader || lambda { |path| Sketchup::ImageRep.new(path) }
+      semantic_diagnostics = {}
       if allow_semantic_colorize && profile.to_s == 'exact' && appearance && appearance[:material_type].to_i == 2
         semantic=measure_phase(timings,:semantic_colorize) do
           select_semantic_colorized_native(texture,directory,basename,source_path,appearance,loader,
-            semantic_class: semantic_class, candidate_cache: candidate_cache, &checkpoint)
+            semantic_class: semantic_class, candidate_cache: candidate_cache,
+            diagnostics: semantic_diagnostics, &checkpoint)
         end
         return stage_result(semantic,timings,stage_started) if semantic
       end
@@ -315,7 +322,8 @@ module BOMEngine
           prepared_color_maps.stage(texture: texture, directory: directory, basename: basename,
             source_path: source_path, budget: color_map_budget, image_rep_loader: image_rep_loader, &checkpoint)
         end
-        return stage_result(prepared.fetch(:evidence).merge(path: prepared.fetch(:path)), timings, stage_started) if prepared
+        return stage_result(prepared.fetch(:evidence).merge(path: prepared.fetch(:path),
+          semantic_fallback: semantic_diagnostics), timings, stage_started) if prepared
       end
       written = measure_phase(timings, :png_write) { texture.write(png_path, true) }
       raise 'SketchUp could not stage the lossless PNG texture' unless written && File.file?(png_path)
@@ -334,6 +342,7 @@ module BOMEngine
         reason: is_pixel_lossless ? :pixel_lossless_policy : :jpeg_not_evaluated
       }
       evidence[:reference_pixel_sha256] = reference_pixel_hash if reference_pixel_hash
+      evidence[:semantic_fallback] = semantic_diagnostics unless semantic_diagnostics.empty?
 
       # Exact is a pixel contract, not a PNG-only container policy. Compete
       # lossless encodings, but never construct a lossy JPEG/WebP candidate.
@@ -483,18 +492,27 @@ module BOMEngine
     private_class_method :record_performance_summary
 
     def select_semantic_colorized_native(texture, directory, basename, source_path, appearance, loader,
-      semantic_class: :class_b, candidate_cache: nil, &checkpoint)
+      semantic_class: :class_b, candidate_cache: nil, diagnostics: nil, &checkpoint)
       mode = appearance[:colorize_type].to_s
       deltas = appearance[:colorize_deltas]
       return nil unless ['shift', 'tint'].include?(mode) && deltas
 
       uncolorized = texture.image_rep(false)
       colorized = texture.image_rep(true)
+      pixel_count = uncolorized.width.to_i * uncolorized.height.to_i
+      verify_budget = [[SEMANTIC_VERIFY_BUDGET_SECONDS,
+        pixel_count / SEMANTIC_VERIFY_BUDGET_PIXELS_PER_SECOND].max,
+        SEMANTIC_VERIFY_MAX_SECONDS].min
+      started = monotonic_ms
       proof = BOMCSketchupColorize.verify(
         uncolorized: uncolorized, colorized: colorized, mode: mode,
         deltas: deltas, checkpoint: checkpoint,
-        max_seconds: SEMANTIC_VERIFY_BUDGET_SECONDS
+        max_seconds: verify_budget
       )
+      diagnostics.replace({ reason: proof[:passed] ? :verified : proof[:reason],
+        processed: proof[:processed] || proof[:pixels], pixels: pixel_count,
+        budget_seconds: verify_budget,
+        elapsed_ms: (monotonic_ms - started).round(3) }) if diagnostics
       PerformanceTrace.increment(:texture_semantic_verify_timeouts, 1) if proof[:reason] == :time_budget_exceeded
       return nil unless proof[:passed]
 
@@ -532,7 +550,11 @@ module BOMEngine
             error: "#{error.class}: #{error.message}" }
         end
       end
-      return nil if verified.empty?
+      if verified.empty?
+        diagnostics[:reason] = :no_pixel_exact_native_base if diagnostics
+        diagnostics[:attempts] = attempts if diagnostics
+        return nil
+      end
 
       best = verified.min_by { |candidate| candidate[:candidate_bytes] }
       if best[:candidate_media_type] == :png
@@ -572,6 +594,7 @@ module BOMEngine
         colorize_type: mode, colorize_deltas: deltas,
         base_pixel_sha256: proof[:base_pixel_sha256],
         output_pixel_sha256: proof[:output_pixel_sha256],
+        semantic_proof: diagnostics && diagnostics.dup,
         alpha_preserved: true,
         quality: { compatible: true, alpha_preserved: true, mean_squared_error: 0.0,
           max_channel_error: 0, psnr_db: Float::INFINITY },
@@ -580,6 +603,7 @@ module BOMEngine
       }
     rescue StandardError => error
       raise if cancellation_error?(error)
+      diagnostics.replace(reason: :semantic_exception, error: "#{error.class}: #{error.message}") if diagnostics
       nil
     end
     private_class_method :select_semantic_colorized_native

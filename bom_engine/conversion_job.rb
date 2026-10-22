@@ -173,6 +173,19 @@ module BOMEngine
     end
 
     def tick
+      # SketchUp may dispatch the repeating timer again while the current
+      # resume is inside a native UI/Logger callback. A Fiber cannot resume
+      # itself; defer the nested tick to the next scheduled callback.
+      return if @in_tick
+      @in_tick = true
+      begin
+        run_tick
+      ensure
+        @in_tick = false
+      end
+    end
+
+    def run_tick
       return finish_timer if @finished
 
       tick_started = monotonic_seconds

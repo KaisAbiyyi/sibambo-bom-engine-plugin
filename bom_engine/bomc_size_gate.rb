@@ -67,7 +67,7 @@ module BOMEngine
       Integer(candidate_bytes) <= hard_target ? :pass : :fail
     end
 
-    def compile_candidate(snapshot_or_graph = nil, profile: :visual, graph: nil, source_info: nil, base_path: nil, checkpoint: nil, target_bytes: nil, export_cache: nil)
+    def compile_candidate(snapshot_or_graph = nil, profile: :visual, graph: nil, source_info: nil, base_path: nil, checkpoint: nil, target_bytes: nil, export_cache: nil, strict_exact_source: false)
       graph_obj = snapshot_or_graph || graph
       src_info = source_info
       b_path = base_path
@@ -95,11 +95,12 @@ module BOMEngine
         output_path: nil,
         enforce_smaller: false,
         target_bytes: target_bytes,
-        export_cache: export_cache
+        export_cache: export_cache,
+        strict_exact_source: strict_exact_source
       )
     end
 
-    def compile(graph:, source_info:, base_path:, profile: :visual, profile_contract: nil, checkpoint: nil, output_path: nil, enforce_smaller: true, target_bytes: nil, export_cache: nil)
+    def compile(graph:, source_info:, base_path:, profile: :visual, profile_contract: nil, checkpoint: nil, output_path: nil, enforce_smaller: true, target_bytes: nil, export_cache: nil, strict_exact_source: false)
       contract = if profile_contract
                    profile_contract.is_a?(BOMCProfile::Profile) ? profile_contract : BOMCProfile.fetch(profile_contract)
                  elsif [:exact, :research, :visual, :production, :debug].include?(profile.to_sym)
@@ -117,10 +118,24 @@ module BOMEngine
       end
 
       if contract.profile == :exact
+        if strict_exact_source
+          unless info[:available] == true && info[:path].is_a?(String) &&
+              File.file?(info[:path]) && info[:bytes].is_a?(Integer) && info[:bytes] > 0 &&
+              info[:sha256].to_s.match?(/\A[0-9a-f]{64}\z/i) &&
+              File.size(info[:path]) == info[:bytes] &&
+              Digest::SHA256.file(info[:path]).hexdigest == info[:sha256].downcase
+            raise BOMCBudgetSolver::SourceSizeRequiredError.new(
+              'Exact export requires unchanged saved SKP bytes and SHA-256.',
+              profile: :exact, source_info: info
+            )
+          end
+        end
         result = BOMCWriter.pack(
           graph,
           profile: :exact,
           profile_contract: contract,
+          source_skp_bytes: strict_exact_source ? info[:bytes] : 0,
+          target_bytes: strict_exact_source ? info[:bytes] - 1 : 0,
           base_path: base_path,
           sparse: true,
           compact_directory: true,
@@ -129,7 +144,19 @@ module BOMEngine
           source_digest: source_digest
         )
         candidate_size = result[:bytes].bytesize
-        publish_result(output_path, result, candidate_size, checkpoint, nil) if output_path
+        if strict_exact_source && candidate_size >= info[:bytes]
+          raise TargetNotMet.new(
+            source_bytes: info[:bytes], hard_budget_bytes: info[:bytes] - 1,
+            best_candidate_bytes: candidate_size,
+            attempts: [{ strategy: :exact, candidate_bytes: candidate_size, status: :fail }],
+            dominant_sections: dominant_sections(result[:metrics]),
+            texture_diagnostics: Array(graph[:materials]).map do |material|
+              decision = material.dig(:texture, :encoding_evidence, :staging)
+              { material: material[:name], decision: decision } if decision
+            end.compact
+          )
+        end
+        publish_result(output_path, result, candidate_size, checkpoint, strict_exact_source ? info[:bytes] - 1 : nil) if output_path
         return result.merge(
           status: :pass,
           strategy: :exact,

@@ -61,6 +61,23 @@ require_relative '../conversion_job'
 require_relative '../performance_trace'
 require_relative '../bomc_export_job'
 
+# A nested timer during a Logger/native callback must not resume an executing
+# Fiber. Old code raises FiberError and marks this otherwise successful job failed.
+reentry_runs = 0
+reentry_job = BOMEngine::ConversionJob.start(title: 'Nested UI timer', output_path: 'D:/SibamboExports/reentry.json') do |progress|
+  reentry_runs += 1
+  UI.tick
+  progress.call(stage: :SCAN_MODEL, processed: 1, total: 1)
+  UI.tick
+  { path: 'D:/SibamboExports/reentry.json', bytes: 0, validation: {} }
+end
+UI.tick while reentry_job.running?
+raise 'Nested tick resumed an executing Fiber or failed the job' unless reentry_job.state == :completed && reentry_runs == 1
+raise 'Nested tick failed to release the active job' unless BOMEngine::ConversionJob.active.nil?
+scripts = UI::HtmlDialog.last.scripts
+raise 'Nested timer triggered failure during a successful export' if scripts.any? { |script| script.include?('failConversion(') }
+raise 'Nested timer dispatched duplicate terminal events' unless scripts.count { |script| script.include?('completeConversion(') } == 1
+
 def assert(condition, message)
   raise "FAIL: #{message}" unless condition
   puts "PASS: #{message}"
