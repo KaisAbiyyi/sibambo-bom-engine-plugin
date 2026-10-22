@@ -138,7 +138,9 @@ module BOMEngine
               delta_bytes: trace_error.delta_bytes,
               attempts: trace_error.attempts,
               dominant_sections: trace_error.dominant_sections,
-              largest_texture_decisions: trace_error.texture_diagnostics
+              largest_texture_decisions: trace_error.texture_diagnostics.map do |row|
+                row.reject { |key, _value| key == :material || key == :decision }
+              end
             }
           end
           receipt = trace.finish(status: trace_status, error: trace_error, metadata: trace_metadata)

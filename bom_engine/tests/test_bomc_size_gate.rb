@@ -186,9 +186,9 @@ module BOMEngine
           decisions.first[:semantic_fallback] == 'time_budget_exceeded' &&
           decisions.first[:attempt_reasons] == %w[not_smaller not_encodable],
           'native texture report preserves actual rejected-codec and semantic timeout reasons')
-        serialized = decisions.inspect
-        assert(!serialized.include?('private-material-name') && !serialized.include?('D:/private'),
-          'failure telemetry omits user material names and source paths')
+        assert(decisions.first[:material] == 'private-material-name' &&
+          decisions.first[:decision][:selected] == :staged_png,
+          'internal error preserves legacy material and decision access')
         assert(BOMCSizeGate.texture_diagnostics(graph, limit: 1).length == 1,
           'native texture details are size-bounded')
       end

@@ -302,7 +302,9 @@ module BOMEngine
     # :staging_evidence. Previously failure reporting looked only for
     # :encoding_evidence/:staging, which is produced later by normalization,
     # so the native size-gate error silently dropped all codec decisions.
-    # Emit bounded, path-free facts rather than megabytes of pixel evidence.
+    # Preserve the original internal :material / :decision API for consumers
+    # of TargetNotMet. Public receipts strip these private fields and retain
+    # only the bounded, path-free summary below.
     def texture_diagnostics(graph, limit: 12)
       materials = graph.is_a?(Hash) ? Array(graph[:materials]) : []
       materials.filter_map do |material|
@@ -315,6 +317,7 @@ module BOMEngine
         attempts = Array(evidence[:attempts] || evidence['attempts'])
         fallback = evidence[:semantic_fallback] || evidence['semantic_fallback'] || {}
         {
+          material: material[:name], decision: evidence,
           bytes: Integer(texture[:byte_length] || texture[:bytes]&.bytesize || 0),
           width_px: texture[:image_width_px].to_i,
           height_px: texture[:image_height_px].to_i,
