@@ -150,10 +150,7 @@ module BOMEngine
             best_candidate_bytes: candidate_size,
             attempts: [{ strategy: :exact, candidate_bytes: candidate_size, status: :fail }],
             dominant_sections: dominant_sections(result[:metrics]),
-            texture_diagnostics: Array(graph[:materials]).map do |material|
-              decision = material.dig(:texture, :encoding_evidence, :staging)
-              { material: material[:name], decision: decision } if decision
-            end.compact
+            texture_diagnostics: texture_diagnostics(graph)
           )
         end
         publish_result(output_path, result, candidate_size, checkpoint, strict_exact_source ? info[:bytes] - 1 : nil) if output_path
@@ -275,11 +272,7 @@ module BOMEngine
         best_candidate_bytes: best[:candidate_bytes],
         attempts: attempts,
         dominant_sections: dominant_sections(best[:metrics]),
-        texture_diagnostics: Array(graph[:materials]).map do |material|
-          decision = material.dig(:texture, :encoding_evidence, :staging)
-          next unless decision && decision[:policy_revision]
-          { material: material[:name], decision: decision }
-        end.compact
+        texture_diagnostics: texture_diagnostics(graph)
       )
     ensure
       best = nil
@@ -304,6 +297,37 @@ module BOMEngine
       end.sort_by { |section| [-section[:stored_bytes].to_i, section[:name].to_s] }.first(5)
     end
     private_class_method :dominant_sections
+
+    # Source graph stores the actual per-material selection under
+    # :staging_evidence. Previously failure reporting looked only for
+    # :encoding_evidence/:staging, which is produced later by normalization,
+    # so the native size-gate error silently dropped all codec decisions.
+    # Emit bounded, path-free facts rather than megabytes of pixel evidence.
+    def texture_diagnostics(graph, limit: 12)
+      materials = graph.is_a?(Hash) ? Array(graph[:materials]) : []
+      materials.filter_map do |material|
+        next unless material.is_a?(Hash)
+        texture = material[:texture]
+        next unless texture.is_a?(Hash)
+
+        evidence = texture[:staging_evidence] ||
+          texture.dig(:encoding_evidence, :staging) || {}
+        attempts = Array(evidence[:attempts] || evidence['attempts'])
+        fallback = evidence[:semantic_fallback] || evidence['semantic_fallback'] || {}
+        {
+          bytes: Integer(texture[:byte_length] || texture[:bytes]&.bytesize || 0),
+          width_px: texture[:image_width_px].to_i,
+          height_px: texture[:image_height_px].to_i,
+          selected: (evidence[:selected] || evidence['selected']).to_s,
+          reason: (evidence[:reason] || evidence['reason']).to_s,
+          semantic_fallback: (fallback[:reason] || fallback['reason']).to_s,
+          attempt_reasons: attempts.filter_map { |attempt|
+            next unless attempt.is_a?(Hash)
+            (attempt[:reason] || attempt['reason'])&.to_s
+          }.uniq.first(8)
+        }
+      end.sort_by { |row| [-row[:bytes], row[:selected]] }.first(limit)
+    end
 
     def invoke_checkpoint(checkpoint, payload)
       checkpoint.call(**payload) if checkpoint
