@@ -19,6 +19,39 @@ class TestBOMCExportAll < Minitest::Test
     extension.define_singleton_method(:export, original) if original
   end
 
+  def test_canonical_capture_progress_forwards_keyword_arguments_to_export_job
+    extension = BOMEngine::BOMCExtension
+    material_extractor = Module.new do
+      define_singleton_method(:extract) { |*_args, **_opts| [] }
+    end
+    canonical_builder = Module.new do
+      define_singleton_method(:build) do |progress:, **_opts|
+        progress.call(stage: 'Preparing model tables', processed: 1)
+        { materials: [], meshes: [], definitions: [], nodes: [], instances: [] }
+      end
+    end
+    added_material = !BOMEngine.const_defined?(:MaterialExtractor, false)
+    added_builder = !BOMEngine.const_defined?(:CanonicalGraphBuilder, false)
+    skip 'Host SketchUp constants already installed' unless added_material && added_builder
+
+    BOMEngine.const_set(:MaterialExtractor, material_extractor)
+    BOMEngine.const_set(:CanonicalGraphBuilder, canonical_builder)
+    observed = []
+    # The real job callback accepts only **event; a positional Hash throws
+    # ArgumentError (given 1, expected 0) before the first geometry scan.
+    checkpoint = ->(**event) { observed << event }
+    model = Struct.new(:entities, :material_classes).new([], {})
+    Dir.mktmpdir('bomc-keyword-progress-') do |directory|
+      graph = extension.send(:snapshot_model, model, directory, checkpoint, profile: :exact)
+      assert_kind_of BOMEngine::CaptureIR, graph
+    end
+    assert_equal :snapshot_entities, observed.first.fetch(:stage)
+    assert_equal 1, observed.first.fetch(:processed)
+  ensure
+    BOMEngine.send(:remove_const, :CanonicalGraphBuilder) if added_builder && BOMEngine.const_defined?(:CanonicalGraphBuilder, false)
+    BOMEngine.send(:remove_const, :MaterialExtractor) if added_material && BOMEngine.const_defined?(:MaterialExtractor, false)
+  end
+
   def test_all_choice_creates_two_distinct_validated_outputs_without_overwriting_old_files
     Dir.mktmpdir('bomc-all-test-') do |root|
       model = FakeModel.new(File.join(root, 'house.skp'))

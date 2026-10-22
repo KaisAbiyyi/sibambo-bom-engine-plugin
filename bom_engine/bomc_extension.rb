@@ -762,7 +762,8 @@ module BOMEngine
                   spatial: {},
                   texture_writer: texture_writer,
                   progress: lambda do |event|
-                    checkpoint.call(canonical_work_checkpoint(event))
+                    # The export job checkpoint accepts keywords on SketchUp Ruby 3.
+                    checkpoint.call(**canonical_work_checkpoint(event))
                   end,
                   # Probe the adaptive controller frequently without paying a
                   # callback on every entity. The controller still owns the
