@@ -2019,11 +2019,16 @@ module EvolutionLabBuilder
     FileUtils.rm_f(zip_file_path)
 
     if Gem.win_platform?
-      command = [
-        'powershell', '-NoProfile', '-Command',
-        "Compress-Archive -Path '#{folder_path}\\*' -DestinationPath '#{temp_zip}' -Force"
-      ]
-      _stdout, stderr, status = Open3.capture3(*command)
+      # Compress-Archive on Windows emits backslash ZIP member names. Those
+      # validate by CRC but fail strict ZIP readers and portable installers.
+      # Windows ships native bsdtar, whose ZIP mode records slash paths.
+      native_tar = File.join(ENV.fetch('SystemRoot', 'C:/Windows'), 'System32', 'tar.exe')
+      raise "Windows native ZIP tool unavailable: #{native_tar}" unless File.file?(native_tar)
+      members = Dir.children(folder_path).sort
+      raise 'Cannot package an empty staging directory' if members.empty?
+      _stdout, stderr, status = Open3.capture3(
+        native_tar, '-a', '-cf', temp_zip, '-C', folder_path, *members
+      )
     else
       _stdout, stderr, status = Open3.capture3('zip', '-q', '-r', temp_zip, '.', chdir: folder_path)
     end
