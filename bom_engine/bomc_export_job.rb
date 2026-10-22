@@ -130,6 +130,17 @@ module BOMEngine
             } : nil,
             processing_mode: settings[:mode]
           }.reject { |_key, value| value.nil? }
+          if defined?(BOMCSizeGate::TargetNotMet) && trace_error.is_a?(BOMCSizeGate::TargetNotMet)
+            trace_metadata[:size_gate] = {
+              source_bytes: trace_error.source_bytes,
+              hard_budget_bytes: trace_error.hard_budget_bytes,
+              best_candidate_bytes: trace_error.best_candidate_bytes,
+              delta_bytes: trace_error.delta_bytes,
+              attempts: trace_error.attempts,
+              dominant_sections: trace_error.dominant_sections,
+              largest_texture_decisions: trace_error.texture_diagnostics
+            }
+          end
           receipt = trace.finish(status: trace_status, error: trace_error, metadata: trace_metadata)
           result[:performance_trace] = receipt if result.is_a?(Hash)
           if context && context[:performance_receipt]

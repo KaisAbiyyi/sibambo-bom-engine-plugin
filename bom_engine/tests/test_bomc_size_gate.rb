@@ -23,6 +23,7 @@ module BOMEngine
         test_escalation_and_invariants
         test_escalation_reuses_preparation_and_candidates
         test_failed_candidates_are_not_published
+        test_native_texture_failure_reports_real_staging_evidence
         test_research_and_visual_never_allow_over_budget
         puts 'BOMC Size Gate Tests: ALL PASSED'
         true
@@ -163,6 +164,33 @@ module BOMEngine
         ensure
           FileUtils.remove_entry(directory) if directory && Dir.exist?(directory)
         end
+      end
+
+      def test_native_texture_failure_reports_real_staging_evidence
+        graph = {
+          materials: [
+            { name: 'private-material-name', texture: {
+              byte_length: 8_000_000, image_width_px: 4096, image_height_px: 2048,
+              source_path: 'D:/private/customer/texture.jpg',
+              staging_evidence: { selected: :staged_png, reason: :pixel_lossless_policy,
+                semantic_fallback: { reason: :time_budget_exceeded },
+                attempts: [{ codec: :webp, reason: :not_smaller }, { codec: :jpeg_color_map, reason: :not_encodable }] }
+            } },
+            { name: 'small', texture: { byte_length: 500, staging_evidence: { selected: :native_jpeg_candidate } } }
+          ]
+        }
+        decisions = BOMCSizeGate.texture_diagnostics(graph)
+        assert(decisions.length == 2 && decisions.first[:bytes] == 8_000_000,
+          'native size-gate reports largest selected texture bytes instead of nonexistent encoding_evidence')
+        assert(decisions.first[:selected] == 'staged_png' &&
+          decisions.first[:semantic_fallback] == 'time_budget_exceeded' &&
+          decisions.first[:attempt_reasons] == %w[not_smaller not_encodable],
+          'native texture report preserves actual rejected-codec and semantic timeout reasons')
+        serialized = decisions.inspect
+        assert(!serialized.include?('private-material-name') && !serialized.include?('D:/private'),
+          'failure telemetry omits user material names and source paths')
+        assert(BOMCSizeGate.texture_diagnostics(graph, limit: 1).length == 1,
+          'native texture details are size-bounded')
       end
 
       def test_escalation_reuses_preparation_and_candidates

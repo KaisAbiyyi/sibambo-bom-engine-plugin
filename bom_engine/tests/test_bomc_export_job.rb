@@ -4,6 +4,7 @@ require 'fileutils'
 require 'tmpdir'
 require_relative '../bomc_export_job'
 require_relative '../performance_trace'
+require_relative '../bomc_size_gate'
 
 module BOMEngine
   class ConversionJob
@@ -30,6 +31,7 @@ module BOMEngine
       def run
         test_ordered_state_machine
         test_performance_trace_receipt
+        test_size_gate_error_receipt_contains_codec_evidence
         test_cleanup_on_cancellation
         puts 'BOMC Export Job Tests: ALL PASSED'
         true
@@ -193,6 +195,40 @@ module BOMEngine
           nil
         end
         assert(interactive_cancel_receipts.fetch(0)[:status] == 'cancelled', 'real ConversionJob cancellation is recorded as cancelled rather than error')
+      end
+
+      def test_size_gate_error_receipt_contains_codec_evidence
+        receipts = []
+        err = BOMCSizeGate::TargetNotMet.new(
+          source_bytes: 100, hard_budget_bytes: 99, best_candidate_bytes: 200,
+          attempts: [{ strategy: :exact, candidate_bytes: 200, status: :fail }],
+          dominant_sections: [{ name: :textures, stored_bytes: 180 }],
+          texture_diagnostics: [{ bytes: 150, selected: 'staged_png',
+            semantic_fallback: 'time_budget_exceeded' }]
+        )
+        context = {
+          clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
+          on_yield: ->(_event) {}, cancelled: -> { false },
+          performance_trace: PerformanceTrace.new(enabled: true),
+          performance_receipt: ->(receipt) { receipts << receipt },
+          source_info: ->(_model) { { available: true, bytes: 100 } },
+          snapshot: ->(_model, _checkpoint) { { materials: [] } },
+          compile: ->(*_args) { raise err },
+          cleanup: -> {}
+        }
+        begin
+          BOMCExportJob.run(model: FakeModel.new('source.skp'), output_path: 'fail.bomc',
+            settings: BOMCProcessing.settings(:balanced), context: context)
+          raise 'FAIL: size gate error was swallowed'
+        rescue BOMCSizeGate::TargetNotMet => raised
+          assert(raised.equal?(err), 'size gate error propagates unchanged')
+        end
+        receipt = receipts.fetch(0)
+        gate = receipt.dig(:metadata, :size_gate)
+        assert(receipt[:status] == 'error' && gate[:best_candidate_bytes] == 200,
+          'failed native Exact persists measured gate bytes in existing performance error receipt')
+        assert(gate[:largest_texture_decisions][0][:semantic_fallback] == 'time_budget_exceeded',
+          'failed native Exact persists bounded codec fallback evidence without output publication')
       end
     end
   end
