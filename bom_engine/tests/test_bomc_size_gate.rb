@@ -19,6 +19,7 @@ module BOMEngine
       def run
         test_boundaries
         test_source_capture
+        test_strict_exact_saved_skp_gate
         test_escalation_and_invariants
         test_escalation_reuses_preparation_and_candidates
         test_failed_candidates_are_not_published
@@ -55,6 +56,54 @@ module BOMEngine
           assert(!BOMCSizeGate.source_info('')[:available], 'unsaved model reports unavailable source size')
         ensure
           FileUtils.remove_entry(directory) if directory && Dir.exist?(directory)
+        end
+      end
+
+      def test_strict_exact_saved_skp_gate
+        directory = Dir.mktmpdir('bomc-exact-strict')
+        begin
+          source = File.join(directory, 'native.skp')
+          output = File.join(directory, 'native.bomc')
+          File.binwrite(source, 'x' * 10_000)
+          File.binwrite(output, 'keep-me')
+          info = BOMCSizeGate.source_info(source)
+          candidate = BOMCSizeGate.compile_candidate(graph_fixture, profile: :exact,
+            source_info: info, strict_exact_source: true)
+          assert(candidate[:status] == :pass && candidate[:candidate_bytes] < info[:bytes], 'native Exact must be strictly smaller')
+          contract = BOMCDecoder.decode(candidate[:bytes])[:encoding_contract]
+          assert(contract && contract[:source_skp_bytes] == info[:bytes] && contract[:target_bytes] == info[:bytes] - 1,
+            'native Exact encodes the actual source and target bytes in Section 20')
+
+          File.binwrite(source, 'x')
+          info = BOMCSizeGate.source_info(source)
+          begin
+            BOMCSizeGate.compile_candidate(graph_fixture, profile: :exact,
+              source_info: info, strict_exact_source: true)
+            raise 'FAIL: equal/over-sized native Exact was accepted'
+          rescue BOMCSizeGate::TargetNotMet
+            assert(File.binread(output) == 'keep-me', 'over-budget native Exact preserves older output')
+          end
+
+          begin
+            BOMCSizeGate.compile_candidate(graph_fixture, profile: :exact,
+              source_info: { available: false }, strict_exact_source: true)
+            raise 'FAIL: unsaved native Exact was accepted'
+          rescue BOMCBudgetSolver::SourceSizeRequiredError
+            assert(true, 'native Exact requires saved source identity')
+          end
+
+          File.binwrite(source, 'x' * 10_000)
+          stale_info = BOMCSizeGate.source_info(source)
+          File.binwrite(source, 'y' * 10_000)
+          begin
+            BOMCSizeGate.compile_candidate(graph_fixture, profile: :exact,
+              source_info: stale_info, strict_exact_source: true)
+            raise 'FAIL: changed native source identity was accepted'
+          rescue BOMCBudgetSolver::SourceSizeRequiredError
+            assert(true, 'same-size changed SKP is rejected before Exact compile')
+          end
+        ensure
+          FileUtils.remove_entry(directory) if Dir.exist?(directory)
         end
       end
 

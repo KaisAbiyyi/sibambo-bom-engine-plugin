@@ -231,7 +231,8 @@ module BOMEngine
         graph,
         source_info: src_info,
         profile: prof,
-        base_path: base_path
+        base_path: base_path,
+        strict_exact_source: prof == :exact && !source_info.nil?
       )
       decoded = BOMCDecoder.decode(candidate.fetch(:bytes), allow_jpeg_color_map: jcm_enabled)
       texture_evidence = (graph.is_a?(Hash) && graph[:materials]) ? graph[:materials].map { |m| m.dig(:texture, :encoding_evidence) }.compact : nil
@@ -242,7 +243,8 @@ module BOMEngine
         texture_evidence: texture_evidence,
         normalized_source: candidate[:normalized_source]
       )
-      published = publish_validated(candidate: candidate, report: report, output_path: path)
+      published = publish_validated(candidate: candidate, report: report, output_path: path,
+        source_info: prof == :exact ? source_info : nil)
       jcm_selected?(candidate) ? published.merge(required_loader: 'bomc-next-jcm-v1') : published
     end
 
@@ -256,7 +258,8 @@ module BOMEngine
       yield_callback = progress || ->(_event) {}
       trace = performance_trace || PerformanceTrace.new(
         enabled: true,
-        metadata: { engine: 'e4', profile: profile, mode: processing[:mode], format: 'bomc-1.2' },
+        metadata: { engine: 'e4', profile: profile, mode: processing[:mode], format: 'bomc-1.2',
+          producer_source_sha256: runtime_build_sha },
         resource_sampling: :selected
       )
       context = export_context(output_path, yield_callback, profile: profile, diagnostics: diagnostics,
@@ -270,6 +273,13 @@ module BOMEngine
       ).merge(format: 'bomc', profile: profile, performance_receipt_path: performance_receipt_path(output_path))
       jcm_selected?(result) ? result.merge(required_loader: 'bomc-next-jcm-v1') : result
     end
+
+    def runtime_build_sha
+      path = File.join(File.dirname(__FILE__), 'BUILD_SHA.txt')
+      digest = File.file?(path) ? File.read(path).strip.downcase : ''
+      digest.match?(/\A[0-9a-f]{64}\z/) ? digest : 'unavailable'
+    end
+    private_class_method :runtime_build_sha
 
     def export_all_profiles(model, output_path:, settings:, progress:)
       base = output_base_path(output_path)
@@ -465,6 +475,7 @@ module BOMEngine
       FileUtils.mkdir_p(parent)
       texture_directory = Dir.mktmpdir('bomc-textures', parent)
       effective_cache = candidate_cache
+      captured_source_info = nil
       unless effective_cache
         cache_directory = File.join(texture_directory, 'candidate-cache')
         FileUtils.mkdir_p(cache_directory)
@@ -479,7 +490,7 @@ module BOMEngine
           PerformanceTrace.write_receipt(performance_receipt_path(output_path, status: receipt[:status] || receipt['status']), receipt)
         } : nil,
         source_info: lambda do |model|
-          BOMCSizeGate.source_info(model.path.to_s)
+          captured_source_info = BOMCSizeGate.source_info(model.path.to_s)
         end,
         snapshot: lambda do |model, checkpoint, source_info = nil|
           if effective_cache && source_info && source_info[:sha256]
@@ -500,7 +511,8 @@ module BOMEngine
             source_info: source,
             base_path: texture_directory,
             profile: profile,
-            checkpoint: checkpoint
+            checkpoint: checkpoint,
+            strict_exact_source: profile.to_sym == :exact
           )
         end,
         validate: lambda do |result, graph = nil|
@@ -539,7 +551,8 @@ module BOMEngine
             publish_validated(
               candidate: candidate,
               report: validation[:report],
-              output_path: path
+              output_path: path,
+              source_info: profile.to_sym == :exact ? captured_source_info : nil
             )
         end,
         cleanup: lambda do

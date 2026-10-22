@@ -15,13 +15,24 @@ module BOMEngine
       h,l,s=normalize_deltas(deltas); shift=mode.to_s=='shift'
       digest=Digest::SHA256.new; base_digest=Digest::SHA256.new
       processed=0
+      # Memoize only repeated RGB conversions; never cache the observed target.
+      # The bounded table avoids unbounded native-host memory on photographic JPEGs.
+      color_cache={}
       source[:height].times do |row|
         so=row*source[:stride]; to=row*target[:stride]
+        base_row=''.b; output_row=''.b
         source[:width].times do
           sr,sg,sb,sa=logical_rgba(source,so); tr,tg,tb,ta=logical_rgba(target,to)
-          rr,rg,rb=colorize_pixel(sr,sg,sb,h,l,s,shift)
+          rgb_key=(sr<<16)|(sg<<8)|sb
+          rgb=color_cache[rgb_key]
+          unless rgb
+            rgb=colorize_pixel(sr,sg,sb,h,l,s,shift)
+            color_cache.clear if color_cache.size>=8192
+            color_cache[rgb_key]=rgb
+          end
+          rr,rg,rb=rgb
           return {passed:false,reason: :pixel_mismatch,processed:processed} unless [rr,rg,rb,sa]==[tr,tg,tb,ta]
-          base_digest.update([sr,sg,sb,sa].pack('C4')); digest.update([rr,rg,rb,sa].pack('C4'))
+          base_row<<sr<<sg<<sb<<sa; output_row<<rr<<rg<<rb<<sa
           so+=source[:channels]; to+=target[:channels]; processed+=1
           if (processed%32_768).zero?
             checkpoint.call(processed,source[:width]*source[:height]) if checkpoint
@@ -30,6 +41,7 @@ module BOMEngine
             end
           end
         end
+        base_digest.update(base_row); digest.update(output_row)
       end
       {passed:true,width:source[:width],height:source[:height],pixels:processed,
        base_pixel_sha256:base_digest.hexdigest,output_pixel_sha256:digest.hexdigest}

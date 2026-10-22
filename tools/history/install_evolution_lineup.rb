@@ -28,7 +28,9 @@ module EvolutionLineupInstaller
     raise 'Package archive checksum mismatch' unless Digest::SHA256.file(rbz).hexdigest == manifest.fetch('packageSha256')
     # Windows ships bsdtar (ZIP-aware) whereas GNU tar on Linux cannot list RBZ ZIPs.
     # Keep the native Windows installer working without requiring third-party unzip.
-    list_command = Gem.win_platform? ? ['tar', '-tf', rbz] : ['unzip', '-Z', '-1', rbz]
+    native_tar = File.join(ENV.fetch('SystemRoot', 'C:/Windows'), 'System32', 'tar.exe') if Gem.win_platform?
+    raise "Windows native ZIP tool unavailable: #{native_tar}" if Gem.win_platform? && !File.file?(native_tar)
+    list_command = Gem.win_platform? ? [native_tar, '-tf', rbz] : ['unzip', '-Z', '-1', rbz]
     entries, listing_error, listing_status = Open3.capture3(*list_command)
     raise "Cannot inspect package: #{listing_error}" unless listing_status.success?
     names = entries.lines.map(&:strip)
@@ -47,7 +49,7 @@ module EvolutionLineupInstaller
     end
 
     Dir.mktmpdir('evolution-lineup-install-') do |unpacked|
-      extract_command = Gem.win_platform? ? ['tar', '-xf', rbz, '-C', unpacked] : ['unzip', '-q', '-o', rbz, '-d', unpacked]
+      extract_command = Gem.win_platform? ? [native_tar, '-xf', rbz, '-C', unpacked] : ['unzip', '-q', '-o', rbz, '-d', unpacked]
       _out, extract_error, extract_status = Open3.capture3(*extract_command)
       raise "Cannot unpack package: #{extract_error}" unless extract_status.success?
       source_folder = File.join(unpacked, FOLDER)

@@ -16,13 +16,21 @@ class TestBOMCCanonicalPublication < Test::Unit::TestCase
     define_method("test_canonical_root_publishes_with_#{profile}_validation") do
       Dir.mktmpdir('bomc-canonical-publication') do |dir|
         path = File.join(dir, 'model.bomc')
+        saved_skp = File.join(dir, 'source.skp')
+        File.binwrite(saved_skp, 'fixture-bytes-' * 80_000)
         context = BOMEngine::BOMCExtension.send(:export_context, path, ->(*) {}, profile: profile)
         begin
-          candidate = context[:compile].call(@graph, { available: true, bytes: 1_000_000 }, path, ->(**_) {})
+          source_info = context.fetch(:source_info).call(Struct.new(:path).new(saved_skp))
+          candidate = context[:compile].call(@graph, source_info, path, ->(**_) {})
           validation = context[:validate].call(candidate, @graph)
           assert_equal true, validation[:report][:passed]
           context[:publish].call(candidate, validation, path)
           decoded = BOMEngine::BOMCDecoder.decode(File.binread(path))
+          if profile == :exact
+            assert_equal source_info[:bytes], decoded.dig(:encoding_contract, :source_skp_bytes)
+            assert_equal source_info[:bytes] - 1, decoded.dig(:encoding_contract, :target_bytes)
+            assert_operator File.size(path), :<, File.size(saved_skp)
+          end
           assert_equal 'model_definition', decoded[:definitions][0][:kind]
           assert_equal 'root', decoded[:instances][0][:kind], 'Root instance is a different enum and must stay root'
           assert_equal 0, decoded[:definitions][0][:mesh]

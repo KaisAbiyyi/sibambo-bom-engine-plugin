@@ -62,6 +62,36 @@ class TestProfilePublication < Test::Unit::TestCase
     @graph = JSON.parse(File.read(fixture_path), symbolize_names: true)
   end
 
+  def test_strict_native_exact_rechecks_saved_source_at_publication
+    Dir.mktmpdir('bomc-strict-publish') do |directory|
+      source_path = File.join(directory, 'original.skp')
+      output_path = File.join(directory, 'result.bomc')
+      File.binwrite(source_path, 'a' * 1_000_000)
+      File.binwrite(output_path, 'previous-good-artifact')
+      info = BOMEngine::BOMCSizeGate.source_info(source_path)
+      candidate = BOMEngine::BOMCSizeGate.compile_candidate(@graph, profile: :exact,
+        source_info: info, strict_exact_source: true)
+      decoded = BOMEngine::BOMCDecoder.decode(candidate[:bytes])
+      validation = BOMEngine::BOMCValidator.validate_profile!(source: @graph,
+        decoded: decoded, profile: :exact, normalized_source: candidate[:normalized_source])
+
+      File.binwrite(source_path, 'b' * 1_000_000)
+      assert_raise(ArgumentError) do
+        BOMEngine::BOMCExtension.publish_validated(candidate: candidate, report: validation,
+          output_path: output_path, source_info: info)
+      end
+      assert_equal 'previous-good-artifact', File.binread(output_path)
+      assert_equal [], Dir.glob(File.join(directory, '*.part'))
+
+      File.binwrite(source_path, 'a' * 1_000_000)
+      published = BOMEngine::BOMCExtension.publish_validated(candidate: candidate,
+        report: validation, output_path: output_path, source_info: info)
+      assert_equal true, published[:published]
+      assert_operator File.size(output_path), :<, File.size(source_path)
+      assert_equal candidate[:sha256], Digest::SHA256.file(output_path).hexdigest
+    end
+  end
+
   def make_image_rep(pixels, alpha: nil, row_padding: 0)
     channels = alpha ? 4 : 3
     rows = pixels.each_slice(2).each_with_index.map do |row, row_index|
