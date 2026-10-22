@@ -9,6 +9,7 @@ class TestNativeCompilerWorkerSpike < Test::Unit::TestCase
   Spike = SibamboNativeCompilerWorkerSpike
 
   def setup
+    omit 'Native worker spike uses Windows DLL APIs; requires Windows native qualification' unless Gem.win_platform?
     Spike.build_worker!
     @zlib = Spike.zlib_path
     assert(@zlib && File.file?(@zlib), 'zlib DLL is available for the bounded native spike')

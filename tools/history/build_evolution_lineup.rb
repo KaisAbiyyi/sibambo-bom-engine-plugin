@@ -6,6 +6,7 @@ require 'fileutils'
 require 'open3'
 require_relative 'build_evolution_lab' unless defined?(EvolutionLabBuilder)
 require_relative 'build_adaptive_preview_kit'
+require_relative '../../bom_engine/evolution_export_policy'
 
 module EvolutionLineupBuilder
   ROOT = File.expand_path('../..', __dir__)
@@ -14,28 +15,28 @@ module EvolutionLineupBuilder
   TEMPLATES = File.join(__dir__, 'evolution_lineup')
   E4_BASE = 'bd6782691ef8ba98f9d3baab698bc1cd961ce393'
   SLOT_KINDS = {
-    'e1-json' => 'tiered_json',
     'e2-canonical-gzip' => 'canonical_v3',
     'e3-cleanpkg' => 'cleanpkg',
     'e4-bomc' => 'bomc_three_profile'
   }.freeze
-  ENGINES = { 'e1-json' => 'e1', 'e2-canonical-gzip' => 'e2', 'e3-cleanpkg' => 'e3', 'e4-bomc' => 'e4' }.freeze
-  PROFILES = %w[visual research exact].freeze
+  ENGINES = { 'e2-canonical-gzip' => 'e2', 'e3-cleanpkg' => 'e3', 'e4-bomc' => 'e4' }.freeze
+  ORDERS = { 'e2-canonical-gzip' => 2, 'e3-cleanpkg' => 3, 'e4-bomc' => 4 }.freeze
+  PROFILES = BOMEngine::EvolutionExportPolicy::PROFILES.map(&:to_s).freeze
 
   def self.load_slots
     data = JSON.parse(File.read(LINEUP))
-    raise 'Unsupported Evolution lineup schema' unless data['schemaVersion'] == 'sibambo-evolution-lineup-v2'
+    raise 'Unsupported Evolution lineup schema' unless data['schemaVersion'] == 'sibambo-evolution-lineup-v3'
     slots = data.fetch('slots')
-    raise 'Evolution requires exactly four engine generations' unless slots.is_a?(Array) && slots.length == 4
+    raise 'Evolution requires E2/E3/E4 in historical slot order' unless slots.is_a?(Array) && slots.map { |slot| slot['id'] } == ENGINES.keys
     history = JSON.parse(File.read(HISTORY)).fetch('versions').map { |version| [version.fetch('display_version'), version] }.to_h
-    slots.each_with_index do |slot, index|
+    slots.each do |slot|
       id = slot.fetch('id')
-      raise 'Evolution engine order or kind is invalid' unless slot['order'] == index + 1 && SLOT_KINDS[id] == slot['kind'] && ENGINES[id] == slot['engine']
+      raise 'Evolution engine order or kind is invalid' unless slot['order'] == ORDERS[id] && SLOT_KINDS[id] == slot['kind'] && ENGINES[id] == slot['engine']
       raise 'Evolution engine title missing' if slot['title'].to_s.strip.empty?
       raise 'Evolution active slots must use the current working tree' unless slot['source'] == 'working-tree'
-      raise 'Evolution profiles must be Visual/Research/Exact' unless slot['profiles'] == PROFILES
+      raise 'Evolution profiles must be Exact/Visual' unless slot['profiles'] == PROFILES
       raise 'Do not claim an uncertified engine is ready' unless %w[uncertified development].include?(slot['state'])
-      if index < 3
+      if slot['engine'] != 'e4'
         historical = history.fetch(slot.fetch('historyVersion'))
         raise 'Historical format does not match Evolution baseline' unless EvolutionLabBuilder.historical_export_kind(historical).to_s == slot['kind']
         slot['historical'] = historical
@@ -69,7 +70,7 @@ module EvolutionLineupBuilder
     rbz = File.join(output, 'sibambo_bom_engine_evolution_lineup.rbz')
     EvolutionLabBuilder.zip_folder(staging, rbz)
     manifest = {
-      'schemaVersion' => 'sibambo-evolution-lineup-package-v2',
+      'schemaVersion' => 'sibambo-evolution-lineup-package-v3',
       'certified' => false,
       'status' => 'candidate_pending_cross_model_validation',
       'selectionBasis' => JSON.parse(File.read(LINEUP)).fetch('selectionBasis'),
@@ -166,22 +167,26 @@ module EvolutionLineupBuilder
             end
             def self.export_current_model(model, settings)
               runtime = load_engine
-              processing = runtime::BOMCProcessing.from_ui(batch_mode: 'manual', batch_size: settings.fetch(:batch_size))
+              batch_mode = settings.fetch(:batch_mode, 'manual')
+              processing = runtime::BOMCProcessing.from_ui(batch_mode: batch_mode, batch_size: settings[:batch_size])
+              all = settings.fetch(:profile) == :all
               runtime::ConversionJob.start(
                 title: "Sibambo Evolution — \#{ENGINE.upcase} \#{settings.fetch(:profile).to_s.upcase}",
                 output_path: settings.fetch(:output_path),
-                batch_size: settings.fetch(:batch_size),
-                kind: :export
+                batch_size: processing[:max_items],
+                kind: all ? :batch_export : :export
               ) do |progress|
-                runtime::EvolutionExporter.export(
-                  model,
-                  engine: ENGINE,
-                  profile: settings.fetch(:profile),
-                  output_path: settings.fetch(:output_path),
-                  processing: processing,
-                  progress: progress,
-                  active_model: -> { Sketchup.active_model }
-                )
+                if all
+                  runtime::EvolutionExporter.export_all_profiles(
+                    model, engine: ENGINE, output_base_path: settings.fetch(:output_path),
+                    processing: processing, progress: progress, active_model: -> { Sketchup.active_model }
+                  )
+                else
+                  runtime::EvolutionExporter.export(
+                    model, engine: ENGINE, profile: settings.fetch(:profile), output_path: settings.fetch(:output_path),
+                    processing: processing, progress: progress, active_model: -> { Sketchup.active_model }
+                  )
+                end
               end
             end
           end
@@ -213,8 +218,8 @@ module EvolutionLineupBuilder
       require 'extensions.rb'
       unless file_loaded?(__FILE__)
         extension = SketchupExtension.new('Sibambo BOM Engine Evolution', File.join(__dir__, 'evolution_lineup', 'master_menu.rb'))
-        extension.description = 'Four Evolution formats on one current capture runtime; candidate only, not certified.'
-        extension.version = '3.0.0-candidate'
+        extension.description = 'Three active Evolution formats on one current capture runtime; candidate only, not certified.'
+        extension.version = '3.1.0-candidate'
         extension.creator = 'Sibambo'
         Sketchup.register_extension(extension, true)
         file_loaded(__FILE__)

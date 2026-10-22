@@ -6,59 +6,125 @@
   <title>Sibambo BOM Engine Evolution</title>
   <link rel="stylesheet" href="bomc_theme.css">
   <style>
-    .settings-grid { display: grid; gap: 12px; }
-    .batch-select { width: 100%; }
+    .shell { padding-top: 17px; padding-bottom: 17px; }
+    h1 { margin-top: 12px; }
+    .section { margin-top: 12px; padding-top: 12px; }
+    .profile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .profile-grid .choice { min-height: 68px; padding: 9px; }
+    .profile-grid .choice small { margin-left: 22px; }
+    .actions { margin-top: 14px; }
+    #suffix { max-height: 3em; overflow: hidden; }
+    @media (max-width: 580px) { .profile-grid { grid-template-columns: 1fr; } .path-row { flex-wrap: wrap; } .path-row button { margin-left: auto; } }
   </style>
 </head>
 <body>
-  <main class="shell">
-    <div class="brand"><span class="brand-name">Sibambo BOM Engine Evolution</span><span class="build" id="build"></span></div>
-    <h1 id="title">Memuat engine…</h1>
-    <p class="intro">E1–E3 memakai capture runtime yang sama dengan E4 kandidat. Pilih profil fidelity untuk model SketchUp yang sedang terbuka.</p>
-    <section class="section settings-grid">
-      <label class="field-label" for="profile">PROFILE</label>
-      <select id="profile" class="select batch-select"><option value="visual">Visual</option><option value="research">Research</option><option value="exact">Exact</option></select>
-      <label class="field-label" for="output">OUTPUT FILE</label>
-      <div class="path-row"><input id="output" class="text-input" type="text" spellcheck="false"><button class="button" id="browse" type="button">Browse</button></div>
-      <p class="path-note" id="path-note"></p>
-    </section>
-    <section class="section">
-      <div class="section-head"><h2>Batch pemrosesan</h2></div>
-      <select id="batch" class="select batch-select"><option>96</option><option>128</option><option>256</option><option selected>512</option><option>1024</option><option>2048</option><option>4096</option><option>8192</option></select>
-    </section>
-    <div class="actions"><span class="footer-note">Kandidat • belum certified</span><button class="button" id="cancel" type="button">Batal</button><button class="button button-primary" id="export" type="button">Export</button></div>
-  </main>
-  <script>
-    let config = null;
-    const byId = id => document.getElementById(id);
-    const extension = engine => engine === 'e1' ? '.json' : engine === 'e2' ? '.json.gz' : '.cleanpkg';
-    function normalizePath() {
-      if (!config) return;
-      const profile = byId('profile').value.toUpperCase();
-      const engine = config.engine.toUpperCase();
-      let path = byId('output').value.trim();
-      path = path.replace(/__E[1-3]__(?:VISUAL|RESEARCH|EXACT)(?:\.json(?:\.gz)?|\.cleanpkg)$/i, '').replace(/(?:\.json(?:\.gz)?|\.cleanpkg)$/i, '');
-      if (path) byId('output').value = `${path}__${engine}__${profile}${extension(config.engine)}`;
-    }
-    function setConfig(next) {
-      config = next;
-      byId('title').textContent = next.title;
-      byId('build').textContent = `TREE ${next.sha.slice(0, 12)} · v${next.formatVersion}`;
-      byId('output').value = next.output_path;
-      byId('path-note').textContent = 'Artifact dan .provenance.json dipublikasikan sebagai satu pasangan setelah readback validation.';
-    }
-    function setPath(value) { byId('output').value = value; }
-    byId('profile').addEventListener('change', normalizePath);
-    byId('output').addEventListener('blur', normalizePath);
-    byId('browse').addEventListener('click', () => window.sketchup.browse(byId('profile').value));
-    byId('cancel').addEventListener('click', () => window.sketchup.cancel());
-    byId('export').addEventListener('click', () => {
-      normalizePath();
-      window.sketchup.export(JSON.stringify({ output_path: byId('output').value.trim(), batch_size: Number(byId('batch').value), profile: byId('profile').value }));
-    });
-    window.setConfig = setConfig;
-    window.setPath = setPath;
-    window.sketchup.onReady();
-  </script>
+<main class="shell">
+  <header class="brand">
+    <svg viewBox="0 0 28 28" aria-hidden="true"><path fill="currentColor" d="M14 2 26 8v12L14 26 2 20V8L14 2Zm0 3.2L5.8 9.3 14 13.4l8.2-4.1L14 5.2Zm-9 6.5v6.4l7.5 3.8v-6.4L5 11.7Zm18 0-7.5 3.8v6.4l7.5-3.8v-6.4Z"/></svg>
+    <span class="brand-name">Sibambo BOM Engine Evolution</span><span class="build">build <span id="build-sha">memuat…</span></span>
+  </header>
+  <h1>Pengaturan ekspor</h1>
+  <p class="intro" id="intro">Pilih profil untuk <strong id="format">format Evolution</strong>. Validasi dilakukan sebelum file dipublikasikan.</p>
+
+  <section class="section">
+    <label class="field-label" for="outputPath">Lokasi dan nama dasar keluaran</label>
+    <div class="path-row">
+      <input class="text-input" id="outputPath" type="text" autocomplete="off" spellcheck="false">
+      <button class="button" id="browse" type="button">Pilih file</button>
+    </div>
+    <p class="path-note" id="suffix">Nama file memuat engine dan profil.</p>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>Profil hasil</h2><span class="hint" id="profile-hint">Satu file setiap ekspor</span></div>
+    <div class="profile-grid" role="radiogroup" aria-label="Profil hasil">
+      <label class="choice"><span class="choice-title"><input type="radio" name="profile-choice" value="exact"><strong>Exact</strong></span><small>Lossless dalam kontrak capture; ukuran bisa lebih besar.</small></label>
+      <label class="choice"><span class="choice-title"><input type="radio" name="profile-choice" value="visual" checked><strong>Visual</strong></span><small>Lebih ringkas dengan perlindungan data analitis.</small></label>
+      <label class="choice"><span class="choice-title"><input type="radio" name="profile-choice" value="all"><strong>Export All</strong></span><small>Exact dan Visual berurutan dalam folder baru.</small></label>
+    </div>
+    <select id="profile" hidden aria-hidden="true"><option value="exact">exact</option><option value="visual" selected>visual</option><option value="all">all</option></select>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>Batch geometri</h2><span class="hint">Tidak mengatur kecepatan encoding tekstur</span></div>
+    <div class="batch-modes">
+      <label><input type="radio" name="batch-mode" value="auto" checked>Auto</label>
+      <label><input type="radio" name="batch-mode" value="manual">Manual</label>
+    </div>
+    <div class="batch-controls">
+      <p class="hint" id="batch-description">Auto menyesuaikan jumlah entitas per giliran sesuai scheduler.</p>
+      <select class="select" id="batch-size" aria-label="Batas entitas per giliran" disabled>
+        <option value="96">96</option><option value="128">128</option><option value="256">256</option>
+        <option value="512" selected>512</option><option value="1024">1024</option>
+        <option value="2048">2048</option><option value="4096">4096</option><option value="8192">8192</option>
+      </select>
+    </div>
+    <p class="hint" style="margin-top:8px">Batch besar tidak menjamin konversi lebih cepat; scheduler menjaga respons UI.</p>
+  </section>
+
+  <div class="actions"><span class="footer-note">Kandidat • belum certified</span><button class="button" id="cancel" type="button">Batal</button><button class="button button-primary" id="export" type="button">Ekspor</button></div>
+</main>
+<script>
+  let config = null;
+  const byId = id => document.getElementById(id);
+  const selectedProfile = () => document.querySelector('input[name="profile-choice"]:checked').value;
+  const selectedBatchMode = () => document.querySelector('input[name="batch-mode"]:checked').value;
+  const extension = engine => engine === 'e2' ? '.json.gz' : '.cleanpkg';
+  function normalizeOutputPath(path, profile) {
+    path = String(path || '').trim();
+    if (!path || !config) return path;
+    path = path.replace(/__E[23]__(?:VISUAL|RESEARCH|EXACT)(?:\.json\.gz|\.cleanpkg)$/i, '')
+               .replace(/(?:\.json\.gz|\.cleanpkg|\.skp)$/i, '');
+    return profile === 'all' ? path : path + '__' + config.engine.toUpperCase() + '__' + profile.toUpperCase() + extension(config.engine);
+  }
+  function updateProfilePath() {
+    if (!config) return;
+    const profile = selectedProfile();
+    byId('profile').value = profile;
+    byId('outputPath').value = normalizeOutputPath(byId('outputPath').value, profile);
+    const all = profile === 'all';
+    byId('profile-hint').textContent = all ? 'Dua file; folder baru agar hasil lama aman' : 'Satu file setiap ekspor';
+    byId('suffix').textContent = all ? 'Folder baru untuk Exact + Visual, dengan nama dasar: ' + byId('outputPath').value.split(/[\\/]/).pop() : 'Nama final: ' + byId('outputPath').value.split(/[\\/]/).pop();
+    byId('intro').textContent = all ? 'Export All memerlukan model tersimpan. Jika salah satu profil gagal, hasil sebelumnya tetap ada dan status ditandai parsial.' : 'Pilih satu profil dan lokasi keluaran untuk ' + config.title + '.';
+    byId('export').textContent = all ? 'Ekspor 2 profil' : 'Ekspor ' + config.engine.toUpperCase();
+  }
+  function refreshBatchMode() {
+    const manual = selectedBatchMode() === 'manual';
+    byId('batch-size').disabled = !manual;
+    byId('batch-description').textContent = manual ? 'Pilih batas atas entitas. Scheduler tetap menjaga respons UI.' : 'Auto menyesuaikan batch untuk perangkat dan tahap yang sedang berjalan.';
+  }
+  function setConfig(next) {
+    config = next;
+    byId('format').textContent = next.title;
+    byId('build-sha').textContent = next.sha.slice(0, 12) + ' · v' + next.formatVersion;
+    byId('outputPath').value = next.output_path;
+    updateProfilePath();
+  }
+  function setPath(value) { if (value != null) { byId('outputPath').value = value; updateProfilePath(); } }
+  function doExport() {
+    if (!config) return;
+    updateProfilePath();
+    const path = byId('outputPath').value.trim();
+    if (!path) { alert('Pilih lokasi keluaran terlebih dahulu.'); return; }
+    const mode = selectedBatchMode();
+    byId('export').disabled = true;
+    window.sketchup.export(JSON.stringify({
+      output_path: path,
+      profile: selectedProfile(),
+      batch_mode: mode,
+      batch_size: mode === 'manual' ? Number(byId('batch-size').value) : null
+    }));
+  }
+  document.querySelectorAll('input[name="profile-choice"]').forEach(radio => radio.addEventListener('change', updateProfilePath));
+  document.querySelectorAll('input[name="batch-mode"]').forEach(radio => radio.addEventListener('change', refreshBatchMode));
+  byId('outputPath').addEventListener('blur', updateProfilePath);
+  byId('browse').addEventListener('click', () => window.sketchup.browse(selectedProfile()));
+  byId('cancel').addEventListener('click', () => window.sketchup.cancel());
+  byId('export').addEventListener('click', doExport);
+  window.setConfig = setConfig;
+  window.setPath = setPath;
+  refreshBatchMode();
+  window.sketchup.onReady();
+</script>
 </body>
 </html>

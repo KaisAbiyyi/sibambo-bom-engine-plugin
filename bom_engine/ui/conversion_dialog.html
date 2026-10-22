@@ -278,24 +278,27 @@
     if (!acceptEvent(data, false)) return false;
     var capture = data.capture === true;
     var batch = data.batch_export === true;
-    finish('done', capture ? 'Capture tersimpan' : batch ? 'Tiga profil selesai' : 'Ekspor selesai',
+    var profileNames = Object.keys(data.profiles || {});
+    if (!capture) profileNames.sort(function(a, b) { return a === 'exact' ? -1 : b === 'exact' ? 1 : a.localeCompare(b); });
+    var profileCount = profileNames.length;
+    finish('done', capture ? 'Capture tersimpan' : batch ? profileCount + ' profil selesai' : 'Ekspor selesai',
       capture ? 'Tiga profil berhasil dibuat. Audit fidelity dan sertifikasi belum selesai.' :
-      batch ? 'Tiga BOMC telah lolos validasi internal exporter. Ini bukan sertifikasi lintas-model.' :
+      batch ? profileCount + ' file telah lolos validasi internal exporter. Ini bukan sertifikasi lintas-model.' :
       'Hasil telah melewati validasi internal exporter; bukan sertifikasi lintas-model.');
     el('path').textContent = data.path || '';
-    el('stage').textContent = capture ? 'Belum siap rilis' : batch ? 'Tiga file BOMC tersimpan di folder baru' : 'File BOMC tersimpan';
+    el('stage').textContent = capture ? 'Belum siap rilis' : batch ? profileCount + ' file tersimpan di folder baru' : 'File BOMC tersimpan';
     el('elapsed').textContent = Number(data.elapsed_seconds || 0).toFixed(1) + ' detik';
     el('result').hidden = false; el('result-rows').replaceChildren();
     el('result-title').textContent = capture || batch ? 'Hasil per profil' : 'Ukuran file';
     if (data.source_bytes != null) row('Sumber SKP' + (data.source_path ? ' · ' + basename(data.source_path) : ''), formatBytes(data.source_bytes));
     if (capture || batch) {
-      ['visual', 'research', 'exact'].forEach(function(name) {
+      profileNames.forEach(function(name) {
         var item = data.profiles && data.profiles[name];
         if (item && item.bytes != null) row(name[0].toUpperCase() + name.slice(1), formatBytes(item.bytes));
       });
       el('outcome-note').textContent = capture ?
         'Ini hanya capture kandidat. Ukuran file bukan bukti kesetiaan model atau kelayakan rilis.' :
-        'Ketiga profil dibuat terpisah. Exact tidak dijamin lebih kecil; hasil ini belum certified untuk semua model.';
+        'Profil dibuat terpisah. Exact tidak dijamin lebih kecil; hasil ini belum certified untuk semua model.';
     } else {
       row('BOMC · ' + String(data.profile || 'profil').toUpperCase(), formatBytes(data.bytes));
       if (data.source_bytes != null && data.bytes != null) {
