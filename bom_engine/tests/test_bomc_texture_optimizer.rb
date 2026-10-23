@@ -90,6 +90,28 @@ module BOMEngine
       end
 
       def run
+        # Verify native-host evidence is reflected in an explicit bounded
+        # semantic proof deadline without changing the zero-error pixel gate.
+        proof_budget = ->(pixels) { BOMCTextureOptimizer.send(:semantic_verify_budget_seconds, pixels) }
+        assert(proof_budget.call(1_000_000) == 30.0,
+          'small texture retains minimum bounded proof time')
+        native_pixels = 2880 * 5760
+        assert(proof_budget.call(native_pixels) >= 140.0 && proof_budget.call(native_pixels) <= 180.0,
+          'native 16.59M-pixel RUMAH Y material gets adequate host-measured deadline')
+        assert(proof_budget.call(4096 * 4096) > 140.0,
+          '4096x4096 Exact material uses host-aware deadline instead of timed-out 83.9s')
+        assert(proof_budget.call(60_000_000) == 180.0,
+          'huge texture cannot exceed the immutable maximum proof deadline')
+        assert(proof_budget.call(5_000_000) < proof_budget.call(native_pixels),
+          'deadline increases monotonically with pixel count')
+        rejected = false
+        begin
+          proof_budget.call(0)
+        rescue ArgumentError
+          rejected = true
+        end
+        assert(rejected, 'invalid zero pixel count must be rejected')
+
         # Real native Y's 16+ megapixel PNG sometimes loses the 10-second
         # encoding race, changing the selected Exact candidate from WebP to
         # an 8+ MB larger PNG. Bounds must be monotonic and preserve m6's cap.
