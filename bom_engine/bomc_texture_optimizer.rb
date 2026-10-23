@@ -33,6 +33,14 @@ module BOMEngine
     SEMANTIC_VERIFY_BUDGET_PIXELS_PER_SECOND = 200_000.0
     SEMANTIC_VERIFY_MAX_SECONDS = 180.0
     LOSSLESS_SEARCH_REVISION = 'exact-webp-m4q75-m6q100mt-1'.freeze
+    # cwebp's generic 10-second process timeout is insufficient for some
+    # 16-Mpixel textures. Keep Exact trial time bounded and scale only the
+    # faster m4 lossless candidate; the high-effort m6 attempt retains the
+    # original 10-second limit to avoid extending the critical path twice.
+    EXACT_WEBP_M4_TIMEOUT_CAP_SECONDS = 45.0
+    EXACT_WEBP_M4_PIXELS_PER_SECOND = 500_000.0
+    EXACT_WEBP_DECODE_TIMEOUT_CAP_SECONDS = 30.0
+    EXACT_WEBP_DECODE_PIXELS_PER_SECOND = 1_000_000.0
     JCM_POLICY_REVISION = 'exact-jcm-2'.freeze
 
     module_function
@@ -842,10 +850,15 @@ module BOMEngine
           mode = variant[:mode]
           quality_level = variant[:quality]
           encoder_options = variant[:options]
+          encode_timeout = webp_codec_timeout_seconds(reference.width.to_i * reference.height.to_i,
+            pixel_lossless: pixel_lossless, method: encoder_options[:lossless_method], decode: false)
+          decode_timeout = webp_codec_timeout_seconds(reference.width.to_i * reference.height.to_i,
+            pixel_lossless: pixel_lossless, method: encoder_options[:lossless_method], decode: true)
           candidate_path = png_path.sub(/\.png\z/i, ".#{mode}-#{variant[:label]}.webp")
           decoded_path = "#{candidate_path}.decoded.png"
           attempt = { codec: :webp, mode: mode, quality_level: quality_level, variant: variant[:label],
             encoder_options: encoder_options.merge(exact: mode == :lossless), encoder_sha256: caps[:sha256],
+            encode_timeout_seconds: encode_timeout, decode_timeout_seconds: decode_timeout,
             policy_revision: LOSSLESS_SEARCH_REVISION, timings_ms: {} }
           attempt_started = monotonic_ms
           callback = checkpoint && lambda { |**_event| checkpoint.call(0, reference.width * reference.height) }
@@ -866,7 +879,8 @@ module BOMEngine
                             quality: quality_level, lossless: mode == :lossless,
                             lossless_method: encoder_options[:lossless_method],
                             lossless_quality: encoder_options[:lossless_quality],
-                            multithreaded: encoder_options[:multithreaded], checkpoint: callback)
+                            multithreaded: encoder_options[:multithreaded], timeout_sec: encode_timeout,
+                            checkpoint: callback)
                         end
                       end
             unless encoded[:success]
@@ -900,7 +914,8 @@ module BOMEngine
               measured = cached_quality
             else
               decoded = measure_phase(attempt[:timings_ms], :decode) do
-                BOMCTextureEncoder.decode_webp(source_path: candidate_path, output_path: decoded_path, checkpoint: callback)
+                BOMCTextureEncoder.decode_webp(source_path: candidate_path, output_path: decoded_path,
+                  timeout_sec: decode_timeout, checkpoint: callback)
               end
               unless decoded[:success]
                 attempts << attempt.merge(reason: decoded[:reason])
@@ -946,6 +961,22 @@ module BOMEngine
         selected_sha256: Digest::SHA256.file(best[:path]).hexdigest))
     end
     private_class_method :adaptive_webp
+
+    # A longer cap does not permit a lossy candidate, change pixel validation,
+    # or extend non-Exact output behavior. Limits are finite and monotonic in
+    # pixel count so large Exact WebP encodes are not timing-race dependent.
+    def webp_codec_timeout_seconds(pixels, pixel_lossless:, method:, decode:)
+      minimum = BOMCTextureEncoder::DEFAULT_TIMEOUT_SEC.to_f
+      return minimum unless pixel_lossless
+      if decode
+        return [[pixels.to_f / EXACT_WEBP_DECODE_PIXELS_PER_SECOND, minimum].max,
+          EXACT_WEBP_DECODE_TIMEOUT_CAP_SECONDS].min
+      end
+      return minimum unless method == 4
+      [[pixels.to_f / EXACT_WEBP_M4_PIXELS_PER_SECOND, minimum].max,
+        EXACT_WEBP_M4_TIMEOUT_CAP_SECONDS].min
+    end
+    private_class_method :webp_codec_timeout_seconds
 
     def fetch_cached_webp(cache, key, destination)
       entry = cache.fetch(:entries)[key]

@@ -90,6 +90,30 @@ module BOMEngine
       end
 
       def run
+        # Real native Y's 16+ megapixel PNG sometimes loses the 10-second
+        # encoding race, changing the selected Exact candidate from WebP to
+        # an 8+ MB larger PNG. Bounds must be monotonic and preserve m6's cap.
+        size_budget = lambda { |pixels, method, decode|
+          BOMCTextureOptimizer.send(:webp_codec_timeout_seconds, pixels,
+            pixel_lossless: true, method: method, decode: decode)
+        }
+        assert(size_budget.call(1_000_000, 4, false) == 10.0,
+          'small Exact WebP retains the original ten-second encoder timeout')
+        large_pixels = 2880 * 5760
+        assert(size_budget.call(large_pixels, 4, false) > 10.0 &&
+          size_budget.call(large_pixels, 4, false) <= 45.0,
+          'large Exact WebP m4 gets bounded pixel-scaled encoding time')
+        assert(size_budget.call(large_pixels, 6, false) == 10.0,
+          'large high-effort m6 retains its fixed limit to bound worst-case export cost')
+        assert(size_budget.call(large_pixels, 4, true) > 10.0 &&
+          size_budget.call(large_pixels, 4, true) <= 30.0,
+          'large Exact WebP decode gets bounded time to finish independent pixel validation')
+        assert(BOMCTextureOptimizer.send(:webp_codec_timeout_seconds, large_pixels,
+          pixel_lossless: false, method: 4, decode: false) == 10.0,
+          'Visual and lossy encoder timeout remains unchanged')
+        assert(size_budget.call(100_000_000, 4, false) == 45.0,
+          'untrusted huge pixel counts cannot remove the encoder timeout cap')
+
         reference = image_rep([
           [10, 20, 30], [40, 50, 60],
           [70, 80, 90], [100, 110, 120]
@@ -252,9 +276,11 @@ module BOMEngine
           )
           assert(calls.length == 2, 'normal Exact tries both bounded lossless settings')
           assert(calls[0][:options][:lossless_method] == 4 && calls[0][:options][:lossless_quality] == 75 &&
-            calls[0][:options][:multithreaded] == false, 'the first Exact lossless trial records explicit m4/q75 settings')
+            calls[0][:options][:multithreaded] == false && calls[0][:options][:timeout_sec] == 10.0,
+            'the first Exact lossless trial passes its source-sized timeout and explicit m4/q75 settings')
           assert(calls[1][:options][:lossless_method] == 6 && calls[1][:options][:lossless_quality] == 100 &&
-            calls[1][:options][:multithreaded] == true, 'Exact also tries the higher-effort m6/q100/multithreaded lossless candidate')
+            calls[1][:options][:multithreaded] == true && calls[1][:options][:timeout_sec] == 10.0,
+            'Exact high-effort m6 retains its fixed ten-second timeout')
           assert(result[:path].include?('lossless-m6-q100-mt.webp'), 'the smaller measured high-effort candidate wins by bytes')
         ensure
           FileUtils.remove_entry(directory) if directory && Dir.exist?(directory)
