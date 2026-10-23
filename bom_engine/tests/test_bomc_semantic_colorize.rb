@@ -6,6 +6,16 @@ require_relative '../bomc_decoder'
 require 'digest'
 
 class TestBOMCSemanticColorize < Test::Unit::TestCase
+  def test_float32_channel_table_matches_original_conversion_for_all_256_bytes
+    table = BOMEngine::BOMCSketchupColorize::CHANNEL_F32
+    assert_equal 256, table.size
+    assert_equal true, table.frozen?
+    256.times do |channel|
+      original_float32 = [channel.to_f / 255.0].pack('e').unpack1('e')
+      assert_equal original_float32, table[channel], "float32 channel conversion #{channel}"
+    end
+  end
+
   def test_matches_sketchup_reference_cpp_vector
     rgb = BOMEngine::BOMCSketchupColorize.colorize_pixel(
       115, 137, 98,
