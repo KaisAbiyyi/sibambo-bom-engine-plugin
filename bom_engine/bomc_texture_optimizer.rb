@@ -27,10 +27,14 @@ module BOMEngine
     POLICY_REVISION = 'adaptive-texture-7'.freeze
     SEMANTIC_COLORIZE_REVISION = 'exact-semantic-colorize-2'.freeze
     SEMANTIC_VERIFY_BUDGET_SECONDS = 30.0
-    # Benchmarked on Windows Ruby 3.2: 1,048,576 high-entropy pixels at
-    # ~280k px/s; budget 200k px/s with a 180s ceiling for large sources.
-    # This is a bounded verifier cost, never a fidelity relaxation.
-    SEMANTIC_VERIFY_BUDGET_PIXELS_PER_SECOND = 200_000.0
+    # The previous 200k px/s timeout estimate came from off-host Ruby tests.
+    # Real SketchUp 2026 on RUMAH Y Exact (candidate 008, SHA a08c0f0f...)
+    # processed 12,582,912 / 16,588,800 pixels in 83.265 seconds before
+    # timing out at 82.944 seconds (~151k px/s on the host). Use a bounded
+    # ~115k px/s deadline estimate, allowing ~24% host slowdown headroom.
+    # Every RGBA/alpha pixel is still proven with zero channel error; expiry
+    # remains a fail-closed fallback and never certifies partial proof.
+    SEMANTIC_VERIFY_BUDGET_PIXELS_PER_SECOND = 115_000.0
     SEMANTIC_VERIFY_MAX_SECONDS = 180.0
     LOSSLESS_SEARCH_REVISION = 'exact-webp-m4q75-m6q100mt-1'.freeze
     # cwebp's generic 10-second process timeout is insufficient for some
@@ -508,9 +512,7 @@ module BOMEngine
       uncolorized = texture.image_rep(false)
       colorized = texture.image_rep(true)
       pixel_count = uncolorized.width.to_i * uncolorized.height.to_i
-      verify_budget = [[SEMANTIC_VERIFY_BUDGET_SECONDS,
-        pixel_count / SEMANTIC_VERIFY_BUDGET_PIXELS_PER_SECOND].max,
-        SEMANTIC_VERIFY_MAX_SECONDS].min
+      verify_budget = semantic_verify_budget_seconds(pixel_count)
       started = monotonic_ms
       proof = BOMCSketchupColorize.verify(
         uncolorized: uncolorized, colorized: colorized, mode: mode,
@@ -615,6 +617,15 @@ module BOMEngine
       nil
     end
     private_class_method :select_semantic_colorized_native
+
+    def semantic_verify_budget_seconds(pixel_count)
+      pixels = Integer(pixel_count)
+      raise ArgumentError, 'Invalid semantic texture pixel count' unless pixels.positive?
+      [[SEMANTIC_VERIFY_BUDGET_SECONDS,
+        pixels / SEMANTIC_VERIFY_BUDGET_PIXELS_PER_SECOND].max,
+        SEMANTIC_VERIFY_MAX_SECONDS].min
+    end
+    private_class_method :semantic_verify_budget_seconds
 
     def select_native_jpeg(texture, png_path, reference, baseline, loader, &checkpoint)
       path = png_path.sub(/\.png\z/i, '.native.jpg')
