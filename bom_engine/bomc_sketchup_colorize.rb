@@ -5,6 +5,11 @@ module BOMEngine
   # Byte-exact port of SketchUp's published colorization algorithm.
   module BOMCSketchupColorize
     EQUAL_TOL = 1.0e-3
+    # SketchUp's colorization math first rounds each 8-bit channel to an IEEE
+    # float32. There are only 256 possible inputs, so materializing those exact
+    # rounded values once avoids three pack/unpack conversions per unique RGB
+    # pixel without changing the HLS arithmetic or the byte-exact proof.
+    CHANNEL_F32 = Array.new(256) { |channel| [channel.to_f / 255.0].pack('e').unpack1('e') }.freeze
     module_function
 
     def verify(uncolorized:, colorized:, mode:, deltas:, checkpoint: nil, max_seconds: nil)
@@ -136,7 +141,7 @@ module BOMEngine
     private_class_method :normalize_deltas
 
     def rgb2hls(rb,gb,bb)
-      r,g,b=[rb,gb,bb].map{|v| f32(v.to_f/255.0)}
+      r=CHANNEL_F32.fetch(rb); g=CHANNEL_F32.fetch(gb); b=CHANNEL_F32.fetch(bb)
       max=min=r; max=g if greater_than(g,max); max=b if greater_than(b,max); min=g if less_than(g,min); min=b if less_than(b,min)
       l=(max+min)/2.0; return [-1.0,l,0.0] if equals(min,max)
       s=less_than_or_equal(l,0.5) ? (max-min)/(max+min) : (max-min)/(2.0-max-min)
