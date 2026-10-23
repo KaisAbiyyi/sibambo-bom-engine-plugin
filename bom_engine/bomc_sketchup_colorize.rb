@@ -26,6 +26,14 @@ module BOMEngine
       if source[:channels] == 4 && target[:channels] == 4
         return verify_rgba32(source,target,h,l,s,shift,checkpoint,deadline)
       end
+      # SketchUp 2026 commonly gives an uncolorized native JPEG as BGR24
+      # while the colorized display ImageRep is BGRA32. The generic verifier
+      # allocated two RGBA arrays for every pixel and invoked logical_rgba
+      # twice. Keep the same exact per-channel/alpha proof, byte ordering and
+      # normalized RGBA digests with row-batched native integer comparisons.
+      if source[:channels] == 3 && target[:channels] == 4
+        return verify_rgb24_to_rgba32(source,target,h,l,s,shift,checkpoint,deadline)
+      end
       digest=Digest::SHA256.new; base_digest=Digest::SHA256.new
       processed=0
       # Memoize only repeated RGB conversions; never cache the observed target.
@@ -107,6 +115,52 @@ module BOMEngine
        base_pixel_sha256:base_digest.hexdigest,output_pixel_sha256:digest.hexdigest}
     end
     private_class_method :verify_rgba32
+
+    def verify_rgb24_to_rgba32(source,target,h,l,s,shift,checkpoint,deadline)
+      width=source[:width]; height=source[:height]; total=width*height
+      windows=Gem.win_platform?
+      digest=Digest::SHA256.new; base_digest=Digest::SHA256.new
+      color_cache={}; processed=0
+      height.times do |row|
+        source_bytes=source[:data].byteslice(row*source[:stride],width*3).unpack('C*')
+        displayed=target[:data].byteslice(row*target[:stride],width*4).unpack('V*')
+        normalized=Array.new(width); transformed=Array.new(width)
+        index=0; offset=0
+        while index<width
+          if windows
+            blue=source_bytes[offset]; green=source_bytes[offset+1]; red=source_bytes[offset+2]
+          else
+            red=source_bytes[offset]; green=source_bytes[offset+1]; blue=source_bytes[offset+2]
+          end
+          key=(red<<16)|(green<<8)|blue
+          mapped=color_cache[key]
+          unless mapped
+            rr,rg,rb=colorize_pixel(red,green,blue,h,l,s,shift)
+            native=windows ? ((rb)|(rg<<8)|(rr<<16)) : ((rr)|(rg<<8)|(rb<<16))
+            rgba=(rr)|(rg<<8)|(rb<<16)
+            mapped=[native,rgba]
+            color_cache.clear if color_cache.size>=65_536
+            color_cache[key]=mapped
+          end
+          return {passed:false,reason: :pixel_mismatch,processed:processed} unless
+            (mapped[0]|0xff000000)==displayed[index]
+          normalized[index]=((red)|(green<<8)|(blue<<16))|0xff000000
+          transformed[index]=mapped[1]|0xff000000
+          index+=1; offset+=3; processed+=1
+          if (processed%32_768).zero?
+            checkpoint.call(processed,total) if checkpoint
+            if deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC)>=deadline
+              return {passed:false,reason: :time_budget_exceeded,processed:processed}
+            end
+          end
+        end
+        base_digest.update(normalized.pack('V*'))
+        digest.update(transformed.pack('V*'))
+      end
+      {passed:true,width:width,height:height,pixels:processed,
+       base_pixel_sha256:base_digest.hexdigest,output_pixel_sha256:digest.hexdigest}
+    end
+    private_class_method :verify_rgb24_to_rgba32
 
     def colorize_pixel(r,g,b,h_delta,l_delta,s_delta,shift)
       h,l,s=rgb2hls(r,g,b)

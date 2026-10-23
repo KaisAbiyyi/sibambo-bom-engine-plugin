@@ -172,6 +172,67 @@ class TestBOMCSemanticColorize < Test::Unit::TestCase
     assert_equal conservative,accelerated
   end
 
+  def test_native_jpeg_rgb24_to_display_rgba32_matches_independent_rgb24_oracle
+    colorize=BOMEngine::BOMCSketchupColorize
+    deltas={h:-1.111102348365847,l:-0.17647060006856918,s:-0.05208786249966896}
+    random=Random.new(20261023)
+    pixels=Array.new(35) { [random.rand(256),random.rand(256),random.rand(256)] }
+    make_frame=lambda do |depth,values,padding|
+      rows=values.each_slice(7).map do |row|
+        row.map { |rgba| (Gem.win_platform? ? rgba[0,3].reverse+rgba[3..-1] : rgba).pack('C*') }.join.b + ('x'*padding)
+      end
+      Struct.new(:width,:height,:bits_per_pixel,:row_padding,:data).new(7,5,depth,padding,rows.join.b)
+    end
+    colorized=pixels.map do |r,g,b|
+      colorize.colorize_pixel(r,g,b,*deltas.values,true)
+    end
+    source24=make_frame.call(24,pixels,3)
+    expected24=make_frame.call(24,colorized,2)
+    actual32=make_frame.call(32,colorized.map { |p| p+[255] },5)
+    expected=colorize.verify(uncolorized:source24,colorized:expected24,
+      mode: :shift,deltas:deltas,max_seconds:30)
+    seen=[]
+    actual=colorize.verify(uncolorized:source24,colorized:actual32,
+      mode: :shift,deltas:deltas,max_seconds:30,
+      checkpoint:->(done,total){seen << [done,total]})
+    assert_equal true,expected[:passed]
+    assert_equal expected,actual
+    assert_equal [],seen
+
+    # A fully opaque JPEG source cannot silently grow transparency in the
+    # SketchUp display, even if the three color channels remain unchanged.
+    actual32.data.setbyte(3,0)
+    mismatch=colorize.verify(uncolorized:source24,colorized:actual32,
+      mode: :shift,deltas:deltas,max_seconds:30)
+    assert_equal false,mismatch[:passed]
+    assert_equal :pixel_mismatch,mismatch[:reason]
+    assert_equal 0,mismatch[:processed]
+  end
+
+  def test_native_jpeg_mixed_fast_path_preserves_checkpoint_boundary_and_late_mismatch
+    colorize=BOMEngine::BOMCSketchupColorize
+    red,green,blue=16,96,212
+    rr,rg,rb=colorize.colorize_pixel(red,green,blue,0.0,0.0,0.0,true)
+    native_source=(Gem.win_platform? ? [blue,green,red] : [red,green,blue]).pack('C3')
+    native_target=(Gem.win_platform? ? [rb,rg,rr,255] : [rr,rg,rb,255]).pack('C4')
+    width=1; height=32_769
+    frame=Struct.new(:width,:height,:bits_per_pixel,:row_padding,:data)
+    source=frame.new(width,height,24,0,native_source*height)
+    target=frame.new(width,height,32,0,native_target*height)
+    checkpoints=[]
+    deltas={h:0.0,l:0.0,s:0.0}
+    result=colorize.verify(uncolorized:source,colorized:target,mode: :shift,
+      deltas:deltas,max_seconds:30,
+      checkpoint:->(done,total){checkpoints << [done,total]})
+    assert_equal true,result[:passed]
+    assert_equal [[32_768,32_769]],checkpoints
+    target.data.setbyte(32_768*4+3,0)
+    failed=colorize.verify(uncolorized:source,colorized:target,mode: :shift,
+      deltas:deltas,max_seconds:30)
+    assert_equal :pixel_mismatch,failed[:reason]
+    assert_equal 32_768,failed[:processed]
+  end
+
   def test_material_v2_round_trips_parametric_colorization
     graph = {
       materials: [{
