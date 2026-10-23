@@ -142,21 +142,26 @@ module BOMEngine
 
     def rgb2hls(rb,gb,bb)
       r=CHANNEL_F32.fetch(rb); g=CHANNEL_F32.fetch(gb); b=CHANNEL_F32.fetch(bb)
-      max=min=r; max=g if greater_than(g,max); max=b if greater_than(b,max); min=g if less_than(g,min); min=b if less_than(b,min)
-      l=(max+min)/2.0; return [-1.0,l,0.0] if equals(min,max)
-      s=less_than_or_equal(l,0.5) ? (max-min)/(max+min) : (max-min)/(2.0-max-min)
+      # Inline the exact EQUAL_TOL comparisons on the high-entropy pixel path:
+      # fewer Ruby method dispatches, identical operands and float operations.
+      max=min=r; max=g if (g-max)>=EQUAL_TOL; max=b if (b-max)>=EQUAL_TOL
+      min=g if (g-min)<=-EQUAL_TOL; min=b if (b-min)<=-EQUAL_TOL
+      l=(max+min)/2.0; return [-1.0,l,0.0] if (min-max).abs<EQUAL_TOL
+      s=((l-0.5)<=-EQUAL_TOL || (l-0.5).abs<EQUAL_TOL) ? (max-min)/(max+min) : (max-min)/(2.0-max-min)
       rc=(max-r)/(max-min); gc=(max-g)/(max-min); bc=(max-b)/(max-min)
-      h=equals(r,max) ? bc-gc : equals(g,max) ? 2.0+rc-bc : 4.0+gc-rc
-      h*=60.0; h+=360.0 if less_than(h,0.0); [h,l,s]
+      h=(r-max).abs<EQUAL_TOL ? bc-gc : (g-max).abs<EQUAL_TOL ? 2.0+rc-bc : 4.0+gc-rc
+      h*=60.0; h+=360.0 if (h-0.0)<=-EQUAL_TOL; [h,l,s]
     end
     def hls2rgb(h,l,s)
-      m2=less_than(l,0.5) ? l*(1.0+s) : l+s-(l*s); m1=2.0*l-m2
-      [calc(m1,m2,h+120.0),calc(m1,m2,h),calc(m1,m2,h-120.0)].map{|v| double2byte(v)}
+      m2=(l-0.5)<=-EQUAL_TOL ? l*(1.0+s) : l+s-(l*s); m1=2.0*l-m2
+      [double2byte(calc(m1,m2,h+120.0)),double2byte(calc(m1,m2,h)),double2byte(calc(m1,m2,h-120.0))]
     end
     def calc(n1,n2,h)
-      h-=360.0 if greater_than(h,360.0); h+=360.0 if less_than(h,0.0)
-      return n1+(n2-n1)*h/60.0 if less_than(h,60.0); return n2 if less_than(h,180.0)
-      return n1+(n2-n1)*(240.0-h)/60.0 if less_than(h,240.0); n1
+      h-=360.0 if (h-360.0)>=EQUAL_TOL; h+=360.0 if (h-0.0)<=-EQUAL_TOL
+      return n1+(n2-n1)*h/60.0 if (h-60.0)<=-EQUAL_TOL
+      return n2 if (h-180.0)<=-EQUAL_TOL
+      return n1+(n2-n1)*(240.0-h)/60.0 if (h-240.0)<=-EQUAL_TOL
+      n1
     end
     def f32(v); [v].pack('e').unpack1('e'); end
     def less_than(a,b); (a-b)<=-EQUAL_TOL; end

@@ -6,6 +6,77 @@ require_relative '../bomc_decoder'
 require 'digest'
 
 class TestBOMCSemanticColorize < Test::Unit::TestCase
+  # Independently kept scalar implementation of the earlier, already-tested
+  # published SketchUp HLS approximation. It deliberately retains the old
+  # helper dispatch and float32 conversions so new fast-path code cannot be
+  # its own oracle.
+  module ReferenceColorize
+    TOL = 1.0e-3
+    module_function
+
+    def less_than(a,b); (a-b)<=-TOL; end
+    def greater_than(a,b); (a-b)>=TOL; end
+    def equals(a,b); (a-b).abs<TOL; end
+    def less_than_or_equal(a,b); less_than(a,b)||equals(a,b); end
+    def clamp(v,min,max); [[v,min].max,max].min; end
+    def double2byte(v); return 0 if v<=0.0; return 255 if v>=1.0; (v*255.0).to_i; end
+
+    def rgb2hls(rb,gb,bb)
+      r,g,b=[rb,gb,bb].map { |v| [v.to_f/255.0].pack('e').unpack1('e') }
+      max=min=r; max=g if greater_than(g,max); max=b if greater_than(b,max)
+      min=g if less_than(g,min); min=b if less_than(b,min)
+      l=(max+min)/2.0; return [-1.0,l,0.0] if equals(min,max)
+      s=less_than_or_equal(l,0.5) ? (max-min)/(max+min) : (max-min)/(2.0-max-min)
+      rc=(max-r)/(max-min); gc=(max-g)/(max-min); bc=(max-b)/(max-min)
+      h=equals(r,max) ? bc-gc : equals(g,max) ? 2.0+rc-bc : 4.0+gc-rc
+      h*=60.0; h+=360.0 if less_than(h,0.0); [h,l,s]
+    end
+
+    def calc(n1,n2,h)
+      h-=360.0 if greater_than(h,360.0); h+=360.0 if less_than(h,0.0)
+      return n1+(n2-n1)*h/60.0 if less_than(h,60.0)
+      return n2 if less_than(h,180.0)
+      return n1+(n2-n1)*(240.0-h)/60.0 if less_than(h,240.0)
+      n1
+    end
+
+    def hls2rgb(h,l,s)
+      m2=less_than(l,0.5) ? l*(1.0+s) : l+s-(l*s); m1=2.0*l-m2
+      [calc(m1,m2,h+120.0),calc(m1,m2,h),calc(m1,m2,h-120.0)].map { |v| double2byte(v) }
+    end
+
+    def transform(r,g,b,h_delta,l_delta,s_delta,shift)
+      h,l,s=rgb2hls(r,g,b)
+      h=shift ? h+h_delta : h_delta
+      h+=360.0 while less_than(h,0.0); h-=360.0 while greater_than(h,360.0)
+      s=clamp(s+s_delta,0.0,1.0); l=clamp(l+l_delta,0.01,1.0)
+      return [double2byte(l)]*3 if equals(s,0.0)
+      hls2rgb(h,l,s)
+    end
+  end
+
+  def test_fast_hls_matches_prior_scalar_math_for_random_and_boundary_rgb
+    current=BOMEngine::BOMCSketchupColorize
+    random=Random.new(20261023)
+    edge=[0,1,2,63,64,65,126,127,128,129,190,191,192,253,254,255]
+    rgb_samples=edge.product(edge,edge)
+    8_192.times { rgb_samples << [random.rand(256),random.rand(256),random.rand(256)] }
+    adjustments=[
+      [92.58741048890613,0.13725490868091583,-0.11229892646129502,true],
+      [0.0,0.0,0.0,true],
+      [180.0,-0.4,0.4,true],
+      [359.999,-0.01,-0.999,false],
+      [-30.0,0.5,0.003,false]
+    ]
+    adjustments.each do |h,l,s,shift|
+      rgb_samples.each do |r,g,b|
+        expected=ReferenceColorize.transform(r,g,b,h,l,s,shift)
+        assert_equal expected,current.colorize_pixel(r,g,b,h,l,s,shift),
+          "HLS byte identity for RGB=#{[r,g,b].inspect}, deltas=#{[h,l,s,shift].inspect}"
+      end
+    end
+  end
+
   def test_float32_channel_table_matches_original_conversion_for_all_256_bytes
     table = BOMEngine::BOMCSketchupColorize::CHANNEL_F32
     assert_equal 256, table.size
