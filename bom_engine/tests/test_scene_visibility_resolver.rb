@@ -130,6 +130,55 @@ module BOMEngine
       end
     end
 
+    def test_cooperative_fourteen_page_equivalence_and_cancellation
+      layer = MockLayer.new('ARCH', persistent_id: '101')
+      pages = 14.times.map { |i| MockPage.new("PAGE#{i}", persistent_id: "page#{i}") }
+      model = MockModel.new(pages: pages, layers: [layer])
+      nodes = [{id: 'root', kind: 'root', definition_id: 'd'}] + 600.times.map { |i| {id: "n#{i}", kind: 'component_instance', visible: true, definition_id: 'cycle'} }
+      definitions = [{id: 'd', node_ids: nodes.drop(1).map { |n| n[:id] }}, {id: 'cycle', node_ids: ['n0']}]
+      args = { nodes: nodes, definitions: definitions, meshes: [] }
+      run = lambda do |cursor|
+        trace = PerformanceTrace.new(enabled: true)
+        result = nil
+        PerformanceTrace.with(trace) { result = SceneVisibilityResolver.resolve_scenes(model, **args, work_cursor: cursor) }
+        [result, trace.finish(status: :success)[:counters]]
+      end
+      events = []
+      cursor = SceneVisibilityResolver::WorkCursor.new(on_checkpoint: ->(e) { events << e }, clock: -> { 0.0 })
+      baseline, baseline_counts = run.call(nil)
+      actual, actual_counts = run.call(cursor)
+      assert_equal JSON.generate(baseline), JSON.generate(actual)
+      assert_equal baseline_counts, actual_counts
+      assert_equal 14, actual.length
+      assert_operator events.count { |e| e[:operation_label] == 'scene_overrides' && e[:work_units] >= 256 }, :>=, 14
+      assert_operator events.count { |e| e[:operation_label] == 'scene_occurrences' && e[:work_units] >= 256 }, :>=, 14
+      assert_equal pages, model.pages
+      assert_equal true, layer.visible?
+      error = Class.new(StandardError).new('observer')
+      cursor = SceneVisibilityResolver::WorkCursor.new(on_checkpoint: ->(e) { raise error if e[:operation_label] == 'scene_occurrences' })
+      wrapped = assert_raise(SceneVisibilityResolver::WorkCursor::CheckpointError) { run.call(cursor) }
+      assert_same error, wrapped.cause
+      require_relative '../conversion_job'
+      cancelled = ConversionJob::Cancelled.new('cancel second page')
+      page_boundaries = 0
+      cursor = SceneVisibilityResolver::WorkCursor.new(clock: -> { 0.0 }, on_checkpoint: ->(e) {
+        page_boundaries += 1 if e[:operation_label] == 'scene_occurrences' && e[:work_units] == 0
+        raise cancelled if page_boundaries == 2
+      })
+      assert_same cancelled, assert_raise(ConversionJob::Cancelled) { run.call(cursor) }
+    end
+
+    def test_clip_scan_does_not_swallow_cancel_or_callback_failure
+      require_relative '../conversion_job'
+      model = Struct.new(:entities, :definitions).new(Array.new(600) { Object.new }, [])
+      [ConversionJob::Cancelled.new('cancel clips'), RuntimeError.new('observer clips')].each do |error|
+        cursor = SceneVisibilityResolver::WorkCursor.new(clock: -> { 0.0 }, on_checkpoint: ->(_) { raise error })
+        klass = error.is_a?(ConversionJob::Cancelled) ? ConversionJob::Cancelled : SceneVisibilityResolver::WorkCursor::CheckpointError
+        raised = assert_raise(klass) { SceneVisibilityResolver.collect_model_clip_planes(model, work_cursor: cursor) }
+        assert_same error, (klass == ConversionJob::Cancelled ? raised : raised.cause)
+      end
+    end
+
     def test_performance_trace_counts_scene_queries
       layer_arch = MockLayer.new('ARCH', visible: true, persistent_id: '101')
       layer_struct = MockLayer.new('STRUCT', visible: true, persistent_id: '102')

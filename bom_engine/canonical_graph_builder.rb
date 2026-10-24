@@ -33,8 +33,18 @@ module BOMEngine
         @texture_writer = texture_writer
         @scene_scope = (@settings[:scene_scope] || 'all').to_s
         @preserve_hidden_geometry = @settings[:preserve_hidden_geometry] == true
+        @progress = progress
+        @batch_size = [batch_size.to_i, 1].max
+        @work_count = 0
+        @scene_work_cursor = if @progress
+          SceneVisibilityResolver::WorkCursor.new(on_checkpoint: lambda do |event|
+            @work_count += event[:work_units]
+            @progress.call(stage: 'Resolving scene visibility', processed: @work_count,
+              force: true, operation_label: event[:operation_label])
+          end)
+        end
         @scene_context = PerformanceTrace.stage(:canonical_initial_scene_visibility) do
-          SceneVisibilityResolver.prepare_capture_context(@model)
+          SceneVisibilityResolver.prepare_capture_context(@model, work_cursor: @scene_work_cursor)
         end
         @exportable_cache = {}
         @definitions = []
@@ -58,9 +68,6 @@ module BOMEngine
           label_role_nodes: 0,
           geometry_fallback_nodes: 0
         }
-        @progress = progress
-        @batch_size = [batch_size.to_i, 1].max
-        @work_count = 0
       end
 
       def build(entities, parent_transform)
@@ -516,20 +523,22 @@ module BOMEngine
       end
 
       def build_scenes
-        capture_index = SceneVisibilityResolver.build_capture_index(nodes: @nodes, definitions: @definitions, meshes: @meshes)
+        capture_index = SceneVisibilityResolver.build_capture_index(nodes: @nodes, definitions: @definitions, meshes: @meshes, work_cursor: @scene_work_cursor)
         scenes = SceneVisibilityResolver.resolve_scenes(
           @model,
           nodes: @nodes,
           definitions: @definitions,
           meshes: @meshes,
           capture_context: @scene_context,
-          capture_index: capture_index
+          capture_index: capture_index,
+          work_cursor: @scene_work_cursor
         )
-        @nodes.each { |node| node.delete(:_entity) }
+        @nodes.each { |node| @scene_work_cursor&.step('scene_cleanup'); node.delete(:_entity) }
         @meshes.each do |mesh|
-          Array(mesh[:faces]).each { |face| face.delete(:_entity) }
-          Array(mesh[:edges]).each { |edge| edge.delete(:_entity) }
+          Array(mesh[:faces]).each { |face| @scene_work_cursor&.step('scene_cleanup'); face.delete(:_entity) }
+          Array(mesh[:edges]).each { |edge| @scene_work_cursor&.step('scene_cleanup'); edge.delete(:_entity) }
         end
+        @scene_work_cursor&.flush('scene_cleanup')
         scenes
       end
 

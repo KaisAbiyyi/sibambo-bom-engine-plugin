@@ -13,6 +13,19 @@ require_relative '../bomc_writer'
 require_relative '../bomc_decoder'
 
 class TestSceneSharedUniverse < Test::Unit::TestCase
+  # Exercise every existing geometry/scene fixture through both capture paths.
+  # Compare stable graph fields; export timestamp is intentionally excluded.
+  def build_with_cursor_equivalence(**args)
+    plain = BOMEngine::CanonicalGraphBuilder.build(**args)
+    events = []
+    observed = BOMEngine::CanonicalGraphBuilder.build(**args, progress: ->(event) { events << event })
+    [:nodes, :definitions, :meshes, :scenes, :clip_planes, :tags, :materials, :transforms].each do |key|
+      assert_equal JSON.generate(plain[key]), JSON.generate(observed[key]), "cursor changed #{key}"
+    end
+    assert(events.any? { |e| e[:force] && e[:operation_label] == 'scene_cleanup' })
+    observed
+  end
+
   def setup
     @model = Sketchup::Model.new
     Sketchup.active_model = @model
@@ -51,7 +64,7 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     inst_pers.layer = tag_pers
 
     # With scene_scope: 'all', both definitions and instances survive canonical graph
-    graph_all = BOMEngine::CanonicalGraphBuilder.build(
+    graph_all = build_with_cursor_equivalence(
       model: @model,
       entities: @model.entities,
       parent_transform: Geom::Transformation.new,
@@ -214,7 +227,7 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     def1 = @model.definitions.add('UnresolvedBox')
     def1.entities.add_face([0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0])
     @model.entities.add_instance(def1, Geom::Transformation.new)
-    graph = BOMEngine::CanonicalGraphBuilder.build(
+    graph = build_with_cursor_equivalence(
       model: @model,
       entities: @model.entities,
       parent_transform: Geom::Transformation.new,
@@ -321,7 +334,7 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
 
     3.times { |i| @model.pages.add("Scene_#{i}") }
 
-    graph = BOMEngine::CanonicalGraphBuilder.build(
+    graph = build_with_cursor_equivalence(
       model: @model,
       entities: @model.entities,
       parent_transform: Geom::Transformation.new,
@@ -346,7 +359,7 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     @model.pages.add('Scene_A')
     @model.pages.add('Scene_B')
 
-    graph = BOMEngine::CanonicalGraphBuilder.build(
+    graph = build_with_cursor_equivalence(
       model: @model,
       entities: @model.entities,
       parent_transform: Geom::Transformation.new,
@@ -524,7 +537,7 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     page.hidden_entities = [face, edge]
     @model.pages.add('Scene_FaceVisible')
 
-    graph = BOMEngine::CanonicalGraphBuilder.build(
+    graph = build_with_cursor_equivalence(
       model: @model,
       entities: @model.entities,
       parent_transform: Geom::Transformation.new,
@@ -559,7 +572,7 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     page.use_hidden_geometry = true
     page.set_drawingelement_visibility(face, true)
 
-    graph = BOMEngine::CanonicalGraphBuilder.build(
+    graph = build_with_cursor_equivalence(
       model: @model,
       entities: @model.entities,
       parent_transform: Geom::Transformation.new,
@@ -591,7 +604,7 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
 
     build = lambda do |selected_page|
       @model.pages.selected_page = selected_page
-      BOMEngine::CanonicalGraphBuilder.build(
+      build_with_cursor_equivalence(
         model: @model,
         entities: @model.entities,
         parent_transform: Geom::Transformation.new,
@@ -637,7 +650,7 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     cam = page.camera
     cam.set([100.0, 200.0, 50.0], [55.5, 77.7, 12.3], [0.0, 0.0, 1.0])
 
-    graph = BOMEngine::CanonicalGraphBuilder.build(
+    graph = build_with_cursor_equivalence(
       model: @model,
       entities: @model.entities,
       parent_transform: Geom::Transformation.new,
@@ -681,7 +694,7 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     page_cut.use_section_planes = true
     page_cut.active_section_planes = [plane_ent] if page_cut.respond_to?(:active_section_planes=)
 
-    graph = BOMEngine::CanonicalGraphBuilder.build(
+    graph = build_with_cursor_equivalence(
       model: @model,
       entities: @model.entities,
       parent_transform: Geom::Transformation.new,
@@ -719,7 +732,7 @@ class TestSceneSharedUniverse < Test::Unit::TestCase
     # Made visible in STR page via official DrawingElement visibility
     page_str.set_drawingelement_visibility(col_inst, true)
 
-    graph = BOMEngine::CanonicalGraphBuilder.build(
+    graph = build_with_cursor_equivalence(
       model: @model,
       entities: @model.entities,
       parent_transform: Geom::Transformation.new,
