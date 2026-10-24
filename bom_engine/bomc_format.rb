@@ -212,7 +212,7 @@ module BOMEngine
           [Integer(section.fetch(:type)), index]
         end.map(&:first)
         prepared = ordered.each_with_index.map do |section, index|
-          prepared_section = prepare_section(section, compression_level)
+          prepared_section = prepare_section(section, compression_level, checkpoint)
           if checkpoint
             checkpoint.call(
               stage: :compress_sections,
@@ -315,7 +315,7 @@ module BOMEngine
         )[:bytes]
       end
 
-      def parse(bytes, verify_checksums: true)
+      def parse(bytes, verify_checksums: true, checkpoint: nil)
         content = bytes.b
         if content.bytesize > DecodeBudget::MAX_INPUT_BYTES
           raise "BOMC invalid: container byte length #{content.bytesize} exceeds budget of #{DecodeBudget::MAX_INPUT_BYTES} bytes."
@@ -330,7 +330,25 @@ module BOMEngine
           if verify_checksums && Zlib.crc32(stored) != descriptor[:crc32]
             raise "BOMC invalid: section #{descriptor[:index]} checksum mismatch."
           end
-          raw = decode_section(stored, descriptor[:codec], descriptor[:index])
+          raw = if checkpoint && descriptor[:codec] == CODEC_DEFLATE
+                  stream = Zlib::Inflate.new
+                  begin
+                    output = +''.b
+                    offset = 0
+                    while offset < stored.bytesize
+                      checkpoint.call
+                      output << stream.inflate(stored.byteslice(offset, 65_536))
+                      raise 'BOMC invalid: expanded section exceeds declared size.' if output.bytesize > descriptor[:raw_size]
+                      offset += 65_536
+                    end
+                    output << stream.finish
+                    output
+                  ensure
+                    stream.close
+                  end
+                else
+                  decode_section(stored, descriptor[:codec], descriptor[:index])
+                end
           if raw.bytesize != descriptor[:raw_size]
             raise "BOMC invalid: section #{descriptor[:index]} raw size mismatch."
           end
@@ -415,7 +433,7 @@ module BOMEngine
         }
       end
 
-      def prepare_section(section, compression_level)
+      def prepare_section(section, compression_level, checkpoint = nil)
         raw = section.fetch(:bytes).b
         stored = raw
         codec = section[:codec] || CODEC_STORE
@@ -423,7 +441,20 @@ module BOMEngine
           stored = section[:stored_bytes].b
           codec = section[:codec] || (stored.bytesize < raw.bytesize ? CODEC_DEFLATE : CODEC_STORE)
         elsif section[:compress]
-          candidate = Zlib::Deflate.deflate(raw, Integer(compression_level))
+          stream = Zlib::Deflate.new(Integer(compression_level))
+          begin
+            candidate = +''.b
+            offset = 0
+            while offset < raw.bytesize
+              checkpoint.call(stage: :compress_sections, processed: offset, total: raw.bytesize,
+                operation_label: "compress_section_#{section[:type]}", unit: 'bytes') if checkpoint
+              candidate << stream.deflate(raw.byteslice(offset, 32_768), Zlib::NO_FLUSH)
+              offset += 32_768
+            end
+            candidate << stream.finish
+          ensure
+            stream.close
+          end
           if candidate.bytesize < raw.bytesize
             stored = candidate
             codec = CODEC_DEFLATE

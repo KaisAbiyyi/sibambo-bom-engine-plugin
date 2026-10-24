@@ -40,7 +40,7 @@ module BOMEngine
           SceneVisibilityResolver::WorkCursor.new(on_checkpoint: lambda do |event|
             @work_count += event[:work_units]
             @progress.call(stage: 'Resolving scene visibility', processed: @work_count,
-              force: true, operation_label: event[:operation_label])
+              force: event[:force], operation_label: event[:operation_label])
           end)
         end
         @scene_context = PerformanceTrace.stage(:canonical_initial_scene_visibility) do

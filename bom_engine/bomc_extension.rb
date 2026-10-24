@@ -515,9 +515,9 @@ module BOMEngine
             strict_exact_source: profile.to_sym == :exact
           )
         end,
-        validate: lambda do |result, graph = nil|
+        validate: lambda do |result, graph = nil, validation_checkpoint = nil|
           profiled = PerformanceTrace.stage(:decode_readback, counts: { bytes: result.fetch(:bytes).bytesize }) do
-            BOMCDecoder.profile(result.fetch(:bytes), allow_jpeg_color_map: allow_jpeg_color_map)
+            BOMCDecoder.profile(result.fetch(:bytes), allow_jpeg_color_map: allow_jpeg_color_map, checkpoint: validation_checkpoint)
           end
           decoded = profiled.fetch(:model)
           profiled.fetch(:timings, {}).each do |phase, milliseconds|
@@ -531,7 +531,8 @@ module BOMEngine
                 decoded: decoded,
                 profile: profile,
                 texture_evidence: texture_evidence,
-                normalized_source: result[:normalized_source]
+                normalized_source: result[:normalized_source],
+                checkpoint: validation_checkpoint
               )
             else
               { passed: true }

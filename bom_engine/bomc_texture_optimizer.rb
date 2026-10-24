@@ -73,11 +73,11 @@ module BOMEngine
     end
     private_class_method :stage_result
 
-    def reference_pixel_sha256(image_rep)
+    def reference_pixel_sha256(image_rep, &checkpoint)
       # Hash normalized displayed RGBA rather than SketchUp's native row layout.
       # This keeps the evidence stable across RGB/BGRA representations and row
       # padding while still binding it to the pixels the user actually sees.
-      Digest::SHA256.hexdigest(color_map_rgba(image_rep))
+      Digest::SHA256.hexdigest(color_map_rgba(image_rep, &checkpoint))
     end
     private_class_method :reference_pixel_sha256
 
@@ -341,7 +341,7 @@ module BOMEngine
       raise 'SketchUp could not stage the lossless PNG texture' unless written && File.file?(png_path)
 
       reference = measure_phase(timings, :reference_image_rep) { texture.image_rep(true) }
-      reference_pixel_hash = measure_phase(timings, :reference_pixel_sha256) { reference_pixel_sha256(reference) } if record_reference_pixel_hash
+      reference_pixel_hash = measure_phase(timings, :reference_pixel_sha256) { reference_pixel_sha256(reference, &checkpoint) } if record_reference_pixel_hash
       native_jpeg = native_jpeg_path?(source_path)
       is_pixel_lossless = (policy == :pixel_lossless || profile.to_s.downcase.to_sym == :exact)
 
@@ -394,7 +394,7 @@ module BOMEngine
             reference.save_file(jpeg_path)
             if File.file?(jpeg_path)
               jpeg_quality = nil
-              reference_sha = candidate_cache ? reference_pixel_sha256(reference) : nil
+              reference_sha = candidate_cache ? reference_pixel_sha256(reference, &checkpoint) : nil
               candidate_sha = candidate_cache ? Digest::SHA256.file(jpeg_path).hexdigest : nil
               evidence_key = evidence_cache_key(
                 candidate_cache: candidate_cache,
@@ -841,7 +841,7 @@ module BOMEngine
       caps = measure_phase(search_timings, :encoder_capabilities) { BOMCTextureEncoder.capabilities(require_verified: true) }
       source_sha256 = measure_phase(search_timings, :source_sha256) { Digest::SHA256.file(png_path).hexdigest }
       reference_sha256 = if candidate_cache
-                           measure_phase(search_timings, :reference_pixel_sha256) { reference_pixel_sha256(reference) }
+                           measure_phase(search_timings, :reference_pixel_sha256) { reference_pixel_sha256(reference, &checkpoint) }
                          end
       if !caps[:available] || !caps[:verified]
         attempts << { reason: :verified_encoder_unavailable }
