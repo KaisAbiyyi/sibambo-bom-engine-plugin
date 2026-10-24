@@ -6,6 +6,7 @@
 
 require 'json'
 require 'fileutils'
+require 'time'
 
 module BOMEngine
   class PerformanceTrace
@@ -109,6 +110,9 @@ module BOMEngine
       @gc_sampler = gc_sampler || method(:default_gc_snapshot)
       @memory_sampler = memory_sampler || method(:default_memory_snapshot)
       @started_wall = safe_clock(@clock)
+      # UTC anchors let an external Windows CPU/RAM/GPU/disk trace be joined to
+      # relative monotonic stage times without wall-clock drift assumptions.
+      @started_utc = Time.now.utc.iso8601(3)
     end
 
     def stage(name, counts: nil, details: nil, sample_resources: false)
@@ -164,12 +168,15 @@ module BOMEngine
       unless @finished
         @finished = true
         @finished_wall = safe_clock(@clock)
+        @finished_utc = Time.now.utc.iso8601(3)
       end
       receipt = {
         schema: SCHEMA,
         enabled: true,
         status: status.to_s,
         total_wall_ms: duration_ms(@started_wall, @finished_wall),
+        started_utc: @started_utc,
+        finished_utc: @finished_utc,
         metadata: @metadata.merge(normalize_hash(metadata || {})),
         counters: @counters.sort.to_h,
         stages: @stages.map { |row| public_stage(row) }

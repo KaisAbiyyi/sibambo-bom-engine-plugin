@@ -7,6 +7,10 @@ require_relative 'bomc_candidate'
 module BOMEngine
   module BOMC
     module CodecMath
+      # These Ruby-heavy geometry loops need a finer cancellation/yield boundary
+      # on large Exact models. The underlying codec arithmetic and stream order
+      # remain unchanged; only callback cadence is different.
+      INTERACTIVE_POLL_ITEMS = 32
       module_function
 
       def error_summary(errors)
@@ -50,14 +54,17 @@ module BOMEngine
       # Poll on bounded work units, never on byte offsets. All arithmetic,
       # iteration order and DEFLATE NO_FLUSH boundaries retain original bytes.
       def poll(checkpoint, stage, index, total)
-        checkpoint.call(stage: stage, processed: index / 1024, total: (total.to_i + 1023) / 1024,
-          operation_label: stage.to_s) if checkpoint && index.positive? && (index % 1024).zero?
+        granularity = [:encode_topology, :encode_uv].include?(stage) ? INTERACTIVE_POLL_ITEMS : 1024
+        checkpoint.call(stage: stage, processed: index / granularity,
+          total: (total.to_i + granularity - 1) / granularity,
+          operation_label: stage.to_s) if checkpoint && index.positive? && (index % granularity).zero?
       end
 
       def map(values, checkpoint, stage)
         total = values.size
+        granularity = stage == :encode_uv ? INTERACTIVE_POLL_ITEMS : 1024
         values.each_with_index.map do |value, index|
-          poll(checkpoint, stage, index, total) if checkpoint && index.positive? && (index & 1023).zero?
+          poll(checkpoint, stage, index, total) if checkpoint && index.positive? && (index % granularity).zero?
           yield value, index
         end
       end
@@ -733,9 +740,19 @@ module BOMEngine
       end
 
       def uv_candidate(name, codec, bytes, origin, scale, source, decoded, max_error, complexity, semantic_class = nil, checkpoint = nil)
-        errors = CodecMath.map(source.each_slice(2), checkpoint, :encode_uv) do |pair, index|
+        # Each UV sample is exactly two scalars. Avoid allocating a pair, an
+        # axis array and a reduction block for every sample during candidate
+        # scoring; retain the original 0.0 + dx**2 + dy**2 operation order.
+        errors = Array.new(source.length / 2)
+        index = 0
+        while index < errors.length
+          CodecMath.poll(checkpoint, :encode_uv, index, errors.length) if
+            checkpoint && index.positive? && (index % CodecMath::INTERACTIVE_POLL_ITEMS).zero?
           offset = index * 2
-          Math.sqrt(2.times.map { |axis| (pair[axis] - decoded[offset + axis])**2 }.inject(0.0, :+))
+          dx = source[offset] - decoded[offset]
+          dy = source[offset + 1] - decoded[offset + 1]
+          errors[index] = Math.sqrt((0.0 + dx**2) + dy**2)
+          index += 1
         end
         summary = CodecMath.error_summary(errors)
         {

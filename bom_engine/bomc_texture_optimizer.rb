@@ -407,7 +407,8 @@ module BOMEngine
           adaptive_webp(png_path, reference, evidence, loader, profile,
             semantic_class, native_jpeg, pixel_lossless: true,
             expanded_lossless_search: profile.to_s.downcase.to_sym == :exact,
-            candidate_cache: candidate_cache, appearance: appearance, &checkpoint)
+            candidate_cache: candidate_cache, appearance: appearance,
+            verified_reference_sha256: reference_pixel_hash, &checkpoint)
         end
         if allow_jpeg_color_map == true && profile.to_s == 'exact' && native_jpeg
           evidence = measure_phase(timings, :color_map_evaluation) do
@@ -551,11 +552,12 @@ module BOMEngine
       pixel_count = uncolorized.width.to_i * uncolorized.height.to_i
       verify_budget = semantic_verify_budget_seconds(pixel_count)
       started = monotonic_ms
-      proof = BOMCSketchupColorize.verify(
-        uncolorized: uncolorized, colorized: colorized, mode: mode,
-        deltas: deltas, checkpoint: checkpoint,
-        max_seconds: verify_budget
-      )
+      proof = PerformanceTrace.stage(:semantic_verify, counts: { pixels: pixel_count }) do
+        BOMCSketchupColorize.verify(
+          uncolorized: uncolorized, colorized: colorized, mode: mode,
+          deltas: deltas, checkpoint: checkpoint, max_seconds: verify_budget
+        )
+      end
       diagnostics.replace({ reason: proof[:passed] ? :verified : proof[:reason],
         processed: proof[:processed] || proof[:pixels], pixels: pixel_count,
         budget_seconds: verify_budget,
@@ -611,11 +613,14 @@ module BOMEngine
           candidate_media_type: :png, candidate_bytes: best[:candidate_bytes],
           quality: best[:quality], alpha_preserved: true, attempts: attempts
         }
-        searched = adaptive_webp(
-          best[:path], uncolorized, baseline, loader, :exact, semantic_class, false,
-          pixel_lossless: true, expanded_lossless_search: true,
-          candidate_cache: candidate_cache, appearance: appearance, &checkpoint
-        )
+        searched = PerformanceTrace.stage(:semantic_webp_search, counts: { pixels: pixel_count }) do
+          adaptive_webp(
+            best[:path], uncolorized, baseline, loader, :exact, semantic_class, false,
+            pixel_lossless: true, expanded_lossless_search: true,
+            candidate_cache: candidate_cache, appearance: appearance,
+            verified_reference_sha256: proof[:base_pixel_sha256], &checkpoint
+          )
+        end
         if File.file?(searched[:path]) && File.size(searched[:path]) < best[:candidate_bytes] &&
             searched.dig(:quality, :compatible) == true &&
             searched.dig(:quality, :alpha_preserved) == true &&
@@ -864,7 +869,8 @@ module BOMEngine
     # candidate is encoded from the original PNG, never from another candidate.
     # Choose the smallest measured candidate satisfying the unchanged contract.
     def adaptive_webp(png_path, reference, baseline, loader, profile, semantic_class, native_jpeg,
-      pixel_lossless: false, expanded_lossless_search: false, candidate_cache: nil, appearance: nil, &checkpoint)
+      pixel_lossless: false, expanded_lossless_search: false, candidate_cache: nil, appearance: nil,
+      verified_reference_sha256: nil, &checkpoint)
       attempts = Array(baseline[:attempts]).dup
       attempts << baseline.reject { |key, _| key == :path || key == :attempts }
       best = if baseline[:path] == png_path
@@ -878,8 +884,13 @@ module BOMEngine
       search_timings = {}
       caps = measure_phase(search_timings, :encoder_capabilities) { BOMCTextureEncoder.capabilities(require_verified: true) }
       source_sha256 = measure_phase(search_timings, :source_sha256) { Digest::SHA256.file(png_path).hexdigest }
+      # A completed semantic proof has already hashed every displayed base
+      # pixel, so reuse that exact digest for cache identity instead of
+      # traversing the large ImageRep a second time.
       reference_sha256 = if candidate_cache
-                           measure_phase(search_timings, :reference_pixel_sha256) { reference_pixel_sha256(reference, &checkpoint) }
+                           verified_reference_sha256 || measure_phase(search_timings, :reference_pixel_sha256) do
+                             reference_pixel_sha256(reference, &checkpoint)
+                           end
                          end
       if !caps[:available] || !caps[:verified]
         attempts << { reason: :verified_encoder_unavailable }

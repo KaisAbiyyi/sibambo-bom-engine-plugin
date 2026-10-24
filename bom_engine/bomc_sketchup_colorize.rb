@@ -5,6 +5,11 @@ module BOMEngine
   # Byte-exact port of SketchUp's published colorization algorithm.
   module BOMCSketchupColorize
     EQUAL_TOL = 1.0e-3
+    # A 32K-pixel HLS batch held SketchUp's UI thread for 5.9 seconds on
+    # candidate013. For very large images, check cancellation / yield after
+    # 1K pixels; every pixel still undergoes the same strict RGB+alpha proof.
+    LARGE_IMAGE_PIXELS = 1_000_000
+    LARGE_IMAGE_CHECKPOINT_PIXELS = 1_024
     # SketchUp's colorization math first rounds each 8-bit channel to an IEEE
     # float32. There are only 256 possible inputs, so materializing those exact
     # rounded values once avoids three pack/unpack conversions per unique RGB
@@ -18,13 +23,14 @@ module BOMEngine
       deadline = max_seconds && Process.clock_gettime(Process::CLOCK_MONOTONIC) + max_seconds
       return {passed:false,reason: :time_budget_exceeded,processed:0} if deadline && max_seconds <= 0
       h,l,s=normalize_deltas(deltas); shift=mode.to_s=='shift'
+      checkpoint_pixels = source[:width]*source[:height] >= LARGE_IMAGE_PIXELS ? LARGE_IMAGE_CHECKPOINT_PIXELS : 32_768
       # BGRA32 (Windows) / RGBA32 (other hosts) dominates large SketchUp
       # materials. Pack and compare complete native 32-bit pixels in bulk;
       # the published colorization math and strict per-channel proof are
       # identical to the fallback below. 24-bit/mixed layouts stay on the
       # conservative per-pixel implementation.
       if source[:channels] == 4 && target[:channels] == 4
-        return verify_rgba32(source,target,h,l,s,shift,checkpoint,deadline)
+        return verify_rgba32(source,target,h,l,s,shift,checkpoint,deadline,checkpoint_pixels)
       end
       # SketchUp 2026 commonly gives an uncolorized native JPEG as BGR24
       # while the colorized display ImageRep is BGRA32. The generic verifier
@@ -32,7 +38,7 @@ module BOMEngine
       # twice. Keep the same exact per-channel/alpha proof, byte ordering and
       # normalized RGBA digests with row-batched native integer comparisons.
       if source[:channels] == 3 && target[:channels] == 4
-        return verify_rgb24_to_rgba32(source,target,h,l,s,shift,checkpoint,deadline)
+        return verify_rgb24_to_rgba32(source,target,h,l,s,shift,checkpoint,deadline,checkpoint_pixels)
       end
       digest=Digest::SHA256.new; base_digest=Digest::SHA256.new
       processed=0
@@ -55,7 +61,7 @@ module BOMEngine
           return {passed:false,reason: :pixel_mismatch,processed:processed} unless [rr,rg,rb,sa]==[tr,tg,tb,ta]
           base_row<<sr<<sg<<sb<<sa; output_row<<rr<<rg<<rb<<sa
           so+=source[:channels]; to+=target[:channels]; processed+=1
-          if (processed%32_768).zero?
+          if (processed%checkpoint_pixels).zero?
             checkpoint.call(processed,source[:width]*source[:height]) if checkpoint
             if deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
               return {passed:false,reason: :time_budget_exceeded,processed:processed}
@@ -68,7 +74,7 @@ module BOMEngine
        base_pixel_sha256:base_digest.hexdigest,output_pixel_sha256:digest.hexdigest}
     end
 
-    def verify_rgba32(source,target,h,l,s,shift,checkpoint,deadline)
+    def verify_rgba32(source,target,h,l,s,shift,checkpoint,deadline,checkpoint_pixels)
       width=source[:width]; height=source[:height]; total=width*height
       windows=Gem.win_platform?
       digest=Digest::SHA256.new; base_digest=Digest::SHA256.new
@@ -101,7 +107,7 @@ module BOMEngine
           normalized[index]=((red)|(green<<8)|(blue<<16))|alpha
           transformed[index]=mapped[1]|alpha
           processed+=1
-          if (processed%32_768).zero?
+          if (processed%checkpoint_pixels).zero?
             checkpoint.call(processed,total) if checkpoint
             if deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC)>=deadline
               return {passed:false,reason: :time_budget_exceeded,processed:processed}
@@ -116,7 +122,7 @@ module BOMEngine
     end
     private_class_method :verify_rgba32
 
-    def verify_rgb24_to_rgba32(source,target,h,l,s,shift,checkpoint,deadline)
+    def verify_rgb24_to_rgba32(source,target,h,l,s,shift,checkpoint,deadline,checkpoint_pixels)
       width=source[:width]; height=source[:height]; total=width*height
       windows=Gem.win_platform?
       digest=Digest::SHA256.new; base_digest=Digest::SHA256.new
@@ -147,7 +153,7 @@ module BOMEngine
           normalized[index]=((red)|(green<<8)|(blue<<16))|0xff000000
           transformed[index]=mapped[1]|0xff000000
           index+=1; offset+=3; processed+=1
-          if (processed%32_768).zero?
+          if (processed%checkpoint_pixels).zero?
             checkpoint.call(processed,total) if checkpoint
             if deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC)>=deadline
               return {passed:false,reason: :time_budget_exceeded,processed:processed}

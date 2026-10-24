@@ -110,6 +110,24 @@ class TestBOMCSemanticColorize < Test::Unit::TestCase
     assert_equal :time_budget_exceeded, result[:reason]
   end
 
+  def test_large_rgb24_semantic_proof_has_sub_32k_cancel_checkpoint
+    colorize = BOMEngine::BOMCSketchupColorize
+    r,g,b = 115,137,98
+    rr,rg,rb = colorize.colorize_pixel(r,g,b,0,0,0,true)
+    source_pixel = (Gem.win_platform? ? [b,g,r] : [r,g,b]).pack('C*')
+    output_pixel = (Gem.win_platform? ? [rb,rg,rr,255] : [rr,rg,rb,255]).pack('C*')
+    frame = Struct.new(:width,:height,:bits_per_pixel,:row_padding,:data)
+    source = frame.new(1,1_000_000,24,0,source_pixel*1_000_000)
+    target = frame.new(1,1_000_000,32,0,output_pixel*1_000_000)
+    seen = []
+    assert_raise(Interrupt) do
+      colorize.verify(uncolorized: source, colorized: target,
+        mode: :shift, deltas: {h:0,l:0,s:0}, max_seconds:30,
+        checkpoint: ->(done,_total) { seen << done; raise Interrupt })
+    end
+    assert_equal [1_024], seen, 'large image exits at the first bounded checkpoint without accepting partial pixels'
+  end
+
   def test_multirow_semantic_proof_has_byte_exact_rgba_alpha_and_padding
     colorize = BOMEngine::BOMCSketchupColorize
     pixels = [[115,137,98,25], [115,137,98,255], [0,0,0,0],
