@@ -64,7 +64,8 @@ module BOMEngine
 
         bad_major = packed.dup
         bad_major[8, 2] = [2].pack('v')
-        rejects('future major 2.0 fails closed', 'unsupported version 2.2') { BOMC::Container.parse(bad_major) }
+        bad_major[10, 2] = [0].pack('v')
+        rejects('future major 2.0 fails closed', 'unsupported version 2.0') { BOMC::Container.parse(bad_major) }
 
         bad_codec = packed.dup
         first_dir_entry = header[:directory_offset]
