@@ -7,6 +7,23 @@ on:
   pull_request: {}
 
 jobs:
+  windows-png-worker:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+      - name: Verify detached PNG worker and cooperative boundaries
+        shell: pwsh
+        run: |
+          $env:TEMP = Join-Path $env:GITHUB_WORKSPACE 'scratch/png-worker-temp'
+          $env:TMP = $env:TEMP
+          New-Item -ItemType Directory -Force $env:TEMP | Out-Null
+          foreach ($test in @('test_windows_codec_process.rb', 'test_candidate013_png_worker.rb', 'test_candidate013_cooperation.rb', 'test_candidate012_cooperation.rb')) {
+            ruby "bom_engine/tests/$test"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
   test:
     runs-on: ubuntu-latest
     steps:

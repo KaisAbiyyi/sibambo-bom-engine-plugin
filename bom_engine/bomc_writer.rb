@@ -459,7 +459,8 @@ module BOMEngine
           uv_scalar_count: 0
         }
         @model[:meshes].each do |mesh|
-          mesh[:faces].each do |face|
+          mesh[:faces].each_with_index do |face, face_index|
+            BOMC::CodecMath.poll(@checkpoint, :encode_topology, face_index, mesh[:faces].length)
             counts[:faces_total] += 1
             triangles = Array(face[:triangles]).length / 3
             if face[:front_appearance_required]
@@ -517,7 +518,7 @@ module BOMEngine
 
       def notify(stage, processed, total, candidate_bytes = nil)
         return unless @checkpoint
-        @checkpoint.call(
+        (@geometry_checkpoint || @checkpoint).call(
           stage: stage,
           processed: processed,
           total: total,
@@ -724,6 +725,15 @@ module BOMEngine
       end
 
       def build_geometry
+        # Codec-local counters restart for each candidate. Keep one monotonic
+        # work counter across this geometry build so those resets cannot reset
+        # the job controller's elapsed-time slice on every small mesh.
+        geometry_work = 0
+        @geometry_checkpoint = @checkpoint && lambda do |**event|
+          geometry_work += 1
+          @checkpoint.call(**event.merge(processed: geometry_work, total: 0,
+            operation_label: event[:operation_label] || event[:stage].to_s))
+        end
         # Exact fidelity is enforced by the candidate solver/validator rather
         # than by pinning a single wire codec. This lets an alternative codec
         # win only when it reconstructs with exactly zero measured error.
@@ -753,7 +763,7 @@ module BOMEngine
             cache_key = "pos_#{mesh_index}:::" + BOMCExportCache::Cache.compute_key(source_digest: @source_digest, profile: @profile, semantic_class: mesh_class)
             pos_cands = @export_cache.fetch_candidates(cache_key) if @export_cache
             unless pos_cands
-              pos_cands = BOMC::PositionCodec.candidate_objects(mesh[:positions], loops: loops_for_gate, max_error_m: pos_tol, semantic_class: mesh_class, forced_codec: forced_pos_codec, owner_id: pos_owner)
+              pos_cands = BOMC::PositionCodec.candidate_objects(mesh[:positions], loops: loops_for_gate, max_error_m: pos_tol, semantic_class: mesh_class, forced_codec: forced_pos_codec, owner_id: pos_owner, checkpoint: @geometry_checkpoint)
               @export_cache.store_candidates(cache_key, pos_cands) if @export_cache
             end
           end
@@ -812,7 +822,7 @@ module BOMEngine
               cache_key = "uv_#{mesh_index}:::" + BOMCExportCache::Cache.compute_key(source_digest: @source_digest, profile: @profile, semantic_class: mesh_class)
               uv_cands = @export_cache.fetch_candidates(cache_key) if @export_cache
               unless uv_cands
-                uv_cands = BOMC::UVCodec.candidate_objects(mesh_uv_values, max_error: uv_tol, semantic_class: mesh_class, forced_codec: forced_uv_codec, owner_id: uv_owner)
+                uv_cands = BOMC::UVCodec.candidate_objects(mesh_uv_values, max_error: uv_tol, semantic_class: mesh_class, forced_codec: forced_uv_codec, owner_id: uv_owner, checkpoint: @geometry_checkpoint)
                 @export_cache.store_candidates(cache_key, uv_cands) if @export_cache
               end
             end
@@ -849,7 +859,7 @@ module BOMEngine
           cache_key = "normals:::" + BOMCExportCache::Cache.compute_key(source_digest: @source_digest, profile: @profile, semantic_class: model_normal_class)
           norm_cands = @export_cache.fetch_candidates(cache_key) if @export_cache
           unless norm_cands
-            norm_cands = BOMC::NormalCodec.candidate_objects(normals, max_error_deg: normal_tol, semantic_class: model_normal_class, forced_codec: forced_normal_codec, owner_id: norm_owner)
+            norm_cands = BOMC::NormalCodec.candidate_objects(normals, max_error_deg: normal_tol, semantic_class: model_normal_class, forced_codec: forced_normal_codec, owner_id: norm_owner, checkpoint: @geometry_checkpoint)
             @export_cache.store_candidates(cache_key, norm_cands) if @export_cache
           end
         end
@@ -860,7 +870,7 @@ module BOMEngine
           cache_key = "transforms:::" + BOMCExportCache::Cache.compute_key(source_digest: @source_digest, profile: @profile)
           trans_cands = @export_cache.fetch_candidates(cache_key) if @export_cache
           unless trans_cands
-            trans_cands = BOMC::TransformCodec.candidate_objects(@model[:transforms], forced_codec: forced_transform_codec, checkpoint: @checkpoint, owner_id: trans_owner)
+            trans_cands = BOMC::TransformCodec.candidate_objects(@model[:transforms], forced_codec: forced_transform_codec, checkpoint: @geometry_checkpoint, owner_id: trans_owner)
             @export_cache.store_candidates(cache_key, trans_cands) if @export_cache
           end
         end
@@ -994,6 +1004,8 @@ module BOMEngine
           prepared_candidates: prepared,
           solver_result: solver_result
         }
+      ensure
+        @geometry_checkpoint = nil
       end
 
       def build_meshes_section(meshes)
@@ -1544,7 +1556,8 @@ module BOMEngine
 
       def delta_indices(values)
         previous = 0
-        Array(values).map do |value|
+        Array(values).each_with_index.map do |value, index|
+          BOMC::CodecMath.poll(@geometry_checkpoint || @checkpoint, :encode_topology, index, values.length)
           integer = Integer(value)
           delta = integer - previous
           previous = integer

@@ -47,8 +47,35 @@ module BOMEngine
         end
       end
 
-      def compressed_size(bytes)
-        Zlib::Deflate.deflate(bytes, Zlib::BEST_COMPRESSION).bytesize
+      # Poll on bounded work units, never on byte offsets. All arithmetic,
+      # iteration order and DEFLATE NO_FLUSH boundaries retain original bytes.
+      def poll(checkpoint, stage, index, total)
+        checkpoint.call(stage: stage, processed: index / 1024, total: (total.to_i + 1023) / 1024,
+          operation_label: stage.to_s) if checkpoint && index.positive? && (index % 1024).zero?
+      end
+
+      def map(values, checkpoint, stage)
+        total = values.size
+        values.each_with_index.map do |value, index|
+          poll(checkpoint, stage, index, total) if checkpoint && index.positive? && (index & 1023).zero?
+          yield value, index
+        end
+      end
+
+      def compressed_size(bytes, checkpoint: nil, stage: :encode_positions)
+        return Zlib::Deflate.deflate(bytes, Zlib::BEST_COMPRESSION).bytesize unless checkpoint
+        stream = Zlib::Deflate.new(Zlib::BEST_COMPRESSION)
+        begin
+          size = 0; offset = 0
+          while offset < bytes.bytesize
+            checkpoint.call(stage: stage, processed: 0, total: 0, operation_label: "#{stage} deflate")
+            size += stream.deflate(bytes.byteslice(offset, 32_768), Zlib::NO_FLUSH).bytesize
+            offset += 32_768
+          end
+          size + stream.finish.bytesize
+        ensure
+          stream.close
+        end
       end
     end
 
@@ -64,8 +91,9 @@ module BOMEngine
 
       module_function
 
-      def evaluated_candidates(values, loops: [], max_error_m: MAX_ERROR_M, semantic_class: nil, forced_codec: nil)
-        source = Array(values).map(&:to_f)
+      def evaluated_candidates(values, loops: [], max_error_m: MAX_ERROR_M, semantic_class: nil, forced_codec: nil, checkpoint: nil)
+        checkpoint.call(stage: :encode_positions, processed: 0, total: 0, operation_label: 'position candidates') if checkpoint
+        source = CodecMath.map(Array(values), checkpoint, :encode_positions) { |value, _| value.to_f }
         raise ArgumentError, 'Position buffer must contain XYZ triples.' unless (source.length % 3).zero?
         CodecMath.finite_values!(source, 'Position buffer')
 
@@ -83,7 +111,7 @@ module BOMEngine
               area_max_error_m2: 0.0,
               passed: true,
               raw_bytes: float64_bytes.bytesize,
-              deflate_bytes: CodecMath.compressed_size(float64_bytes),
+              deflate_bytes: CodecMath.compressed_size(float64_bytes, checkpoint: checkpoint),
               complexity: 0,
               semantic_class: semantic_class,
               count: count
@@ -91,53 +119,53 @@ module BOMEngine
           ]
         end
 
-        minimum, maximum = bounds(source, 3)
+        minimum, maximum = bounds(source, 3, checkpoint)
         center = 3.times.map { |axis| (minimum[axis] + maximum[axis]) * 0.5 }
 
         candidates = []
         candidates << candidate(
           'float64_absolute', FLOAT64_ABSOLUTE, source.pack('E*'), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
-          source, source, loops, max_error_m, 0, semantic_class
+          source, source, loops, max_error_m, 0, semantic_class, checkpoint
         ).merge(count: count)
 
-        local_values = source.each_with_index.map { |value, index| value - minimum[index % 3] }
+        local_values = CodecMath.map(source, checkpoint, :encode_positions) { |value, index| value - minimum[index % 3] }
         float32_bytes = local_values.pack('e*')
-        float32_decoded = float32_bytes.unpack('e*').each_with_index.map { |value, index| value + minimum[index % 3] }
+        float32_decoded = CodecMath.map(float32_bytes.unpack('e*'), checkpoint, :encode_positions) { |value, index| value + minimum[index % 3] }
         candidates << candidate(
           'float32_local', FLOAT32_LOCAL, float32_bytes, minimum, [0.0, 0.0, 0.0],
-          source, float32_decoded, loops, max_error_m, 1, semantic_class
+          source, float32_decoded, loops, max_error_m, 1, semantic_class, checkpoint
         ).merge(count: count)
 
-        int32 = quantized_candidate(source, center, 2_147_483_647, 'l<*')
+        int32 = quantized_candidate(source, center, 2_147_483_647, 'l<*', checkpoint)
         candidates << candidate(
           'int32_quantized', INT32_QUANTIZED, int32[:bytes], center, int32[:scale],
-          source, int32[:decoded], loops, max_error_m, 3, semantic_class
+          source, int32[:decoded], loops, max_error_m, 3, semantic_class, checkpoint
         ).merge(integers: int32[:integers], integer_bits: 32, count: count)
 
-        int16 = quantized_candidate(source, center, 32_767, 's<*')
+        int16 = quantized_candidate(source, center, 32_767, 's<*', checkpoint)
         candidates << candidate(
           'int16_quantized', INT16_QUANTIZED, int16[:bytes], center, int16[:scale],
-          source, int16[:decoded], loops, max_error_m, 2, semantic_class
+          source, int16[:decoded], loops, max_error_m, 2, semantic_class, checkpoint
         ).merge(integers: int16[:integers], integer_bits: 16, count: count)
 
         delta_source = candidates[-1][:passed] ? int16 : int32
         previous = 0
-        delta_bytes = delta_source[:integers].map do |integer|
+        delta_bytes = CodecMath.map(delta_source[:integers], checkpoint, :encode_positions) do |integer, _|
           delta = integer - previous
           previous = integer
           Binary.write_zigzag(delta)
         end.join.b
         delta = candidate(
           'delta_varint', DELTA_VARINT, delta_bytes, center, delta_source[:scale],
-          source, delta_source[:decoded], loops, max_error_m, 4, semantic_class
+          source, delta_source[:decoded], loops, max_error_m, 4, semantic_class, checkpoint
         ).merge(count: count)
         delta[:integer_bits] = delta_source.equal?(int16) ? 16 : 32
         candidates << delta
         candidates
       end
 
-      def candidate_objects(values, loops: [], max_error_m: MAX_ERROR_M, semantic_class: nil, forced_codec: nil, owner_id: nil)
-        evaluated = evaluated_candidates(values, loops: loops, max_error_m: max_error_m, semantic_class: semantic_class, forced_codec: forced_codec)
+      def candidate_objects(values, loops: [], max_error_m: MAX_ERROR_M, semantic_class: nil, forced_codec: nil, owner_id: nil, checkpoint: nil)
+        evaluated = evaluated_candidates(values, loops: loops, max_error_m: max_error_m, semantic_class: semantic_class, forced_codec: forced_codec, checkpoint: checkpoint)
         owner = owner_id || :mesh_positions
         evaluated.map do |c|
           BOMCCandidate::Candidate.new(
@@ -171,8 +199,8 @@ module BOMEngine
         end
       end
 
-      def encode(values, loops: [], max_error_m: MAX_ERROR_M, semantic_class: nil, forced_codec: nil)
-        candidates = evaluated_candidates(values, loops: loops, max_error_m: max_error_m, semantic_class: semantic_class, forced_codec: forced_codec)
+      def encode(values, loops: [], max_error_m: MAX_ERROR_M, semantic_class: nil, forced_codec: nil, checkpoint: nil)
+        candidates = evaluated_candidates(values, loops: loops, max_error_m: max_error_m, semantic_class: semantic_class, forced_codec: forced_codec, checkpoint: checkpoint)
         selected = select_candidate(candidates)
         selected.merge(candidates: candidate_reports(candidates), count: candidates[0][:count])
       end
@@ -209,13 +237,13 @@ module BOMEngine
         values
       end
 
-      def candidate(name, codec, bytes, origin, scale, source, decoded, loops, max_error_m, complexity, semantic_class = nil)
-        point_errors = source.each_slice(3).with_index.map do |point, point_index|
+      def candidate(name, codec, bytes, origin, scale, source, decoded, loops, max_error_m, complexity, semantic_class = nil, checkpoint = nil)
+        point_errors = CodecMath.map(source.each_slice(3), checkpoint, :encode_positions) do |point, point_index|
           offset = point_index * 3
           Math.sqrt(3.times.map { |axis| (point[axis] - decoded[offset + axis])**2 }.inject(0.0, :+))
         end
         errors = CodecMath.error_summary(point_errors)
-        area_error, area_passed = area_gate(source, decoded, loops)
+        area_error, area_passed = area_gate(source, decoded, loops, checkpoint)
         {
           name: name,
           codec: codec,
@@ -227,19 +255,19 @@ module BOMEngine
           semantic_class: semantic_class,
           passed: errors[:max] <= max_error_m + 1.0e-12 && area_passed,
           raw_bytes: bytes.bytesize,
-          deflate_bytes: CodecMath.compressed_size(bytes),
+          deflate_bytes: CodecMath.compressed_size(bytes, checkpoint: checkpoint),
           complexity: complexity
         }
       end
       private_class_method :candidate
 
-      def quantized_candidate(source, center, maximum_integer, pack_directive)
-        minimum, maximum = bounds(source, 3)
+      def quantized_candidate(source, center, maximum_integer, pack_directive, checkpoint = nil)
+        minimum, maximum = bounds(source, 3, checkpoint)
         scale = 3.times.map do |axis|
           span = maximum[axis] - minimum[axis]
           span.zero? ? 0.0 : span / (maximum_integer * 2.0)
         end
-        integers = source.each_with_index.map do |value, index|
+        integers = CodecMath.map(source, checkpoint, :encode_positions) do |value, index|
           axis = index % 3
           scale[axis].zero? ? 0 : ((value - center[axis]) / scale[axis]).round
         end
@@ -253,10 +281,11 @@ module BOMEngine
       end
       private_class_method :dequantize
 
-      def bounds(values, dimensions)
+      def bounds(values, dimensions, checkpoint = nil)
         minimum = Array.new(dimensions, Float::INFINITY)
         maximum = Array.new(dimensions, -Float::INFINITY)
         values.each_with_index do |value, index|
+          CodecMath.poll(checkpoint, :encode_positions, index, values.length) if checkpoint && index.positive? && (index & 1023).zero?
           axis = index % dimensions
           minimum[axis] = value if value < minimum[axis]
           maximum[axis] = value if value > maximum[axis]
@@ -269,14 +298,15 @@ module BOMEngine
       end
       private_class_method :bounds
 
-      def area_gate(source, decoded, loops)
+      def area_gate(source, decoded, loops, checkpoint)
         maximum_error = 0.0
         passed = true
-        Array(loops).each do |loop_indices|
+        Array(loops).each_with_index do |loop_indices, loop_index|
+          CodecMath.poll(checkpoint, :encode_positions, loop_index, loops.length) if checkpoint && loop_index.positive? && (loop_index & 1023).zero?
           next if Array(loop_indices).length < 3
 
-          source_vector = newell_vector(source, loop_indices)
-          decoded_vector = newell_vector(decoded, loop_indices)
+          source_vector = newell_vector(source, loop_indices, checkpoint)
+          decoded_vector = newell_vector(decoded, loop_indices, checkpoint)
           source_area = CodecMath.vector_length(source_vector) * 0.5
           decoded_area = CodecMath.vector_length(decoded_vector) * 0.5
           error = (source_area - decoded_area).abs
@@ -289,9 +319,10 @@ module BOMEngine
       end
       private_class_method :area_gate
 
-      def newell_vector(values, indices)
+      def newell_vector(values, indices, checkpoint = nil)
         vector = [0.0, 0.0, 0.0]
         indices.each_with_index do |index, cursor|
+          CodecMath.poll(checkpoint, :encode_positions, cursor, indices.length) if checkpoint && cursor.positive? && (cursor & 1023).zero?
           following = indices[(cursor + 1) % indices.length]
           current_offset = index.to_i * 3
           next_offset = following.to_i * 3
@@ -332,8 +363,9 @@ module BOMEngine
 
       module_function
 
-      def evaluated_candidates(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, semantic_class: nil, forced_codec: nil)
-        source = Array(values).map(&:to_f)
+      def evaluated_candidates(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, semantic_class: nil, forced_codec: nil, checkpoint: nil)
+        checkpoint.call(stage: :encode_normals, processed: 0, total: 0, operation_label: 'normal candidates') if checkpoint
+        source = CodecMath.map(Array(values), checkpoint, :encode_normals) { |value, _| value.to_f }
         raise ArgumentError, 'Normal buffer must contain XYZ triples.' unless (source.length % 3).zero?
         CodecMath.finite_values!(source, 'Normal buffer')
 
@@ -346,7 +378,7 @@ module BOMEngine
               codec: FLOAT64,
               bytes: float64_bytes,
               raw_bytes: float64_bytes.bytesize,
-              deflate_bytes: CodecMath.compressed_size(float64_bytes),
+              deflate_bytes: CodecMath.compressed_size(float64_bytes, checkpoint: checkpoint, stage: :encode_normals),
               errors: { max: 0.0, p95: 0.0, rms: 0.0 },
               component_errors: { max: 0.0, p95: 0.0, rms: 0.0 },
               passed: true,
@@ -359,12 +391,13 @@ module BOMEngine
 
         float_bytes = source.pack('e*')
         float_decoded = float_bytes.unpack('e*')
-        float_errors = angular_errors(source, float_decoded)
+        float_errors = angular_errors(source, float_decoded, checkpoint)
         float_summary = CodecMath.error_summary(float_errors)
-        float_component_summary = component_errors(source, float_decoded)
+        float_component_summary = component_errors(source, float_decoded, checkpoint)
 
         oct_values = []
-        source.each_slice(3) do |normal|
+        source.each_slice(3).with_index do |normal, index|
+          CodecMath.poll(checkpoint, :encode_normals, index, count) if checkpoint && index.positive? && (index & 1023).zero?
           unit = CodecMath.normalize(normal)
           if unit.nil?
             oct_values.concat([-32_768, -32_768])
@@ -376,10 +409,10 @@ module BOMEngine
         end
         oct_bytes = oct_values.pack('s<*')
         oct_block = { codec: OCT16, bytes: oct_bytes, count: count }
-        oct_decoded = decode(oct_block)
-        oct_errors = angular_errors(source, oct_decoded)
+        oct_decoded = decode(oct_block, checkpoint)
+        oct_errors = angular_errors(source, oct_decoded, checkpoint)
         oct_summary = CodecMath.error_summary(oct_errors)
-        oct_component_summary = component_errors(source, oct_decoded)
+        oct_component_summary = component_errors(source, oct_decoded, checkpoint)
         exact_components = max_error_deg.to_f.zero?
         use_oct = exact_components ? oct_component_summary[:max].zero? : oct_summary[:max] <= max_error_deg.to_f + 1.0e-12
 
@@ -389,7 +422,7 @@ module BOMEngine
             codec: FLOAT32,
             bytes: float_bytes,
             raw_bytes: float_bytes.bytesize,
-            deflate_bytes: CodecMath.compressed_size(float_bytes),
+            deflate_bytes: CodecMath.compressed_size(float_bytes, checkpoint: checkpoint, stage: :encode_normals),
             errors: float_summary,
             component_errors: float_component_summary,
             passed: exact_components ? float_component_summary[:max].zero? : float_summary[:max] <= max_error_deg.to_f + 1.0e-12,
@@ -402,7 +435,7 @@ module BOMEngine
             codec: OCT16,
             bytes: oct_bytes,
             raw_bytes: oct_bytes.bytesize,
-            deflate_bytes: CodecMath.compressed_size(oct_bytes),
+            deflate_bytes: CodecMath.compressed_size(oct_bytes, checkpoint: checkpoint, stage: :encode_normals),
             errors: oct_summary,
             component_errors: oct_component_summary,
             passed: use_oct,
@@ -418,7 +451,7 @@ module BOMEngine
             codec: FLOAT64,
             bytes: float64_bytes,
             raw_bytes: float64_bytes.bytesize,
-            deflate_bytes: CodecMath.compressed_size(float64_bytes),
+            deflate_bytes: CodecMath.compressed_size(float64_bytes, checkpoint: checkpoint, stage: :encode_normals),
             errors: { max: 0.0, p95: 0.0, rms: 0.0 },
             component_errors: { max: 0.0, p95: 0.0, rms: 0.0 },
             passed: true,
@@ -430,8 +463,8 @@ module BOMEngine
         candidates
       end
 
-      def candidate_objects(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, semantic_class: nil, forced_codec: nil, owner_id: nil)
-        evaluated = evaluated_candidates(values, max_error_deg: max_error_deg, semantic_class: semantic_class, forced_codec: forced_codec)
+      def candidate_objects(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, semantic_class: nil, forced_codec: nil, owner_id: nil, checkpoint: nil)
+        evaluated = evaluated_candidates(values, max_error_deg: max_error_deg, semantic_class: semantic_class, forced_codec: forced_codec, checkpoint: checkpoint)
         owner = owner_id || :model_normals
         evaluated.map do |c|
           BOMCCandidate::Candidate.new(
@@ -463,8 +496,8 @@ module BOMEngine
         end
       end
 
-      def encode(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, semantic_class: nil, forced_codec: nil)
-        cands = evaluated_candidates(values, max_error_deg: max_error_deg, semantic_class: semantic_class, forced_codec: forced_codec)
+      def encode(values, max_error_deg: MAX_ANGULAR_ERROR_DEG, semantic_class: nil, forced_codec: nil, checkpoint: nil)
+        cands = evaluated_candidates(values, max_error_deg: max_error_deg, semantic_class: semantic_class, forced_codec: forced_codec, checkpoint: checkpoint)
         selected = cands.find { |c| c[:name] == 'oct16x2' && c[:passed] } || cands.find { |c| c[:passed] } || cands.first
         {
           codec: selected[:codec],
@@ -477,7 +510,7 @@ module BOMEngine
         }
       end
 
-      def decode(block)
+      def decode(block, checkpoint = nil)
         count = Integer(block[:count])
         case block[:codec]
         when FLOAT32
@@ -487,13 +520,13 @@ module BOMEngine
         when OCT16
           integers = block[:bytes].unpack('s<*')
           raise 'BOMC invalid: octahedral normal count mismatch.' unless integers.length == count * 2
-          integers.each_slice(2).flat_map do |pair|
+          CodecMath.map(integers.each_slice(2), checkpoint, :encode_normals) do |pair, _|
             if pair[0] == -32_768 && pair[1] == -32_768
               [0.0, 0.0, 0.0]
             else
               oct_unproject(pair[0] / 32_767.0, pair[1] / 32_767.0)
             end
-          end
+          end.flatten(1)
         when FLOAT64
           values = block[:bytes].unpack('E*')
           raise 'BOMC invalid: normal float64 count mismatch.' unless values.length == count * 3
@@ -532,15 +565,15 @@ module BOMEngine
       end
       private_class_method :sign
 
-      def component_errors(source, decoded)
+      def component_errors(source, decoded, checkpoint = nil)
         CodecMath.error_summary(
-          source.each_with_index.map { |value, index| (value.to_f - decoded[index].to_f).abs }
+          CodecMath.map(source, checkpoint, :encode_normals) { |value, index| (value.to_f - decoded[index].to_f).abs }
         )
       end
       private_class_method :component_errors
 
-      def angular_errors(source, decoded)
-        source.each_slice(3).with_index.map do |normal, index|
+      def angular_errors(source, decoded, checkpoint = nil)
+        CodecMath.map(source.each_slice(3), checkpoint, :encode_normals) do |normal, index|
           left = CodecMath.normalize(normal)
           right = CodecMath.normalize(decoded[index * 3, 3])
           next 0.0 if left.nil? && right.nil?
@@ -563,8 +596,9 @@ module BOMEngine
 
       module_function
 
-      def evaluated_candidates(values, max_error: MAX_ERROR, semantic_class: nil, forced_codec: nil)
-        source = Array(values).map(&:to_f)
+      def evaluated_candidates(values, max_error: MAX_ERROR, semantic_class: nil, forced_codec: nil, checkpoint: nil)
+        checkpoint.call(stage: :encode_uv, processed: 0, total: 0, operation_label: 'UV candidates') if checkpoint
+        source = CodecMath.map(Array(values), checkpoint, :encode_uv) { |value, _| value.to_f }
         raise ArgumentError, 'UV buffer must contain pairs.' unless (source.length % 2).zero?
         CodecMath.finite_values!(source, 'UV buffer')
 
@@ -581,7 +615,7 @@ module BOMEngine
               errors: { max: 0.0, p95: 0.0, rms: 0.0 },
               passed: true,
               raw_bytes: float64_bytes.bytesize,
-              deflate_bytes: CodecMath.compressed_size(float64_bytes),
+              deflate_bytes: CodecMath.compressed_size(float64_bytes, checkpoint: checkpoint, stage: :encode_uv),
               complexity: 4,
               semantic_class: semantic_class,
               count: count
@@ -591,12 +625,12 @@ module BOMEngine
 
         candidates = []
         float32_bytes = source.pack('e*')
-        candidates << uv_candidate('float32', FLOAT32, float32_bytes, [0.0, 0.0], [0.0, 0.0], source, float32_bytes.unpack('e*'), max_error, 0, semantic_class).merge(count: count)
+        candidates << uv_candidate('float32', FLOAT32, float32_bytes, [0.0, 0.0], [0.0, 0.0], source, float32_bytes.unpack('e*'), max_error, 0, semantic_class, checkpoint).merge(count: count)
 
-        half_values = source.map { |value| float_to_half(value) }
+        half_values = CodecMath.map(source, checkpoint, :encode_uv) { |value, _| float_to_half(value) }
         half_bytes = half_values.pack('S<*')
-        half_decoded = half_values.map { |value| half_to_float(value) }
-        candidates << uv_candidate('float16', FLOAT16, half_bytes, [0.0, 0.0], [0.0, 0.0], source, half_decoded, max_error, 2, semantic_class).merge(count: count)
+        half_decoded = CodecMath.map(half_values, checkpoint, :encode_uv) { |value, _| half_to_float(value) }
+        candidates << uv_candidate('float16', FLOAT16, half_bytes, [0.0, 0.0], [0.0, 0.0], source, half_decoded, max_error, 2, semantic_class, checkpoint).merge(count: count)
 
         minimum, maximum = uv_bounds(source)
         center = 2.times.map { |axis| (minimum[axis] + maximum[axis]) * 0.5 }
@@ -604,29 +638,29 @@ module BOMEngine
           span = maximum[axis] - minimum[axis]
           span.zero? ? 0.0 : span / 65_534.0
         end
-        integers = source.each_with_index.map do |value, index|
+        integers = CodecMath.map(source, checkpoint, :encode_uv) do |value, index|
           axis = index % 2
           scale[axis].zero? ? 0 : ((value - center[axis]) / scale[axis]).round
         end
         quantized_bytes = integers.pack('s<*')
         quantized_decoded = uv_dequantize(integers, center, scale)
-        candidates << uv_candidate('int16_quantized', INT16_QUANTIZED, quantized_bytes, center, scale, source, quantized_decoded, max_error, 1, semantic_class).merge(count: count)
+        candidates << uv_candidate('int16_quantized', INT16_QUANTIZED, quantized_bytes, center, scale, source, quantized_decoded, max_error, 1, semantic_class, checkpoint).merge(count: count)
 
         previous = 0
-        delta_bytes = integers.map do |integer|
+        delta_bytes = CodecMath.map(integers, checkpoint, :encode_uv) do |integer, _|
           delta = integer - previous
           previous = integer
           Binary.write_zigzag(delta)
         end.join.b
-        candidates << uv_candidate('delta_varint', DELTA_VARINT, delta_bytes, center, scale, source, quantized_decoded, max_error, 3, semantic_class).merge(count: count)
+        candidates << uv_candidate('delta_varint', DELTA_VARINT, delta_bytes, center, scale, source, quantized_decoded, max_error, 3, semantic_class, checkpoint).merge(count: count)
 
         float64_bytes = source.pack('E*')
-        candidates << uv_candidate('float64', FLOAT64, float64_bytes, [0.0, 0.0], [0.0, 0.0], source, source, max_error, 4, semantic_class).merge(count: count)
+        candidates << uv_candidate('float64', FLOAT64, float64_bytes, [0.0, 0.0], [0.0, 0.0], source, source, max_error, 4, semantic_class, checkpoint).merge(count: count)
         candidates
       end
 
-      def candidate_objects(values, max_error: MAX_ERROR, semantic_class: nil, forced_codec: nil, owner_id: nil)
-        evaluated = evaluated_candidates(values, max_error: max_error, semantic_class: semantic_class, forced_codec: forced_codec)
+      def candidate_objects(values, max_error: MAX_ERROR, semantic_class: nil, forced_codec: nil, owner_id: nil, checkpoint: nil)
+        evaluated = evaluated_candidates(values, max_error: max_error, semantic_class: semantic_class, forced_codec: forced_codec, checkpoint: checkpoint)
         owner = owner_id || :mesh_uv
         evaluated.map do |c|
           BOMCCandidate::Candidate.new(
@@ -659,8 +693,8 @@ module BOMEngine
         end
       end
 
-      def encode(values, max_error: MAX_ERROR, semantic_class: nil, forced_codec: nil)
-        candidates = evaluated_candidates(values, max_error: max_error, semantic_class: semantic_class, forced_codec: forced_codec)
+      def encode(values, max_error: MAX_ERROR, semantic_class: nil, forced_codec: nil, checkpoint: nil)
+        candidates = evaluated_candidates(values, max_error: max_error, semantic_class: semantic_class, forced_codec: forced_codec, checkpoint: checkpoint)
         passing = candidates.select { |item| item[:passed] }
         raise 'No UV codec passed the error gate.' if passing.empty?
         selected = passing.min_by { |item| [item[:deflate_bytes], item[:complexity]] }
@@ -698,8 +732,8 @@ module BOMEngine
         values
       end
 
-      def uv_candidate(name, codec, bytes, origin, scale, source, decoded, max_error, complexity, semantic_class = nil)
-        errors = source.each_slice(2).with_index.map do |pair, index|
+      def uv_candidate(name, codec, bytes, origin, scale, source, decoded, max_error, complexity, semantic_class = nil, checkpoint = nil)
+        errors = CodecMath.map(source.each_slice(2), checkpoint, :encode_uv) do |pair, index|
           offset = index * 2
           Math.sqrt(2.times.map { |axis| (pair[axis] - decoded[offset + axis])**2 }.inject(0.0, :+))
         end
@@ -707,7 +741,7 @@ module BOMEngine
         {
           name: name, codec: codec, bytes: bytes, origin: origin, scale: scale,
           errors: summary, semantic_class: semantic_class, passed: summary[:max] <= max_error + 1.0e-12,
-          raw_bytes: bytes.bytesize, deflate_bytes: CodecMath.compressed_size(bytes), complexity: complexity
+          raw_bytes: bytes.bytesize, deflate_bytes: CodecMath.compressed_size(bytes, checkpoint: checkpoint, stage: :encode_uv), complexity: complexity
         }
       end
       private_class_method :uv_candidate
