@@ -68,6 +68,8 @@ module BOMEngine
         capture, scene = receipt.fetch(:stages)
 
         assert(receipt[:schema] == PerformanceTrace::SCHEMA, 'receipt has a versioned schema')
+        assert(Time.iso8601(receipt[:started_utc]).utc? && Time.iso8601(receipt[:finished_utc]).utc?,
+          'UTC anchors permit external resource trace alignment')
         assert(capture[:id] != scene[:id] && scene[:parent_id] == capture[:id], 'nested stages carry stable parent IDs')
         assert(capture[:duration_ms] >= scene[:duration_ms] && scene[:duration_ms] >= 0.0, 'stage durations are monotonic and non-negative')
         assert(capture[:cpu_ms].is_a?(Numeric) && capture[:cpu_ms] >= 0.0, 'optional CPU duration is recorded when available')

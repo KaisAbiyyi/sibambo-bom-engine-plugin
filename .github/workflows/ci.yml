@@ -20,10 +20,18 @@ jobs:
           $env:TEMP = Join-Path $env:GITHUB_WORKSPACE 'scratch/png-worker-temp'
           $env:TMP = $env:TEMP
           New-Item -ItemType Directory -Force $env:TEMP | Out-Null
-          foreach ($test in @('test_windows_codec_process.rb', 'test_candidate013_png_worker.rb', 'test_candidate013_cooperation.rb', 'test_candidate012_cooperation.rb')) {
+          foreach ($test in @('test_windows_codec_process.rb', 'test_candidate013_png_worker.rb', 'test_candidate013_cooperation.rb', 'test_candidate012_cooperation.rb', 'test_candidate014_geometry_checkpoints.rb')) {
             ruby "bom_engine/tests/$test"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+          # Parse the owner-side sampler without starting host/desktop control.
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/performance/watch_windows_resources.ps1'),
+            [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -gt 0) { $parseErrors | Out-String | Write-Error; exit 1 }
+          node tools/performance/test_join_resource_trace.js
   test:
     runs-on: ubuntu-latest
     steps:

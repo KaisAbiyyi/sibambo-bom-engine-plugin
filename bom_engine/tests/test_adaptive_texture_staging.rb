@@ -63,6 +63,41 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
     end
   end
 
+  def test_semantic_webp_reuses_completed_base_pixel_proof_digest
+    source = image_frame(115,137,98,128)
+    deltas = {h:92.58741048890613,l:0.13725490868091583,s:-0.11229892646129502}
+    target = image_frame(*BOMEngine::BOMCSketchupColorize.colorize_pixel(
+      115,137,98,deltas[:h],deltas[:l],deltas[:s],true),128)
+    texture = Texture.new(source)
+    texture.define_singleton_method(:image_rep) { |colorized| colorized ? target : source }
+    optimizer = BOMEngine::BOMCTextureOptimizer
+    original_hash = optimizer.method(:reference_pixel_sha256)
+    optimizer.define_singleton_method(:reference_pixel_sha256) do |*_args, &_block|
+      raise 'semantic verifier base hash should already be available'
+    end
+    with_codec do
+      Dir.mktmpdir('semantic-base-hash') do |dir|
+        cache_dir = File.join(dir,'cache')
+        Dir.mkdir(cache_dir)
+        result = optimizer.stage(
+          texture: texture, directory: dir, basename:'semantic', source_path:'embedded.png',
+          profile: :exact,
+          appearance: { material_type:2, colorize_type:'shift', colorize_deltas:deltas },
+          image_rep_loader: ->(_path) { source },
+          candidate_cache: {directory:cache_dir,entries:{},scope_digest:'a'*64}
+        )
+        assert_equal :semantic_colorized_native, result.dig(:evidence,:selected)
+        assert_equal :webp, result.dig(:evidence,:candidate_media_type)
+        expected_digest = Digest::SHA256.hexdigest(
+          [115,137,98,128].pack('C4'))
+        assert_equal expected_digest, result.dig(:evidence,:base_pixel_sha256)
+        assert_equal 0.0, result.dig(:evidence,:quality,:mean_squared_error)
+      end
+    end
+  ensure
+    optimizer.define_singleton_method(:reference_pixel_sha256, original_hash) if original_hash
+  end
+
   def test_exact_semantic_colorization_does_not_depend_on_source_filename_extension
     Dir.mktmpdir do |dir|
       source = image_frame(115, 137, 98, 128)
