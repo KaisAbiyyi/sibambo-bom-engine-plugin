@@ -266,21 +266,34 @@ class TestAdaptiveTextureStaging < Test::Unit::TestCase
     end
   end
 
+  def fixture_codec_frame(path, alpha: 255)
+    # Temporary directory digits must not impersonate the encoded quality.
+    path = File.basename(path)
+    if path.end_with?('.jpg')
+      frame(20, alpha: alpha)
+    elsif path.include?('lossless')
+      frame(0, alpha: alpha)
+    elsif path.include?('90') || path.include?('95') || path.include?('100')
+      frame(1, alpha: alpha)
+    else
+      frame(10, alpha: alpha)
+    end
+  end
+
+  def test_codec_fixture_quality_ignores_parent_directory_names
+    assert_equal frame(10), fixture_codec_frame('D:/fixture-q90/arbitrary-material.lossy-q80.webp.decoded.png')
+    assert_equal frame(10), fixture_codec_frame('D:/fixture-lossless/arbitrary-material.lossy-q80.webp.decoded.png')
+    assert_equal frame(1), fixture_codec_frame('D:/fixture-q80/arbitrary-material.lossy-q90.webp.decoded.png')
+    assert_equal frame(0), fixture_codec_frame('D:/fixture-q90/arbitrary-material.lossless-m4-q75.webp.decoded.png')
+  end
+
   def stage(dir, profile: :research, alpha: 255, policy: nil, candidate_cache: nil, &loader)
     cache_option = candidate_cache ? { candidate_cache: candidate_cache } : {}
     BOMEngine::BOMCTextureOptimizer.stage(
       texture: Texture.new(frame(0, alpha: alpha)), directory: dir,
       basename: 'arbitrary-material', source_path: 'embedded/texture.png',
       profile: profile, policy: policy, **cache_option, image_rep_loader: loader || lambda { |path|
-        if path.end_with?('.jpg')
-          frame(20, alpha: alpha) # default JPEG fails the quality gate
-        elsif path.include?('lossless')
-          frame(0, alpha: alpha)
-        elsif path.include?('90') || path.include?('95') || path.include?('100')
-          frame(1, alpha: alpha)
-        else
-          frame(10, alpha: alpha)
-        end
+        fixture_codec_frame(path, alpha: alpha)
       }
     )
   end
