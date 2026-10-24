@@ -821,7 +821,9 @@ module BOMEngine
         # CanonicalGraphBuilder counts recursive work checkpoints, NOT root
         # entities. Its final work count is unknown during traversal.
         total: 0,
-        unit: 'langkah kanonis'
+        unit: 'langkah kanonis',
+        force: event[:force] == true,
+        operation_label: event[:operation_label] || event[:stage]
       }
     end
     private_class_method :canonical_work_checkpoint

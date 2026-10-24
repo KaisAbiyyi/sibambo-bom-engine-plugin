@@ -60,11 +60,13 @@ module BOMEngine
       @state_history = [{ state: @state, at_ms: 0.0 }]
       @last_tick_at = nil
       @last_checkpoint_at = nil
+      @last_checkpoint_context = { stage: nil, operation_label: nil }
       @performance_metrics = {
         generation_id: @generation_id,
         event_sequence: 0,
         state: @state,
         slice_count: 0,
+        longest_slices: [],
         checkpoint_count: 0,
         ui_update_count: 0,
         coalesced_ui_event_count: 0,
@@ -166,6 +168,10 @@ module BOMEngine
       @performance_metrics[:checkpoint_count] += 1
 
       payload = event || {}
+      @last_checkpoint_context = {
+        stage: (payload[:stage] || payload['stage'])&.to_s,
+        operation_label: (payload[:operation_label] || payload['operation_label'])&.to_s
+      }
       transition_state(state_for_event(payload))
       enqueue_ui_event(payload)
       Fiber.yield([:checkpoint])
@@ -194,11 +200,22 @@ module BOMEngine
         @performance_metrics[:max_tick_delay_ms] = [@performance_metrics[:max_tick_delay_ms], delay_ms].max
       end
       @last_tick_at = tick_started
+      entry_context = @last_checkpoint_context.dup
       outcome = nil
       begin
         outcome = @fiber.resume
       ensure
-        slice_ms = [(monotonic_seconds - tick_started) * 1000.0, 0.0].max
+        tick_finished = monotonic_seconds
+        slice_ms = [(tick_finished - tick_started) * 1000.0, 0.0].max
+        row = {
+          started_ms: ((tick_started - @monotonic_started_at) * 1000.0).round(3),
+          finished_ms: ((tick_finished - @monotonic_started_at) * 1000.0).round(3),
+          duration_ms: slice_ms.round(3),
+          entry_stage: entry_context[:stage], entry_operation_label: entry_context[:operation_label],
+          exit_stage: @last_checkpoint_context[:stage], exit_operation_label: @last_checkpoint_context[:operation_label]
+        }
+        @performance_metrics[:longest_slices] = (@performance_metrics[:longest_slices] + [row])
+          .sort_by { |slice| [-slice[:duration_ms], slice[:started_ms]] }.first(20)
         @performance_metrics[:slice_count] += 1
         @performance_metrics[:total_slice_ms] += slice_ms
         @performance_metrics[:max_slice_ms] = [@performance_metrics[:max_slice_ms], slice_ms].max

@@ -30,6 +30,14 @@ module BOMEngine
       end
 
       def run
+        forced = BOMCExtension.send(:canonical_work_checkpoint, {processed: 2_658_368, force: true, stage: 'legacy', operation_label: 'scene_overrides'})
+        legacy = BOMCExtension.send(:canonical_work_checkpoint, {processed: 1, stage: 'legacy'})
+        assert(forced[:force] && forced[:operation_label] == 'scene_overrides' && forced[:total] == 0 && forced[:processed] == 2_658_368, 'canonical force label and cumulative units survive keyword adaptation')
+        assert(legacy[:force] == false && legacy[:operation_label] == 'legacy', 'legacy event retains stage label and defaults force false')
+        yielded = []
+        controller = BOMCProcessing::Controller.new(settings: BOMCProcessing.settings(:interactive), clock: -> {0.0}, on_yield: ->(e) {yielded << e}, cancelled: -> {false})
+        controller.checkpoint(**forced)
+        assert(yielded.length == 1 && yielded[0][:operation_label] == 'scene_overrides' && controller.settings[:max_ms] == 12.0, 'forced scene event yields through real unchanged Auto controller')
         counter = BOMCExtension.send(:canonical_work_checkpoint, { processed: 2_658_368 })
         assert(counter[:processed] == 2_658_368 && counter[:total] == 0 && counter[:unit] == 'langkah kanonis',
           'recursive canonical work is open-ended and is never divided by root entity count')

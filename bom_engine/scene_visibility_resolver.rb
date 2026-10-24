@@ -9,47 +9,85 @@ require_relative 'performance_trace'
 
 module BOMEngine
   module SceneVisibilityResolver
+    # Job-local cooperative polling. No SDK work moves off the caller's Fiber.
+    class WorkCursor
+      class CheckpointError < StandardError; end
+
+      def initialize(on_checkpoint:, clock: nil)
+        @on_checkpoint = on_checkpoint
+        @clock = clock || -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+        @last_emission = @clock.call if @on_checkpoint
+        @pending = 0
+        @total = 0
+      end
+
+      def step(operation_label)
+        return unless @on_checkpoint
+        @pending += 1
+        @total += 1
+        flush(operation_label) if @pending >= 256 || @clock.call - @last_emission >= 0.006
+      end
+
+      def flush(operation_label)
+        return unless @on_checkpoint
+        begin
+          @on_checkpoint.call(work_units: @pending, operation_label: operation_label, force: true)
+        rescue StandardError => error
+          raise if PerformanceTrace.cancellation_error?(error)
+          raise CheckpointError, "Scene checkpoint failed: #{error.message}", cause: error
+        end
+        @pending = 0
+        @last_emission = @clock.call
+      end
+    end
+
     module_function
 
-    def resolve_scenes(model, active_page: nil, nodes: nil, definitions: nil, meshes: nil, capture_context: nil, capture_index: nil)
+    def resolve_scenes(model, active_page: nil, nodes: nil, definitions: nil, meshes: nil, capture_context: nil, capture_index: nil, work_cursor: nil)
       PerformanceTrace.stage(:scene_visibility_resolve) do
-        context = capture_context || prepare_capture_context(model, active_page: active_page)
+        context = capture_context || prepare_capture_context(model, active_page: active_page, work_cursor: work_cursor)
         pages_list = context[:pages]
         active = active_page || context[:active_page]
-        index = capture_index || build_capture_index(nodes: nodes, definitions: definitions, meshes: meshes)
+        index = capture_index || build_capture_index(nodes: nodes, definitions: definitions, meshes: meshes, work_cursor: work_cursor)
         PerformanceTrace.increment(:scene_profiles, [pages_list.length, 1].max)
 
         if pages_list.empty?
           [build_scene_profile(nil, is_active: true, model: model, nodes: nodes, definitions: definitions, meshes: meshes,
-            page_context: context[:current_view], clip_planes: context[:clip_planes], capture_index: index)]
+            page_context: context[:current_view], clip_planes: context[:clip_planes], capture_index: index, work_cursor: work_cursor)]
         else
           pages_list.map do |page|
+            work_cursor&.step('scene_context')
+            work_cursor&.flush('scene_context')
             is_active = (page == active)
-            build_scene_profile(page, is_active: is_active, model: model, nodes: nodes, definitions: definitions, meshes: meshes,
-              page_context: context[:page_contexts][page.object_id], clip_planes: context[:clip_planes], capture_index: index)
+            profile = build_scene_profile(page, is_active: is_active, model: model, nodes: nodes, definitions: definitions, meshes: meshes,
+              page_context: context[:page_contexts][page.object_id], clip_planes: context[:clip_planes], capture_index: index, work_cursor: work_cursor)
+            work_cursor&.flush('scene_occurrences')
+            profile
           end
         end
       end
     end
 
-    def resolve_effective_scene_visibility(page, model: nil, nodes: nil, definitions: nil, meshes: nil, is_active: false, capture_context: nil, capture_index: nil)
-      context = capture_context || prepare_capture_context(model, active_page: (is_active ? page : nil))
+    def resolve_effective_scene_visibility(page, model: nil, nodes: nil, definitions: nil, meshes: nil, is_active: false, capture_context: nil, capture_index: nil, work_cursor: nil)
+      context = capture_context || prepare_capture_context(model, active_page: (is_active ? page : nil), work_cursor: work_cursor)
       page_context = page.nil? ? context[:current_view] : context[:page_contexts][page.object_id]
       build_scene_profile(page, is_active: is_active, model: model, nodes: nodes, definitions: definitions, meshes: meshes,
-        page_context: page_context, clip_planes: context[:clip_planes], capture_index: capture_index)
+        page_context: page_context, clip_planes: context[:clip_planes], capture_index: capture_index, work_cursor: work_cursor)
     end
 
-    def prepare_capture_context(model, active_page: nil)
+    def prepare_capture_context(model, active_page: nil, work_cursor: nil)
       pages_collection = model.respond_to?(:pages) ? model.pages : nil
       pages = pages_collection.respond_to?(:to_a) ? pages_collection.to_a : Array(pages_collection)
       active = active_page || (pages_collection.respond_to?(:selected_page) ? pages_collection.selected_page : nil)
       layers = model && model.respond_to?(:layers) ? model.layers.to_a : []
       page_contexts = {}
       pages.each do |page|
-        page_contexts[page.object_id] = prepare_page_context(page, layers)
+        work_cursor&.step('scene_context')
+        page_contexts[page.object_id] = prepare_page_context(page, layers, work_cursor: work_cursor)
       end
-      current_view = prepare_page_context(nil, layers)
-      clip_planes = PerformanceTrace.stage(:clip_plane_collection) { collect_model_clip_planes(model) }
+      current_view = prepare_page_context(nil, layers, work_cursor: work_cursor)
+      clip_planes = PerformanceTrace.stage(:clip_plane_collection) { collect_model_clip_planes(model, work_cursor: work_cursor) }
+      work_cursor&.flush('scene_context')
       PerformanceTrace.increment(:scene_capture_context_builds, 1)
       {
         pages: pages,
@@ -60,11 +98,12 @@ module BOMEngine
       }
     end
 
-    def prepare_page_context(page, layers)
+    def prepare_page_context(page, layers, work_cursor: nil)
       visible_tag_ids = []
       hidden_tag_ids = []
       tag_visibility_by_object_id = {}
       layers.each do |layer|
+        work_cursor&.step('scene_context')
         visible = page.nil? ? live_tag_visibility(layer) : effective_tag_visibility(layer, page)
         tag_visibility_by_object_id[layer.object_id] = visible
         (visible ? visible_tag_ids : hidden_tag_ids) << tag_stable_id(layer)
@@ -80,6 +119,7 @@ module BOMEngine
                         else
                           []
                         end
+      work_cursor&.flush('scene_context')
       PerformanceTrace.increment(:scene_hidden_entity_rows, hidden_entities.length)
       {
         visible_tag_ids: visible_tag_ids.sort.uniq,
@@ -87,7 +127,7 @@ module BOMEngine
         tag_visibility_by_object_id: tag_visibility_by_object_id,
         hidden_entities: hidden_entities,
         hidden_entities_set: hidden_entities.to_set,
-        hidden_pids_set: hidden_entities.map { |entity| safe_persistent_id(entity).to_s }.to_set,
+        hidden_pids_set: hidden_entities.map { |entity| work_cursor&.step('scene_context'); safe_persistent_id(entity).to_s }.to_set.tap { work_cursor&.flush('scene_context') },
         drawing_visibility: {},
         camera: page.nil? ? nil : extract_page_camera(page),
         active_section_plane_ids: page.nil? ? [] : extract_active_section_planes(page),
@@ -96,12 +136,13 @@ module BOMEngine
     end
     private_class_method :prepare_page_context
 
-    def build_capture_index(nodes: nil, definitions: nil, meshes: nil)
+    def build_capture_index(nodes: nil, definitions: nil, meshes: nil, work_cursor: nil)
       index = {
         nodes_by_entity: {}, nodes_by_pid: {}, primitives_by_entity: {}, primitives_by_pid: {},
         nodes_by_id: {}, definitions_by_id: {}
       }
       Array(nodes).each do |node|
+        work_cursor&.step('scene_index')
         index[:nodes_by_id][node[:id]] = node
         next if node[:kind] == 'root'
 
@@ -110,9 +151,14 @@ module BOMEngine
         index[:nodes_by_entity][entity] = node[:id] if entity
         index[:nodes_by_pid][pid.to_s] = node[:id] if pid
       end
-      Array(definitions).each { |definition| index[:definitions_by_id][definition[:id]] = definition }
+      Array(definitions).each do |definition|
+        work_cursor&.step('scene_index')
+        index[:definitions_by_id][definition[:id]] = definition
+      end
       Array(meshes).each do |mesh|
+        work_cursor&.step('scene_index')
         Array(mesh[:faces]).each do |face|
+          work_cursor&.step('scene_index')
           entity = face[:_entity] || face[:entity]
           pid = face.dig(:source_identity, :persistent_id) || face[:persistent_id]
           record = [:face, face[:id]]
@@ -120,6 +166,7 @@ module BOMEngine
           index[:primitives_by_pid][pid.to_s] = record if pid
         end
         Array(mesh[:edges]).each do |edge|
+          work_cursor&.step('scene_index')
           entity = edge[:_entity] || edge[:entity]
           pid = edge.dig(:source_identity, :persistent_id) || edge[:persistent_id]
           record = [:edge, edge[:id]]
@@ -127,6 +174,7 @@ module BOMEngine
           index[:primitives_by_pid][pid.to_s] = record if pid
         end
       end
+      work_cursor&.flush('scene_index')
       PerformanceTrace.increment(:scene_capture_index_builds, 1)
       PerformanceTrace.increment(:scene_capture_index_nodes, index[:nodes_by_id].length)
       PerformanceTrace.increment(:scene_capture_index_primitives, index[:primitives_by_entity].length)
@@ -134,8 +182,8 @@ module BOMEngine
     end
 
     def build_scene_profile(page, is_active: false, model: nil, nodes: nil, definitions: nil, meshes: nil,
-      page_context: nil, clip_planes: nil, capture_index: nil)
-      context = page_context || prepare_page_context(page, model && model.respond_to?(:layers) ? model.layers.to_a : [])
+      page_context: nil, clip_planes: nil, capture_index: nil, work_cursor: nil)
+      context = page_context || prepare_page_context(page, model && model.respond_to?(:layers) ? model.layers.to_a : [], work_cursor: work_cursor)
       if page.nil?
         camera_data = current_view_camera(model)
         visible_tag_ids = context[:visible_tag_ids]
@@ -184,7 +232,7 @@ module BOMEngine
           visibility_signature: signature
         }
         if nodes && !nodes.empty?
-          profile[:effective_visible_occurrence_count] = calculate_effective_visible_occurrences(nodes, definitions, profile, capture_index: capture_index)
+          profile[:effective_visible_occurrence_count] = calculate_effective_visible_occurrences(nodes, definitions, profile, capture_index: capture_index, work_cursor: work_cursor)
         end
         return profile
       end
@@ -201,14 +249,14 @@ module BOMEngine
       hidden_tag_ids = context[:hidden_tag_ids]
 
       # DrawingElement visibility overrides
-      overrides = extract_visibility_overrides(page, nodes, meshes, capture_index: capture_index, page_context: context)
+      overrides = extract_visibility_overrides(page, nodes, meshes, capture_index: capture_index, page_context: context, work_cursor: work_cursor)
       visible_node_overrides = overrides[:visible_nodes]
       hidden_node_overrides = overrides[:hidden_nodes]
       active_section_plane_ids = context[:active_section_plane_ids]
       section_rendering_state = context[:section_rendering_state]
       section_cuts_displayed = section_rendering_state[:section_cuts_displayed]
 
-      model_clip_planes = clip_planes || collect_model_clip_planes(model)
+      model_clip_planes = clip_planes || collect_model_clip_planes(model, work_cursor: work_cursor)
       rendering_support = 'none'
       if !active_section_plane_ids.empty?
         all_resolved = active_section_plane_ids.all? do |sid|
@@ -271,7 +319,7 @@ module BOMEngine
       }
 
       if nodes && !nodes.empty?
-        profile[:effective_visible_occurrence_count] = calculate_effective_visible_occurrences(nodes, definitions, profile, capture_index: capture_index)
+        profile[:effective_visible_occurrence_count] = calculate_effective_visible_occurrences(nodes, definitions, profile, capture_index: capture_index, work_cursor: work_cursor)
       end
 
       profile
@@ -303,7 +351,7 @@ module BOMEngine
       [overrides[:visible_nodes], overrides[:hidden_nodes]]
     end
 
-    def extract_visibility_overrides(page, nodes = nil, meshes = nil, capture_index: nil, page_context: nil)
+    def extract_visibility_overrides(page, nodes = nil, meshes = nil, capture_index: nil, page_context: nil, work_cursor: nil)
       visible_overrides = []
       hidden_overrides = []
       result = {
@@ -315,11 +363,11 @@ module BOMEngine
       stores_objects = page.respond_to?(:use_hidden_objects?) ? page.use_hidden_objects? : (page.respond_to?(:use_hidden?) ? page.use_hidden? : true)
       stores_geometry = page.respond_to?(:use_hidden_geometry?) ? page.use_hidden_geometry? : false
 
-      context = page_context || prepare_page_context(page, [])
+      context = page_context || prepare_page_context(page, [], work_cursor: work_cursor)
       hidden_entities_list = context[:hidden_entities]
       hidden_entities_set = context[:hidden_entities_set]
       hidden_pids_set = context[:hidden_pids_set]
-      index = capture_index || build_capture_index(nodes: nodes, definitions: nil, meshes: meshes)
+      index = capture_index || build_capture_index(nodes: nodes, definitions: nil, meshes: meshes, work_cursor: work_cursor)
       nodes_by_entity = index[:nodes_by_entity]
       nodes_by_pid = index[:nodes_by_pid]
       primitives_by_entity = index[:primitives_by_entity]
@@ -329,6 +377,7 @@ module BOMEngine
         has_drawingelement_visibility = page.respond_to?(:get_drawingelement_visibility)
         node_visibility_queries = 0
         nodes.each do |node|
+          work_cursor&.step('scene_overrides')
           next if node[:kind] == 'root'
           node_id = node[:id]
           entity = node[:_entity] || node[:entity]
@@ -368,6 +417,7 @@ module BOMEngine
       if stores_geometry && page.respond_to?(:get_drawingelement_visibility)
         primitive_visibility_queries = 0
         primitives_by_entity.each do |entity, primitive|
+          work_cursor&.step('scene_overrides')
           next unless entity && drawingelement_scene_applicable?(entity, page, is_root: false)
           base_hidden = (entity.respond_to?(:hidden?) && entity.hidden?) || (entity.respond_to?(:visible?) && !entity.visible?)
           begin
@@ -387,6 +437,7 @@ module BOMEngine
 
       # Match top-level hidden entities from page.hidden_entities
       hidden_entities_list.each do |ent|
+        work_cursor&.step('scene_overrides')
         node_id = stores_objects ? (nodes_by_entity[ent] || nodes_by_pid[safe_persistent_id(ent).to_s]) : nil
         primitive = stores_geometry ? (primitives_by_entity[ent] || primitives_by_pid[safe_persistent_id(ent).to_s]) : nil
         if node_id
@@ -398,6 +449,7 @@ module BOMEngine
         end
       end
 
+      work_cursor&.flush('scene_overrides')
       result.each do |key, values|
         next if key == :diagnostics
         values.replace(values.compact.map(&:to_s).sort.uniq)
@@ -405,7 +457,7 @@ module BOMEngine
       result
     end
 
-    def calculate_effective_visible_occurrences(nodes, definitions, scene, capture_index: nil)
+    def calculate_effective_visible_occurrences(nodes, definitions, scene, capture_index: nil, work_cursor: nil)
       return 0 if nodes.nil? || nodes.empty?
 
       hidden_nodes = Array(scene.dig(:visibility, :hidden_node_overrides)).to_set
@@ -414,12 +466,12 @@ module BOMEngine
       visible_tags = Array(scene.dig(:visibility, :visible_tag_ids)).to_set
       stores_tags = scene[:stores_tag_visibility] != false
 
-      index = capture_index || build_capture_index(nodes: nodes, definitions: definitions, meshes: nil)
+      index = capture_index || build_capture_index(nodes: nodes, definitions: definitions, meshes: nil, work_cursor: work_cursor)
       nodes_by_id = index[:nodes_by_id]
       definitions_by_id = index[:definitions_by_id]
 
-      root_node = nodes.find { |n| n[:kind] == 'root' }
-      return nodes.count { |n| n[:visible] != false } if root_node.nil?
+      root_node = nodes.find { |n| work_cursor&.step('scene_occurrences'); n[:kind] == 'root' }
+      return nodes.count { |n| work_cursor&.step('scene_occurrences'); n[:visible] != false } if root_node.nil?
 
       node_visible = lambda do |node|
         return false if hidden_nodes.include?(node[:id])
@@ -441,6 +493,7 @@ module BOMEngine
         return unless defn
         child_node_ids = defn[:node_ids] || []
         child_node_ids.each do |nid|
+          work_cursor&.step('scene_occurrences')
           child_node = nodes_by_id[nid]
           next unless child_node
           if node_visible.call(child_node)
@@ -455,6 +508,7 @@ module BOMEngine
 
       root_def_id = root_node[:definition_id]
       traverse.call(root_def_id, [root_def_id]) if root_def_id
+      work_cursor&.flush('scene_occurrences')
       count
     end
 
@@ -867,7 +921,7 @@ module BOMEngine
       { section_cuts_displayed: false, section_planes_displayed: false }
     end
 
-    def collect_model_clip_planes(model)
+    def collect_model_clip_planes(model, work_cursor: nil)
       planes = []
       return planes if model.nil?
 
@@ -875,6 +929,7 @@ module BOMEngine
       if model.respond_to?(:entities)
         entities = (begin model.entities.to_a rescue [] end) || []
         entities.each do |entity|
+          work_cursor&.step('scene_clips')
           next unless entity.class.to_s =~ /SectionPlane/
           planes << create_clip_plane_record(entity)
         end
@@ -884,18 +939,22 @@ module BOMEngine
       if model.respond_to?(:definitions)
         defs = (begin model.definitions.to_a rescue [] end) || []
         defs.each do |definition|
+          work_cursor&.step('scene_clips')
           next if definition.respond_to?(:image?) && definition.image?
           def_id = "def:#{safe_persistent_id(definition)}"
           def_entities = (begin definition.entities.to_a rescue [] end) || []
           def_entities.each do |entity|
+            work_cursor&.step('scene_clips')
             next unless entity.class.to_s =~ /SectionPlane/
             planes << create_clip_plane_record(entity, owner_definition_id: def_id)
           end
         end
       end
 
+      work_cursor&.flush('scene_clips')
       planes
-    rescue StandardError
+    rescue StandardError => error
+      raise if PerformanceTrace.cancellation_error?(error) || error.is_a?(WorkCursor::CheckpointError)
       []
     end
 

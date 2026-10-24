@@ -83,9 +83,9 @@ def assert(condition, message)
   puts "PASS: #{message}"
 end
 
-job = BOMEngine::ConversionJob.start(title: 'Test conversion', output_path: 'C:/tmp/model.json') do |progress|
+job = BOMEngine::ConversionJob.start(title: 'Test conversion', output_path: 'D:/projects/sibambo/scratch/sib-f1-readiness-20261024/conversion-job/model.json') do |progress|
   3.times { |index| progress.call(stage: "Stage #{index}", processed: index + 1) }
-  { path: 'C:/tmp/model.json', bytes: 42, validation: { nodes: 7, triangles: 11 } }
+  { path: 'D:/projects/sibambo/scratch/sib-f1-readiness-20261024/conversion-job/model.json', bytes: 42, validation: { nodes: 7, triangles: 11 } }
 end
 UI.tick while job.running?
 scripts = UI::HtmlDialog.last.scripts
@@ -172,9 +172,9 @@ Dir.mktmpdir('all-profile-result') do |parent|
   assert(UI.opened_url.include?('house__ALL-1'), 'Export All opens the new three-profile folder')
 end
 
-over_budget_job = BOMEngine::ConversionJob.start(title: 'Texture-heavy conversion', output_path: 'C:/tmp/model.bomc') do
+over_budget_job = BOMEngine::ConversionJob.start(title: 'Texture-heavy conversion', output_path: 'D:/projects/sibambo/scratch/sib-f1-readiness-20261024/conversion-job/model.bomc') do
   {
-    path: 'C:/tmp/model.bomc', bytes: 110, candidate_bytes: 110,
+    path: 'D:/projects/sibambo/scratch/sib-f1-readiness-20261024/conversion-job/model.bomc', bytes: 110, candidate_bytes: 110,
     source_info: { bytes: 100 }, savings_bytes: -10,
     status: :over_budget, strategy: :maximum_lossless,
     validation: { nodes: 7, triangles: 11 }
@@ -185,7 +185,7 @@ over_budget_script = UI::HtmlDialog.last.scripts.find { |script| script.include?
 assert(over_budget_script.include?('"gate_status":"over_budget"'), 'over-budget lossless export completes instead of entering the failure UI')
 assert(over_budget_script.include?('"savings_bytes":-10'), 'completion UI receives the exact signed SKP size delta')
 
-cancelled_job = BOMEngine::ConversionJob.start(title: 'Cancel conversion', output_path: 'C:/tmp/model.json') do |progress|
+cancelled_job = BOMEngine::ConversionJob.start(title: 'Cancel conversion', output_path: 'D:/projects/sibambo/scratch/sib-f1-readiness-20261024/conversion-job/model.json') do |progress|
   3.times { |index| progress.call(stage: "Stage #{index}", processed: index + 1) }
 end
 cancelled_job.cancel
@@ -198,7 +198,7 @@ assert(cancelled_job.performance_metrics[:generation_id] == cancelled_job.genera
 assert(cancelled_job.state_history.map { |row| row[:state] } == [:created, :capturing, :cancelling, :cancelled],
   'cancel transitions cannot pass through success publication states')
 
-close_job = BOMEngine::ConversionJob.start(title: 'Close conversion', output_path: 'C:/tmp/close.json') do |progress|
+close_job = BOMEngine::ConversionJob.start(title: 'Close conversion', output_path: 'D:/projects/sibambo/scratch/sib-f1-readiness-20261024/conversion-job/close.json') do |progress|
   progress.call(stage: 'Waiting', processed: 1, total: 2)
   progress.call(stage: 'Waiting', processed: 2, total: 2)
 end
@@ -207,12 +207,12 @@ UI.tick while close_job.running?
 assert(close_job.state == :cancelled && BOMEngine::ConversionJob.active.nil?,
   'closing an active dialog routes through cancellation and releases the generation')
 
-slow_job = BOMEngine::ConversionJob.start(title: 'Chunkable slow stage', output_path: 'C:/tmp/slow.json') do |progress|
+slow_job = BOMEngine::ConversionJob.start(title: 'Chunkable slow stage', output_path: 'D:/projects/sibambo/scratch/sib-f1-readiness-20261024/conversion-job/slow.json') do |progress|
   5.times do |index|
     sleep 0.02
     progress.call(phase: :compiling, stage: 'Synthetic chunk', processed: index + 1, total: 5)
   end
-  { path: 'C:/tmp/slow.json', bytes: 5, validation: {} }
+  { path: 'D:/projects/sibambo/scratch/sib-f1-readiness-20261024/conversion-job/slow.json', bytes: 5, validation: {} }
 end
 UI.tick while slow_job.running?
 slow_metrics = slow_job.performance_metrics
@@ -235,7 +235,7 @@ assert(texture_payload.include?('"phase_id":"textures"') && texture_payload.incl
   'backend emits named texture phase, material, real unit and pass identity')
 
 publish_calls = 0
-publish_cancel_job = BOMEngine::ConversionJob.start(title: 'Cancel before publication', output_path: 'C:/tmp/publish.bomc') do |progress|
+publish_cancel_job = BOMEngine::ConversionJob.start(title: 'Cancel before publication', output_path: 'D:/projects/sibambo/scratch/sib-f1-readiness-20261024/conversion-job/publish.bomc') do |progress|
   context = {
     clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
     on_yield: progress,
@@ -248,7 +248,7 @@ publish_cancel_job = BOMEngine::ConversionJob.start(title: 'Cancel before public
     cleanup: -> {}
   }
   BOMEngine::BOMCExportJob.run(
-    model: Struct.new(:path).new('model.skp'), output_path: 'C:/tmp/publish.bomc',
+    model: Struct.new(:path).new('model.skp'), output_path: 'D:/projects/sibambo/scratch/sib-f1-readiness-20261024/conversion-job/publish.bomc',
     settings: BOMEngine::BOMCProcessing.settings(:balanced), context: context
   )
 end
@@ -259,4 +259,21 @@ end
 assert(publish_calls == 0 && publish_cancel_job.state == :cancelled,
   'cancelling at the publication boundary prevents stale or partial publication')
 
+# Deterministic clock: 25 resumes with one 500ms slice, plus completion.
+fake_now = 0.0
+telemetry_job = BOMEngine::ConversionJob.new(title: 'Slice attribution', output_path: 'D:/projects/sibambo/scratch/sib-f1-readiness-20261024/conversion-job/attribution.bomc') do |progress|
+  25.times do |i|
+    fake_now += (i == 7 ? 0.5 : 0.01)
+    progress.call(stage: :snapshot_entities, operation_label: "scene_#{i}", processed: i)
+  end
+  {path: 'D:/projects/sibambo/scratch/sib-f1-readiness-20261024/conversion-job/attribution.bomc', bytes: 1, validation: {}}
+end
+telemetry_job.define_singleton_method(:monotonic_seconds) { fake_now }
+telemetry_job.start
+UI.tick while telemetry_job.running?
+rows = telemetry_job.performance_metrics[:longest_slices]
+assert(rows.length == 20, 'only twenty longest resumes are retained')
+assert(rows == rows.sort_by { |r| [-r[:duration_ms], r[:started_ms]] }, 'longest slices use duration then earliest-start ordering')
+assert(rows[0] == {started_ms: 70.0, finished_ms: 570.0, duration_ms: 500.0, entry_stage: 'snapshot_entities', entry_operation_label: 'scene_6', exit_stage: 'snapshot_entities', exit_operation_label: 'scene_7'}, 'known 500ms slice has exact entry exit checkpoint context')
+assert(telemetry_job.performance_metrics[:max_slice_ms] == 500.0 && telemetry_job.performance_metrics[:slice_count] == 26, 'bounded slice attribution preserves original maxima and total count')
 puts 'Conversion Job Tests: ALL PASSED'
