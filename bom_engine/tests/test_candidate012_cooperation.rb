@@ -11,6 +11,16 @@ require_relative '../bomc_png_optimizer'
 require_relative '../bomc_export_job'
 
 class TestCandidate012Cooperation < Minitest::Test
+  def test_compression_poll_units_do_not_amplify_fast_work_into_timer_waits
+    yields = 0
+    controller = BOMEngine::BOMCProcessing::Controller.new(
+      settings: BOMEngine::BOMCProcessing.settings(:interactive), clock: -> { 0.0 },
+      cancelled: -> { false }, on_yield: ->(_) { yields += 1 })
+    sections = [{type: 1, count: 1, bytes: Random.new(12).bytes(300_000), compress: true}]
+    BOMEngine::BOMC::Container.pack(sections, checkpoint: ->(**event) { controller.checkpoint(**event) })
+    assert_equal 0, yields, 'byte offsets must not be counted as tens of thousands of work items'
+  end
+
   def test_png_filter_search_matches_candidate011_golden_bytes
     optimizer = BOMEngine::BOMCPngOptimizer
     random = Random.new(12)

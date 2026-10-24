@@ -446,8 +446,8 @@ module BOMEngine
             candidate = +''.b
             offset = 0
             while offset < raw.bytesize
-              checkpoint.call(stage: :compress_sections, processed: offset, total: raw.bytesize,
-                operation_label: "compress_section_#{section[:type]}", unit: 'bytes') if checkpoint
+              checkpoint.call(stage: :compress_sections, processed: offset / 32_768, total: (raw.bytesize + 32_767) / 32_768,
+                operation_label: "compress_section_#{section[:type]}", unit: 'compression chunks') if checkpoint
               candidate << stream.deflate(raw.byteslice(offset, 32_768), Zlib::NO_FLUSH)
               offset += 32_768
             end
