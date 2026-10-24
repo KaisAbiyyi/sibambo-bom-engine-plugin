@@ -1,6 +1,7 @@
 # Independent logical differential validator for BOMC fixtures and exports.
 
 require_relative 'bomc_format'
+require_relative 'scene_visibility_resolver'
 require_relative 'bomc_model_adapter'
 require_relative 'bomc_geometry_policy'
 require_relative 'bomc_texture_policy'
@@ -277,7 +278,16 @@ module BOMEngine
       result
     end
 
-    def self.validate_profile(source:, decoded:, profile: :visual, texture_evidence: nil, base_path: nil, normalized_source: nil)
+    def self.validate_profile(source:, decoded:, profile: :visual, texture_evidence: nil, base_path: nil, normalized_source: nil, checkpoint: nil)
+      processed = 0
+      work_cursor = if checkpoint
+        SceneVisibilityResolver::WorkCursor.new(on_checkpoint: lambda do |event|
+          processed += event[:work_units]
+          checkpoint.call(stage: :validate, processed: processed, total: 0,
+            force: event[:force], operation_label: event[:operation_label], unit: 'validation work')
+        end)
+      end
+      work_cursor&.flush('fidelity_validation')
       normalized = if normalized_source
                      normalized_source
                    elsif source.is_a?(Hash) && source[:meshes] && source[:instances] && !source.dig(:format, :name).to_s.include?('BOM Engine Canonical')
@@ -367,12 +377,14 @@ module BOMEngine
 
       face_semantics_exact = true
       normalized[:meshes].each_with_index do |mesh, m_idx|
+        work_cursor&.step('fidelity_validation')
         dec_mesh = decoded[:meshes][m_idx]
         unless dec_mesh
           face_semantics_exact = false
           next
         end
         mesh[:faces].each_with_index do |face, f_idx|
+          work_cursor&.step('fidelity_validation')
           dec_face = dec_mesh[:faces][f_idx]
           unless dec_face &&
                  normalize_role(face[:semantic_role]) == dec_face[:semantic_role].to_s &&
@@ -399,6 +411,7 @@ module BOMEngine
       maximum_area_tolerance = area_limit_abs
 
       normalized[:meshes].each_with_index do |source_mesh, mesh_index|
+        work_cursor&.step('fidelity_validation')
         decoded_mesh = decoded[:meshes][mesh_index]
         unless decoded_mesh
           topology_exact = false
@@ -407,16 +420,19 @@ module BOMEngine
           next
         end
 
-        mesh_class = BOMCGeometryPolicy.mesh_semantic_class(source_mesh[:faces])
+        # Exact/Research bounds are class-independent; do not allocate and
+        # classify an entire large face table for a value those profiles ignore.
+        mesh_class = BOMCGeometryPolicy.mesh_semantic_class(source_mesh[:faces]) if prof == :visual
         mesh_pos_tol = (prof == :visual) ? BOMCGeometryPolicy.position_tolerance(profile: :visual, semantic_class: mesh_class) : pos_limit
 
-        each_point_error(source_mesh[:positions], decoded_mesh[:positions]) do |error|
+        each_point_error(source_mesh[:positions], decoded_mesh[:positions], work_cursor) do |error|
           position_errors.add(error)
           positions_passed = false if error > mesh_pos_tol + 1.0e-12
         end
 
         topology_exact &&= (source_mesh[:faces].length == decoded_mesh[:faces].length)
         source_mesh[:faces].each_with_index do |source_face, face_index|
+          work_cursor&.step('fidelity_validation')
           decoded_face = decoded_mesh[:faces][face_index]
           unless decoded_face
             topology_exact = false
@@ -446,7 +462,7 @@ module BOMEngine
           source_uv = flatten_uv(source_face[:uv])
           decoded_uv = flatten_uv(decoded_face[:uv])
           if source_uv.length == decoded_uv.length
-            each_pair_error(source_uv, decoded_uv) do |error|
+            each_pair_error(source_uv, decoded_uv, work_cursor) do |error|
               uv_errors.add(error)
               uv_passed = false if error > face_uv_tol + 1.0e-12
             end
@@ -460,7 +476,7 @@ module BOMEngine
           # rounding/quantization already present in the input is not codec loss.
           reference_area = source_face[:area_m2].to_f
           if prof == :exact
-            reference_area = geometry_face_area(source_mesh[:positions], source_face)
+            reference_area = geometry_face_area(source_mesh[:positions], source_face, work_cursor)
             metadata_error = (source_face[:area_m2].to_f - reference_area).abs
             source_area_metadata_errors.add(metadata_error)
             source_area_metadata_mismatch_count += 1 if metadata_error > area_limit_abs + 1.0e-12
@@ -470,8 +486,14 @@ module BOMEngine
           maximum_area_tolerance = area_tolerance if area_tolerance > maximum_area_tolerance
         end
 
-        source_edges = source_mesh[:edges].map { |edge| [edge[:vertices], edge[:tag], edge[:hidden], edge[:soft], edge[:smooth]] }
-        decoded_edges = decoded_mesh[:edges].map { |edge| [edge[:vertices], edge[:tag], edge[:hidden], edge[:soft], edge[:smooth]] }
+        source_edges = source_mesh[:edges].map do |edge|
+          work_cursor&.step('fidelity_edges')
+          [edge[:vertices], edge[:tag], edge[:hidden], edge[:soft], edge[:smooth]]
+        end
+        decoded_edges = decoded_mesh[:edges].map do |edge|
+          work_cursor&.step('fidelity_edges')
+          [edge[:vertices], edge[:tag], edge[:hidden], edge[:soft], edge[:smooth]]
+        end
         visual_edges_exact &&= (source_edges == decoded_edges)
       end
 
@@ -485,10 +507,12 @@ module BOMEngine
       transform_errors = ErrorAccumulator.new(percentile: false)
       transforms_passed = true
       normalized[:transforms].each_with_index do |matrix, index|
+        work_cursor&.step('fidelity_validation')
         decoded_matrix = decoded[:transforms][index]
         if decoded_matrix
           err = 0.0
           matrix.each_with_index do |value, component|
+            work_cursor&.step('fidelity_validation')
             component_error = (value.to_f - decoded_matrix[component].to_f).abs
             err = component_error if component_error > err
           end
@@ -515,6 +539,7 @@ module BOMEngine
           scenes_exact = false
         else
           source_scenes.each_with_index do |src_s, s_i|
+            work_cursor&.step('fidelity_validation')
             dec_s = decoded_scenes[s_i]
             unless dec_s && src_s[:name].to_s == dec_s[:name].to_s
               scenes_exact = false
@@ -551,6 +576,7 @@ module BOMEngine
           clip_planes_exact = false
         else
           source_planes.each_with_index do |src_p, p_i|
+            work_cursor&.step('fidelity_validation')
             dec_p = decoded_planes[p_i]
             unless dec_p
               clip_planes_exact = false
@@ -584,12 +610,14 @@ module BOMEngine
         evidence_list = texture_evidence.values
       elsif normalized[:materials]
         normalized[:materials].each do |m|
+          work_cursor&.step('fidelity_validation')
           ev = m.dig(:texture, :encoding_evidence) || m.dig(:texture, :staging_evidence)
           evidence_list << ev if ev
         end
       end
 
       evidence_list.compact.each_with_index do |ev, ev_i|
+        work_cursor&.step('fidelity_validation')
         ev = ev[:staging] if ev.dig(:staging, :policy_revision)
         if ev[:policy_revision]
           quality = ev[:quality] || {}
@@ -658,6 +686,7 @@ module BOMEngine
 
       if prof == :exact
         Array(decoded[:textures]).each_with_index do |tex, t_i|
+          work_cursor&.step('fidelity_validation')
           if tex[:media_type] == :jpeg_color_map
             map = BOMCJpegColorMap.parse(tex[:bytes])
             verified = evidence_list.compact.any? do |outer|
@@ -705,6 +734,7 @@ module BOMEngine
       end
 
       passed = failures.empty?
+      work_cursor&.flush('fidelity_validation')
       {
         passed: passed,
         profile: prof,
@@ -754,14 +784,15 @@ module BOMEngine
       }
     end
 
-    def self.validate_profile!(source:, decoded:, profile: :visual, texture_evidence: nil, base_path: nil, normalized_source: nil)
+    def self.validate_profile!(source:, decoded:, profile: :visual, texture_evidence: nil, base_path: nil, normalized_source: nil, checkpoint: nil)
       report = validate_profile(
         source: source,
         decoded: decoded,
         profile: profile,
         texture_evidence: texture_evidence,
         base_path: base_path,
-        normalized_source: normalized_source
+        normalized_source: normalized_source,
+        checkpoint: checkpoint
       )
       unless report[:passed]
         raise ProfileValidationError.new(
@@ -856,13 +887,14 @@ module BOMEngine
     end
     private_class_method :optional_string
 
-    def self.each_point_error(source, decoded)
+    def self.each_point_error(source, decoded, work_cursor = nil)
       unless source.length == decoded.length
         yield Float::INFINITY
         return
       end
       index = 0
       while index < source.length
+        work_cursor&.step('fidelity_validation')
         dx = source[index].to_f - decoded[index].to_f
         dy = source[index + 1].to_f - decoded[index + 1].to_f
         dz = source[index + 2].to_f - decoded[index + 2].to_f
@@ -872,13 +904,14 @@ module BOMEngine
     end
     private_class_method :each_point_error
 
-    def self.each_pair_error(source, decoded)
+    def self.each_pair_error(source, decoded, work_cursor = nil)
       unless source.length == decoded.length
         yield Float::INFINITY
         return
       end
       index = 0
       while index < source.length
+        work_cursor&.step('fidelity_validation')
         du = source[index].to_f - decoded[index].to_f
         dv = source[index + 1].to_f - decoded[index + 1].to_f
         yield Math.sqrt(du * du + dv * dv)
@@ -913,10 +946,11 @@ module BOMEngine
 
     # Independent area reference from the input geometry; do not call the
     # decoder or copy its computed output into the expected value.
-    def self.geometry_face_area(positions, face)
+    def self.geometry_face_area(positions, face, work_cursor = nil)
       triangles = Array(face[:triangles])
       if triangles.length >= 3
         return triangles.each_slice(3).inject(0.0) do |total, indices|
+          work_cursor&.step('fidelity_validation')
           a, b, c = indices.map { |index| positions[index * 3, 3] }
           u = 3.times.map { |axis| b[axis] - a[axis] }
           v = 3.times.map { |axis| c[axis] - a[axis] }

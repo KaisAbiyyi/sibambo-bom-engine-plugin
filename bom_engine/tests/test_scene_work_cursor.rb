@@ -16,6 +16,7 @@ class TestSceneWorkCursor < Test::Unit::TestCase
     assert_equal({ work_units: 6, operation_label: 'scene_index', force: true }, events.last)
     256.times { cursor.step('scene_overrides') }
     assert_equal 256, events.last[:work_units]
+    assert_equal false, events.last[:force], 'unit polling lets the adaptive controller decide whether to yield'
     cursor.flush('scene_occurrences')
     assert_equal 0, events.last[:work_units]
   end

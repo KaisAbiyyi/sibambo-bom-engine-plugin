@@ -20,15 +20,15 @@ module BOMEngine
       decode(File.binread(path))
     end
 
-    def self.decode(bytes, allow_jpeg_color_map: true)
-      Decoder.new(bytes, allow_jpeg_color_map: allow_jpeg_color_map).decode
+    def self.decode(bytes, allow_jpeg_color_map: true, checkpoint: nil)
+      Decoder.new(bytes, allow_jpeg_color_map: allow_jpeg_color_map, checkpoint: checkpoint).decode
     end
 
-    def self.profile(bytes, allow_jpeg_color_map: true)
+    def self.profile(bytes, allow_jpeg_color_map: true, checkpoint: nil)
       timings = {}
       total_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       container_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      decoder = Decoder.new(bytes, allow_jpeg_color_map: allow_jpeg_color_map)
+      decoder = Decoder.new(bytes, allow_jpeg_color_map: allow_jpeg_color_map, checkpoint: checkpoint)
       timings[:container_ms] = elapsed_ms(container_started)
       logical_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       model = decoder.decode(timings)
@@ -42,9 +42,18 @@ module BOMEngine
     end
 
     class Decoder
-      def initialize(bytes, allow_jpeg_color_map: true)
+      def initialize(bytes, allow_jpeg_color_map: true, checkpoint: nil)
+        processed = 0
+        @work_cursor = if checkpoint
+          SceneVisibilityResolver::WorkCursor.new(on_checkpoint: lambda do |event|
+            processed += event[:work_units]
+            checkpoint.call(stage: :validate, processed: processed, total: 0,
+              force: event[:force], operation_label: event[:operation_label], unit: 'readback work')
+          end)
+        end
+        @work_cursor&.flush('decode_container')
         @allow_jpeg_color_map = allow_jpeg_color_map == true
-        @container = BOMC::Container.parse(bytes)
+        @container = BOMC::Container.parse(bytes, checkpoint: @work_cursor && -> { @work_cursor.step('decode_container') })
         @sections = {}
         @container[:sections].each do |section|
           raise "BOMC invalid: duplicate section type #{section[:type]}." if @sections.key?(section[:type])
@@ -67,6 +76,7 @@ module BOMEngine
           transforms = decode_codec_section(section_bytes(BOMC::SECTION_TRANSFORMS), BOMC::TransformCodec)
           definitions.each { |definition| definition[:nodes] = [] }
           instances.each_with_index do |instance, instance_index|
+            @work_cursor&.step('decode_readback')
             owner = instance[:owner_definition]
             definition = owner.nil? ? nil : definitions[owner]
             definition[:nodes] << instance_index if definition
@@ -166,6 +176,7 @@ module BOMEngine
       private
 
       def measure(timings, key)
+        @work_cursor&.flush(key.to_s)
         return yield if timings.nil?
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         result = yield
@@ -197,6 +208,7 @@ module BOMEngine
           edges: [BOMC::SECTION_VISUAL_EDGES]
         }
         mapping.each do |count_name, section_types|
+          @work_cursor&.step('decode_readback')
           next if counts[count_name].zero?
           missing = section_types.reject { |type| @sections.key?(type) }
           unless missing.empty?
@@ -223,6 +235,7 @@ module BOMEngine
         offsets.each_cons(2) { |left, right| raise 'BOMC invalid: string offsets are not monotonic.' if right < left }
         data = bytes.byteslice(12 + offsets_size, data_size)
         count.times.map do |index|
+          @work_cursor&.step('decode_readback')
           string = data.byteslice(offsets[index], offsets[index + 1] - offsets[index]).dup
           string.force_encoding(Encoding::UTF_8)
           raise 'BOMC invalid: string dictionary contains invalid UTF-8.' unless string.valid_encoding?
@@ -270,6 +283,7 @@ module BOMEngine
         hashes=version>=2 ? count.times.map{cursor.read(32).unpack1('H*')} : Array.new(count)
         cursor.finish!
         count.times.map do |index|
+          @work_cursor&.step('decode_readback')
           mode=modes[index]
           {
             name: string_value(strings, names[index]), display_name: string_value(strings, display_names[index]),
@@ -293,6 +307,7 @@ module BOMEngine
         visibility = cursor.read((count + 7) / 8).unpack('C*')
         cursor.finish!
         count.times.map do |index|
+          @work_cursor&.step('decode_readback')
           name = string_value(strings, names[index])
           { id: "tag:#{index}", stable_id: "tag:#{index}", name: name, visible: (visibility[index / 8] & (1 << (index % 8))) != 0 }
         end
@@ -307,6 +322,7 @@ module BOMEngine
         columns = 11.times.map { cursor.read(count * 4).unpack('V*') }
         cursor.finish!
         count.times.map do |index|
+          @work_cursor&.step('decode_readback')
           {
             definition: definitions[index], vertex_count: columns[0][index],
             face_start: columns[1][index], face_count: columns[2][index],
@@ -336,6 +352,7 @@ module BOMEngine
         cursor.finish!
         loop_cursor = 0
         count.times.map do |index|
+          @work_cursor&.step('decode_readback')
           lengths = loop_lengths[loop_cursor, loop_counts[index]] || []
           loop_cursor += loop_counts[index]
           {
@@ -370,6 +387,7 @@ module BOMEngine
         meshes = cursor.read_indices(mesh_width, count)
         cursor.finish!
         count.times.map do |index|
+          @work_cursor&.step('decode_readback')
           { name: string_value(strings, names[index]), kind: BOMC::DEFINITION_NAMES.fetch(kinds[index], 'unknown'), mesh: meshes[index], nodes: [] }
         end
       end
@@ -391,6 +409,7 @@ module BOMEngine
         labels = cursor.read_indices(string_width, count)
         cursor.finish!
         count.times.map do |index|
+          @work_cursor&.step('decode_readback')
           {
             id: "node:#{index}",
             stable_id: "node:#{index}",
@@ -422,6 +441,7 @@ module BOMEngine
       def decode_geometry(mesh_rows, face_rows, normals, position_bytes, topology_bytes, uv_bytes)
         raise 'BOMC invalid: normal count does not match faces.' unless normals.length == face_rows.length * 3
         mesh_rows.each_with_index.map do |mesh, mesh_index|
+          @work_cursor&.step('decode_readback')
           positions = decode_position_block(slice_block(position_bytes, mesh[:position_offset], mesh[:position_length], 'position'))
           raise "BOMC invalid: mesh #{mesh_index} vertex count." unless positions.length == mesh[:vertex_count] * 3
           topology = decode_topology_block(slice_block(topology_bytes, mesh[:topology_offset], mesh[:topology_length], 'topology'))
@@ -430,7 +450,9 @@ module BOMEngine
           loop_cursor = 0
           triangle_cursor = 0
           local_faces.each_with_index do |face, local_index|
+            @work_cursor&.step('decode_readback')
             loops = face[:loop_lengths].map do |length|
+              @work_cursor&.step('decode_readback')
               loop_values = topology[:loops][loop_cursor, length]
               raise "BOMC invalid: mesh #{mesh_index} loop range." unless loop_values && loop_values.length == length
               loop_cursor += length
@@ -508,6 +530,7 @@ module BOMEngine
         cursor = 0
         previous = 0
         values = count.times.map do
+          @work_cursor&.step('decode_readback')
           delta, cursor = BOMC::Binary.read_zigzag(bytes, cursor)
           previous += delta
           raise 'BOMC invalid: topology index is negative.' if previous < 0
@@ -520,11 +543,14 @@ module BOMEngine
       def assign_uv(faces, values, mesh_index)
         cursor = 0
         faces.each do |face|
+          @work_cursor&.step('decode_readback')
           uv = {}
           [:front, :back].each do |side|
+            @work_cursor&.step('decode_readback')
             present = side == :front ? face[:has_front_uv] : face[:has_back_uv]
             next unless present
             loops = face[:loop_lengths].map do |length|
+              @work_cursor&.step('decode_readback')
               scalar_count = length * 2
               loop_values = values[cursor, scalar_count]
               raise "BOMC invalid: mesh #{mesh_index} UV range." unless loop_values && loop_values.length == scalar_count
@@ -551,6 +577,7 @@ module BOMEngine
         cursor.finish!
         endpoint_cursor = 0
         edges = count.times.map do |index|
+          @work_cursor&.step('decode_readback')
           first, endpoint_cursor = BOMC::Binary.read_varuint(endpoint_bytes, endpoint_cursor)
           second, endpoint_cursor = BOMC::Binary.read_varuint(endpoint_bytes, endpoint_cursor)
           {
@@ -560,6 +587,7 @@ module BOMEngine
         end
         raise 'BOMC invalid: trailing visual edge bytes.' unless endpoint_cursor == endpoint_bytes.bytesize
         mesh_rows.each_with_index do |mesh, index|
+          @work_cursor&.step('decode_readback')
           local = edges[mesh[:edge_start], mesh[:edge_count]]
           raise "BOMC invalid: mesh #{index} edge range." unless local && local.length == mesh[:edge_count]
           meshes[index][:edges] = local
@@ -580,6 +608,7 @@ module BOMEngine
         lengths = cursor.read(count * 8).unpack('Q<*')
         cursor.finish!
         count.times.map do |index|
+          @work_cursor&.step('decode_readback')
           offset = offsets[index]
           length = lengths[index]
           raise "BOMC invalid: texture #{index} outside blob section." if offset + length > blob_bytes.bytesize
@@ -623,6 +652,7 @@ module BOMEngine
         text = cursor.read_indices(string_width, count)
         cursor.finish!
         count.times.map do |index|
+          @work_cursor&.step('decode_readback')
           {
             instance: instances[index], kind: BOMC::NODE_NAMES.fetch(kinds[index], 'unknown'),
             position: [x[index], y[index], z[index]], width_m: widths[index], height_m: heights[index],
@@ -639,6 +669,7 @@ module BOMEngine
         categories = { 1 => :materials, 2 => :tags, 3 => :meshes, 4 => :faces, 5 => :definitions, 6 => :instances, 7 => :edges }
         result = {}
         count.times do
+          @work_cursor&.step('decode_readback')
           category = cursor.read_u8
           field = cursor.read_u8
           row = cursor.read_varuint
@@ -664,22 +695,28 @@ module BOMEngine
         expected.each { |key, value| raise "BOMC invalid: #{key} count mismatch." unless actual[key] == value }
         raise 'BOMC invalid: root node reference.' unless model[:root_node] < instances.length && instances[model[:root_node]][:kind] == 'root'
         meshes.each_with_index do |mesh, mesh_index|
+          @work_cursor&.step('decode_readback')
           validate_index!(mesh[:definition], definitions.length, "mesh #{mesh_index} definition")
           mesh[:faces].each_with_index do |face, face_index|
+            @work_cursor&.step('decode_readback')
             [face[:front_material], face[:back_material]].compact.each { |index| validate_index!(index, materials.length, "face #{face_index} material") }
             validate_index!(face[:tag], tags.length, "face #{face_index} tag") unless face[:tag].nil?
             (face[:outer] + face[:holes].flatten + face[:triangles]).each do |index|
+              @work_cursor&.step('decode_readback')
               validate_index!(index, mesh[:positions].length / 3, "mesh #{mesh_index} topology")
             end
           end
           mesh[:edges].each do |edge|
+            @work_cursor&.step('decode_readback')
             edge[:vertices].each { |index| validate_index!(index, mesh[:positions].length / 3, "mesh #{mesh_index} edge") }
           end
         end
         definitions.each_with_index do |definition, index|
+          @work_cursor&.step('decode_readback')
           validate_index!(definition[:mesh], meshes.length, "definition #{index} mesh") unless definition[:mesh].nil?
         end
         instances.each_with_index do |instance, index|
+          @work_cursor&.step('decode_readback')
           if ['root', 'component_instance', 'group_instance'].include?(instance[:kind])
             validate_index!(instance[:definition], definitions.length, "instance #{index} definition")
           elsif !instance[:definition].nil?
@@ -691,9 +728,11 @@ module BOMEngine
           validate_index!(instance[:tag], tags.length, "instance #{index} tag") unless instance[:tag].nil?
         end
         materials.each_with_index do |material, index|
+          @work_cursor&.step('decode_readback')
           validate_index!(material[:texture], textures.length, "material #{index} texture") unless material[:texture].nil?
         end
         fallback.each_with_index do |record, index|
+          @work_cursor&.step('decode_readback')
           validate_index!(record[:instance], instances.length, "fallback #{index} instance")
           validate_index!(record[:texture], textures.length, "fallback #{index} texture") unless record[:texture].nil?
           unless instances[record[:instance]][:kind] == record[:kind]
@@ -715,6 +754,7 @@ module BOMEngine
 
         total = 0.0
         triangles.each_slice(3) do |t|
+          @work_cursor&.step('decode_readback')
           next unless t.length == 3
           p0 = positions[t[0] * 3, 3]
           p1 = positions[t[1] * 3, 3]
@@ -746,6 +786,7 @@ module BOMEngine
         return 0.0 if indices.length < 3
         vector = [0.0, 0.0, 0.0]
         indices.each_with_index do |index, cursor|
+          @work_cursor&.step('decode_readback')
           following = indices[(cursor + 1) % indices.length]
           current = positions[index * 3, 3]
           after = positions[following * 3, 3]
@@ -786,6 +827,7 @@ module BOMEngine
       def decode_varuint_column(bytes, count, label)
         cursor = 0
         values = count.times.map do
+          @work_cursor&.step('decode_readback')
           value, cursor = BOMC::Binary.read_varuint(bytes, cursor)
           value
         end
@@ -815,12 +857,14 @@ module BOMEngine
         tag_stable_ids = []
         if version >= 3
           tag_count.times do
+            @work_cursor&.step('decode_readback')
             str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
             tag_stable_ids << string_value(strings, str_idx)
           end
         end
 
         scenes_count.times.map do
+          @work_cursor&.step('decode_readback')
           scene_header = bytes.byteslice(cursor, 68)
           cursor += 68
           id_idx, name_idx, desc_idx, sig_idx, flags,
@@ -847,6 +891,7 @@ module BOMEngine
           visible_tag_indices = []
           hidden_tag_indices = []
           tag_count.times do |idx|
+            @work_cursor&.step('decode_readback')
             byte_idx = idx / 8
             bit_idx = idx % 8
             if (bitset_bytes[byte_idx] & (1 << bit_idx)) != 0
@@ -860,6 +905,7 @@ module BOMEngine
           hidden_nodes = []
           resolved_hidden_node_ids = []
           hidden_nodes_count.times do
+            @work_cursor&.step('decode_readback')
             node_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
             hidden_nodes << node_idx
             if version >= 3
@@ -872,6 +918,7 @@ module BOMEngine
           visible_nodes = []
           resolved_visible_node_ids = []
           visible_nodes_count.times do
+            @work_cursor&.step('decode_readback')
             node_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
             visible_nodes << node_idx
             if version >= 3
@@ -886,12 +933,14 @@ module BOMEngine
           if version >= 2
             unresolved_hidden_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
             unresolved_hidden_count.times do
+              @work_cursor&.step('decode_readback')
               str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
               unresolved_hidden_overrides << string_value(strings, str_idx)
             end
 
             unresolved_visible_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
             unresolved_visible_count.times do
+              @work_cursor&.step('decode_readback')
               str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
               unresolved_visible_overrides << string_value(strings, str_idx)
             end
@@ -908,6 +957,7 @@ module BOMEngine
             read_primitive_rows = lambda do |index_key, id_key, unresolved_key, limit|
               count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
               count.times do
+                @work_cursor&.step('decode_readback')
                 idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
                 raise 'BOMC invalid: scene primitive index.' if !limit.nil? && idx >= limit
                 str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
@@ -916,6 +966,7 @@ module BOMEngine
               end
               unresolved_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
               unresolved_count.times do
+                @work_cursor&.step('decode_readback')
                 str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
                 id = string_value(strings, str_idx)
                 primitive[id_key] << id
@@ -928,11 +979,13 @@ module BOMEngine
             read_primitive_rows.call(:visible_edge_indices, :visible_edge_overrides, :unresolved_visible_edge_overrides, edge_count)
             unresolved_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
             unresolved_count.times do
+              @work_cursor&.step('decode_readback')
               str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
               primitive[:unresolved_primitive_overrides] << string_value(strings, str_idx)
             end
             section_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
             section_count.times do
+              @work_cursor&.step('decode_readback')
               str_idx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
               primitive[:active_section_plane_ids] << string_value(strings, str_idx)
             end
@@ -940,6 +993,7 @@ module BOMEngine
               clip_count, cursor = BOMC::Binary.read_varuint(bytes, cursor)
               primitive[:active_clip_plane_indices] = []
               clip_count.times do
+                @work_cursor&.step('decode_readback')
                 cidx, cursor = BOMC::Binary.read_varuint(bytes, cursor)
                 primitive[:active_clip_plane_indices] << cidx
               end
@@ -947,9 +1001,11 @@ module BOMEngine
           end
 
           visible_tag_ids = visible_tag_indices.map do |i|
+            @work_cursor&.step('decode_readback')
             (version >= 3 && tag_stable_ids[i]) ? tag_stable_ids[i] : (tags[i] ? tags[i][:stable_id] : "tag:#{i}")
           end
           hidden_tag_ids = hidden_tag_indices.map do |i|
+            @work_cursor&.step('decode_readback')
             (version >= 3 && tag_stable_ids[i]) ? tag_stable_ids[i] : (tags[i] ? tags[i][:stable_id] : "tag:#{i}")
           end
 

@@ -72,14 +72,14 @@ module BOMEngine
         advance.call(:SIZE_GATE, result[:candidate_bytes])
         advance.call(:VALIDATE, result[:candidate_bytes])
         validation = PerformanceTrace.stage(:validate) do
-          begin
-            context.fetch(:validate).call(result, graph)
-          rescue ArgumentError => e
-            if e.message.include?('wrong number of arguments')
-              context.fetch(:validate).call(result)
-            else
-              raise
-            end
+          validator = context.fetch(:validate)
+          positional = validator.parameters.count { |kind, _| [:req, :opt].include?(kind) }
+          if positional >= 3 || validator.parameters.any? { |kind, _| kind == :rest }
+            validator.call(result, graph, checkpoint)
+          elsif positional >= 2
+            validator.call(result, graph)
+          else
+            validator.call(result)
           end
         end
         if context[:publish]

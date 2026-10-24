@@ -25,13 +25,17 @@ module BOMEngine
         return unless @on_checkpoint
         @pending += 1
         @total += 1
-        flush(operation_label) if @pending >= 256 || @clock.call - @last_emission >= 0.006
+        time_due = @clock.call - @last_emission >= 0.006
+        # Unit polling checks cancellation/progress without forcing a Windows
+        # timer round trip for every tiny batch. The controller still enforces
+        # its unchanged time/item budgets; elapsed work forces a timely yield.
+        flush(operation_label, force: time_due) if @pending >= 256 || time_due
       end
 
-      def flush(operation_label)
+      def flush(operation_label, force: true)
         return unless @on_checkpoint
         begin
-          @on_checkpoint.call(work_units: @pending, operation_label: operation_label, force: true)
+          @on_checkpoint.call(work_units: @pending, operation_label: operation_label, force: force)
         rescue StandardError => error
           raise if PerformanceTrace.cancellation_error?(error)
           raise CheckpointError, "Scene checkpoint failed: #{error.message}", cause: error

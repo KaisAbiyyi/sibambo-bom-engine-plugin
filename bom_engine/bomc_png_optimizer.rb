@@ -29,7 +29,7 @@ module BOMEngine
       end
 
       best = candidates.map do |candidate|
-        compressed = deflate_best(candidate[:raw])
+        compressed = deflate_best(candidate[:raw], checkpoint)
         candidate.merge(compressed: compressed)
       end.min_by { |candidate| candidate[:compressed].bytesize }
 
@@ -96,7 +96,7 @@ module BOMEngine
         if filter == 0
           rows[y] = raw.byteslice(base + 1, stride)
           previous = rows[y].bytes
-          checkpoint.call((y+1)*width, width*height) if checkpoint && ((y & 31).zero? || y+1 == height)
+          checkpoint.call((y+1)*width, width*height) if checkpoint
           next
         end
         row = raw.byteslice(base + 1, stride).bytes
@@ -116,7 +116,7 @@ module BOMEngine
         end
         rows[y] = row.pack('C*')
         previous = row
-        checkpoint.call((y+1)*width, width*height) if checkpoint && ((y & 31).zero? || y+1 == height)
+        checkpoint.call((y+1)*width, width*height) if checkpoint
       end
       rows
     end
@@ -125,37 +125,61 @@ module BOMEngine
     def refilter_adaptive(rows, width, height, bpp, checkpoint)
       stride = width * bpp
       previous = nil
+      previous_bytes = nil
       out = +''.b
-      rows.each_with_index do |row_string,y|
-        row = row_string.bytes
-        previous_bytes = previous ? previous.bytes : nil
-        filtered = [row, Array.new(stride), Array.new(stride), Array.new(stride), Array.new(stride)]
-        scores = [0,0,0,0,0]
-        x = 0
-        while x < stride
-          value = row[x]
-          left = x >= bpp ? row[x-bpp] : 0
-          up = previous_bytes ? previous_bytes[x] : 0
-          upper_left = previous_bytes && x >= bpp ? previous_bytes[x-bpp] : 0
-          b1=(value-left)&255
-          b2=(value-up)&255
-          b3=(value-((left+up)/2))&255
-          b4=(value-paeth(left,up,upper_left))&255
-          filtered[1][x]=b1; filtered[2][x]=b2
-          filtered[3][x]=b3; filtered[4][x]=b4
-          scores[0]+=value<128 ? value : 256-value
-          scores[1]+=b1<128 ? b1 : 256-b1
-          scores[2]+=b2<128 ? b2 : 256-b2
-          scores[3]+=b3<128 ? b3 : 256-b3
-          scores[4]+=b4<128 ? b4 : 256-b4
-          x+=1
+      # Repeating row pairs are common in flat/pattern textures. Keep a small,
+      # invocation-local cache of exact inputs and their exact filtered output.
+      row_cache = {}
+      cache_bytes = 0
+      rows.each_with_index do |row_string, y|
+        key = [previous, row_string]
+        encoded = row_cache[key]
+        unless encoded
+          row = row_string.bytes
+          s0 = s1 = s2 = s3 = s4 = 0
+          f1, f2, f3, f4 = Array.new(4) { Array.new(stride) }
+          x = 0
+          while x < stride
+            value = row[x]
+            left = x >= bpp ? row[x-bpp] : 0
+            up = previous_bytes ? previous_bytes[x] : 0
+            upper_left = previous_bytes && x >= bpp ? previous_bytes[x-bpp] : 0
+            # Same Paeth distances/tie ordering, without the per-byte method
+            # call; scalar scores avoid repeated Array updates in the hot loop.
+            pa = (up-upper_left).abs
+            pb = (left-upper_left).abs
+            pc = (left+up-2*upper_left).abs
+            predictor = pa <= pb && pa <= pc ? left : (pb <= pc ? up : upper_left)
+            b1 = (value-left)&255
+            b2 = (value-up)&255
+            b3 = (value-((left+up)/2))&255
+            b4 = (value-predictor)&255
+            f1[x] = b1; f2[x] = b2; f3[x] = b3; f4[x] = b4
+            s0 += value < 128 ? value : 256-value
+            s1 += b1 < 128 ? b1 : 256-b1
+            s2 += b2 < 128 ? b2 : 256-b2
+            s3 += b3 < 128 ? b3 : 256-b3
+            s4 += b4 < 128 ? b4 : 256-b4
+            x += 1
+            checkpoint.call(y*width+x/bpp, width*height) if checkpoint && (x & 4095).zero?
+          end
+          scores = [s0,s1,s2,s3,s4]
+          best_type = (0..4).min_by { |type| [scores[type],type] }
+          if best_type.zero?
+            encoded = "\0".b + row_string
+          else
+            filtered = [row, f1, f2, f3, f4][best_type]
+            encoded = best_type.chr.b + filtered.pack('C*')
+          end
+          if row_cache.length < 32 && cache_bytes + stride*3 <= 2_097_152
+            row_cache[key] = encoded
+            cache_bytes += stride*3
+          end
         end
-        best_type=(0..4).min_by { |type| [scores[type],type] }
-        best_bytes=filtered[best_type]
-
-        out << best_type.chr << best_bytes.pack('C*')
+        out << encoded
         previous = row_string
-        checkpoint.call((y+1)*width, width*height) if checkpoint && ((y & 31).zero? || y+1 == height)
+        previous_bytes = row_string.bytes
+        checkpoint.call((y+1)*width, width*height) if checkpoint
       end
       out
     end
@@ -170,12 +194,20 @@ module BOMEngine
     end
     private_class_method :paeth
 
-    def deflate_best(raw)
+    def deflate_best(raw, checkpoint = nil)
       results = []
       [Zlib::DEFAULT_STRATEGY, (Zlib.const_defined?(:FILTERED) ? Zlib::FILTERED : Zlib::DEFAULT_STRATEGY)].uniq.each do |strategy|
         stream = Zlib::Deflate.new(Zlib::BEST_COMPRESSION, Zlib::MAX_WBITS, Zlib::DEF_MEM_LEVEL, strategy)
         begin
-          results << stream.deflate(raw, Zlib::FINISH)
+          compressed = +''.b
+          offset = 0
+          while offset < raw.bytesize
+            checkpoint.call(offset, raw.bytesize) if checkpoint
+            compressed << stream.deflate(raw.byteslice(offset, 32_768), Zlib::NO_FLUSH)
+            offset += 32_768
+          end
+          compressed << stream.finish
+          results << compressed
         ensure
           stream.close rescue nil
         end
