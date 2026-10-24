@@ -315,10 +315,11 @@ module BOMEngine
       )
     end
 
-    def stage_without_performance_trace(texture:, directory:, basename:, source_path:, profile: :visual, semantic_class: :class_b, policy: nil, image_rep_loader: nil, allow_jpeg_color_map: false, allow_semantic_colorize: true, record_reference_pixel_hash: false, color_map_budget: nil, prepared_color_maps: nil, candidate_cache: nil, appearance: nil, &checkpoint)
+    def stage_without_performance_trace(texture:, directory:, basename:, source_path:, profile: :visual, semantic_class: :class_b, policy: nil, image_rep_loader: nil, allow_jpeg_color_map: false, allow_semantic_colorize: true, record_reference_pixel_hash: false, color_map_budget: nil, prepared_color_maps: nil, candidate_cache: nil, appearance: nil, cooperative_png: false, &checkpoint)
       stage_started = monotonic_ms
       timings = {}
       png_path = File.join(directory, "#{basename}.png")
+      png_requires_verification = false
       loader = image_rep_loader || lambda { |path| Sketchup::ImageRep.new(path) }
       semantic_diagnostics = {}
       if allow_semantic_colorize && profile.to_s == 'exact' && appearance && appearance[:material_type].to_i == 2
@@ -337,10 +338,34 @@ module BOMEngine
         return stage_result(prepared.fetch(:evidence).merge(path: prepared.fetch(:path),
           semantic_fallback: semantic_diagnostics), timings, stage_started) if prepared
       end
-      written = measure_phase(timings, :png_write) { texture.write(png_path, true) }
+      # ImageRep is obtained on the SketchUp thread. Only detached bytes enter
+      # the cancellable helper; texture.write's PNG serializer cannot yield.
+      reference = nil
+      staging_backend = :sdk_png
+      written = measure_phase(timings, :png_write) do
+        if cooperative_png && profile.to_s == 'exact' && BOMCPngWorker.available?
+          png_requires_verification = true
+          checkpoint.call(0, 1, :reference_image_rep_sdk) if checkpoint
+          reference = texture.image_rep(true)
+          checkpoint.call(0, 1, :png_frame_capture) if checkpoint
+          if BOMCPngWorker.write_frame(reference, png_path, checkpoint: checkpoint)
+            staging_backend = :detached_png_worker
+            checkpoint.call(0, 1, :png_frame_decode_sdk) if checkpoint
+            quality = compare(reference, loader.call(png_path), &checkpoint)
+            raise 'Detached PNG staging changed displayed pixels' unless quality[:compatible] &&
+              quality[:alpha_preserved] && quality[:max_channel_error] == 0 && quality[:mean_squared_error] == 0.0
+            png_requires_verification = false
+            true
+          end
+        else
+          checkpoint.call(0, 1, :png_write_sdk) if checkpoint
+          texture.write(png_path, true)
+        end
+      end
       raise 'SketchUp could not stage the lossless PNG texture' unless written && File.file?(png_path)
 
-      reference = measure_phase(timings, :reference_image_rep) { texture.image_rep(true) }
+      checkpoint.call(0, 1, :reference_image_rep_sdk) if checkpoint
+      reference ||= measure_phase(timings, :reference_image_rep) { texture.image_rep(true) }
       reference_pixel_hash = measure_phase(timings, :reference_pixel_sha256) { reference_pixel_sha256(reference, &checkpoint) } if record_reference_pixel_hash
       native_jpeg = native_jpeg_path?(source_path)
       is_pixel_lossless = (policy == :pixel_lossless || profile.to_s.downcase.to_sym == :exact)
@@ -353,6 +378,7 @@ module BOMEngine
         native_jpeg: native_jpeg,
         reason: is_pixel_lossless ? :pixel_lossless_policy : :jpeg_not_evaluated
       }
+      evidence[:png_staging_backend] = staging_backend
       evidence[:reference_pixel_sha256] = reference_pixel_hash if reference_pixel_hash
       evidence[:semantic_fallback] = semantic_diagnostics unless semantic_diagnostics.empty?
 
@@ -361,19 +387,23 @@ module BOMEngine
       if is_pixel_lossless
         if native_jpeg
           evidence = measure_phase(timings, :native_jpeg_evaluation) do
+            checkpoint.call(0, 1, :native_jpeg_evaluation) if checkpoint
             select_native_jpeg(texture, png_path, reference, evidence, loader, &checkpoint)
           end
         elsif profile.to_s.downcase.to_sym == :exact
           evidence = measure_phase(timings, :native_lossless_evaluation) do
+            checkpoint.call(0, 1, :native_lossless_evaluation) if checkpoint
             select_native_lossless(texture, source_path, png_path, reference, evidence, loader, &checkpoint)
           end
         end
         if profile.to_s.downcase.to_sym == :exact
           evidence = measure_phase(timings, :png_repack) do
+            checkpoint.call(0, 1, :png_repack) if checkpoint
             select_optimized_png(png_path, reference, evidence, loader, &checkpoint)
           end
         end
         evidence = measure_phase(timings, :webp_search) do
+            checkpoint.call(0, 1, :webp_search) if checkpoint
           adaptive_webp(png_path, reference, evidence, loader, profile,
             semantic_class, native_jpeg, pixel_lossless: true,
             expanded_lossless_search: profile.to_s.downcase.to_sym == :exact,
@@ -441,6 +471,9 @@ module BOMEngine
       stage_result(evidence, timings, stage_started)
     rescue StandardError => error
       raise if cancellation_error?(error)
+      # The legacy fallback trusts the SDK serializer. It must never accept
+      # a new detached PNG whose full displayed-pixel verification failed.
+      raise if png_requires_verification
       if defined?(png_path) && File.file?(png_path)
         {
           path: png_path,
@@ -458,7 +491,7 @@ module BOMEngine
       end
     end
 
-    def stage(texture:, directory:, basename:, source_path:, profile: :visual, semantic_class: :class_b, policy: nil, image_rep_loader: nil, allow_jpeg_color_map: false, allow_semantic_colorize: true, record_reference_pixel_hash: false, color_map_budget: nil, prepared_color_maps: nil, candidate_cache: nil, appearance: nil, &checkpoint)
+    def stage(texture:, directory:, basename:, source_path:, profile: :visual, semantic_class: :class_b, policy: nil, image_rep_loader: nil, allow_jpeg_color_map: false, allow_semantic_colorize: true, record_reference_pixel_hash: false, color_map_budget: nil, prepared_color_maps: nil, candidate_cache: nil, appearance: nil, cooperative_png: false, &checkpoint)
       PerformanceTrace.stage(
         :texture_optimizer,
         details: { profile: profile, semantic_class: semantic_class, basename: basename }
@@ -479,6 +512,7 @@ module BOMEngine
           prepared_color_maps: prepared_color_maps,
           candidate_cache: candidate_cache,
           appearance: appearance,
+          cooperative_png: cooperative_png,
           &checkpoint
         )
         record_performance_summary(result)
@@ -509,8 +543,11 @@ module BOMEngine
       deltas = appearance[:colorize_deltas]
       return nil unless ['shift', 'tint'].include?(mode) && deltas
 
+      checkpoint.call(0, 1, :semantic_uncolorized_image_sdk) if checkpoint
       uncolorized = texture.image_rep(false)
+      checkpoint.call(0, 1, :semantic_colorized_image_sdk) if checkpoint
       colorized = texture.image_rep(true)
+      checkpoint.call(0, 1, :semantic_verify) if checkpoint
       pixel_count = uncolorized.width.to_i * uncolorized.height.to_i
       verify_budget = semantic_verify_budget_seconds(pixel_count)
       started = monotonic_ms
@@ -537,6 +574,7 @@ module BOMEngine
       extensions.each do |extension|
         path = File.join(directory, "#{basename}.semantic#{extension}")
         begin
+          checkpoint.call(0, 1, :semantic_native_write_sdk) if checkpoint
           unless texture.write(path, false) && File.file?(path) && File.size(path) > 0
             attempts << { codec: :semantic_native, extension: extension, reason: :unavailable }
             next
@@ -700,14 +738,14 @@ module BOMEngine
       bytes = File.size(path)
       if bytes >= File.size(baseline[:path])
         return baseline.merge(attempts: attempts + [{codec: :png_repack, reason: :not_smaller_than_current,
-          bytes: bytes, strategy: optimized[:strategy]}])
+          bytes: bytes, strategy: optimized[:strategy], filter_backend: optimized[:filter_backend], worker_error: optimized[:worker_error]}])
       end
 
       measured = compare(reference, loader.call(path), &checkpoint)
       unless measured[:compatible] == true && measured[:alpha_preserved] == true &&
           measured[:max_channel_error] == 0 && measured[:mean_squared_error] == 0.0
         return baseline.merge(attempts: attempts + [{codec: :png_repack, reason: :pixel_mismatch,
-          bytes: bytes, strategy: optimized[:strategy], quality: measured}])
+          bytes: bytes, strategy: optimized[:strategy], filter_backend: optimized[:filter_backend], worker_error: optimized[:worker_error], quality: measured}])
       end
 
       baseline.merge(path: path, selected: :optimized_png_candidate, candidate_media_type: :png,
@@ -715,7 +753,7 @@ module BOMEngine
         alpha_preserved: true, savings_bytes: File.size(png_path)-bytes,
         savings_ratio: 1.0-bytes.to_f/File.size(png_path),
         attempts: attempts + [{codec: :png_repack, reason: :accepted, bytes: bytes,
-          strategy: optimized[:strategy], source_bytes: optimized[:source_bytes]}])
+          strategy: optimized[:strategy], filter_backend: optimized[:filter_backend], worker_error: optimized[:worker_error], source_bytes: optimized[:source_bytes]}])
     rescue StandardError => error
       raise if cancellation_error?(error)
       baseline.merge(attempts: attempts + [{codec: :png_repack, reason: :candidate_error,

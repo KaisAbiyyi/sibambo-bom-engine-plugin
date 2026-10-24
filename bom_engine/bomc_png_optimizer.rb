@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'zlib'
+require_relative 'bomc_png_worker'
 
 module BOMEngine
   # Lossless PNG repacker used only as another Exact texture candidate.
@@ -17,21 +18,33 @@ module BOMEngine
       parsed = parse(bytes)
       return nil unless parsed
 
-      original_raw = Zlib::Inflate.inflate(parsed[:idat])
+      original_raw = inflate_chunks(parsed[:idat], checkpoint)
       expected = parsed[:height] * (parsed[:stride] + 1)
       return nil unless original_raw.bytesize == expected
 
       candidates = [{ label: :redeflate_existing_filters, raw: original_raw }]
+      filter_backend = :ruby
+      worker_error = nil
       if parsed[:pixels] <= ADAPTIVE_FILTER_PIXELS
-        pixels = unfilter(original_raw, parsed[:width], parsed[:height], parsed[:bpp], checkpoint)
-        adaptive = refilter_adaptive(pixels, parsed[:width], parsed[:height], parsed[:bpp], checkpoint)
+        adaptive = nil
+        if parsed[:pixels] >= 262_144 && BOMCPngWorker.available?
+          begin
+            adaptive = BOMCPngWorker.filter(raw: original_raw, width: parsed[:width], height: parsed[:height],
+              bpp: parsed[:bpp], directory: File.dirname(output_path), checkpoint: checkpoint)
+            filter_backend = :windows_worker if adaptive
+          rescue IOError, SystemCallError => error
+            # An unavailable optional accelerator must not remove a candidate.
+            worker_error = "#{error.class}: #{error.message}"
+          end
+        end
+        unless adaptive
+          pixels = unfilter(original_raw, parsed[:width], parsed[:height], parsed[:bpp], checkpoint)
+          adaptive = refilter_adaptive(pixels, parsed[:width], parsed[:height], parsed[:bpp], checkpoint)
+        end
         candidates << { label: :adaptive_filters, raw: adaptive }
       end
 
-      best = candidates.map do |candidate|
-        compressed = deflate_best(candidate[:raw], checkpoint)
-        candidate.merge(compressed: compressed)
-      end.min_by { |candidate| candidate[:compressed].bytesize }
+      best = compress_candidates(candidates, checkpoint).min_by { |candidate| candidate[:compressed].bytesize }
 
       rebuilt = rebuild(parsed[:chunks], best[:compressed])
       return nil unless rebuilt.bytesize < bytes.bytesize
@@ -43,7 +56,9 @@ module BOMEngine
         source_bytes: bytes.bytesize,
         savings_bytes: bytes.bytesize - rebuilt.bytesize,
         strategy: best[:label],
-        adaptive_filters: best[:label] == :adaptive_filters
+        adaptive_filters: best[:label] == :adaptive_filters,
+        filter_backend: filter_backend,
+        worker_error: worker_error
       }
     rescue Zlib::Error, ArgumentError, TypeError, IOError, SystemCallError
       nil
@@ -193,6 +208,75 @@ module BOMEngine
       pa <= pb && pa <= pc ? a : (pb <= pc ? b : c)
     end
     private_class_method :paeth
+
+    def inflate_chunks(bytes, checkpoint)
+      stream = Zlib::Inflate.new
+      begin
+        output = +''.b
+        offset = 0
+        while offset < bytes.bytesize
+          checkpoint.call(0, bytes.bytesize, :png_inflate) if checkpoint
+          output << stream.inflate(bytes.byteslice(offset, 32_768))
+          offset += 32_768
+        end
+        output << stream.finish
+        output
+      ensure
+        stream.close
+      end
+    end
+    private_class_method :inflate_chunks
+
+    # Zlib's native compression releases Ruby's GVL. Four bounded, owned
+    # workers evaluate the SAME raw/filter/strategy combinations concurrently.
+    # They see detached immutable strings only, never SDK objects or callbacks.
+    # The caller alone polls/yields and owns cancellation and worker cleanup.
+    def compress_candidates(candidates, checkpoint)
+      return candidates.map { |candidate| candidate.merge(compressed: deflate_best(candidate[:raw], checkpoint)) } if
+        candidates.all? { |candidate| candidate[:raw].bytesize < 1_048_576 }
+
+      strategies = [Zlib::DEFAULT_STRATEGY, Zlib::FILTERED].uniq
+      results = Array.new(candidates.length * strategies.length)
+      errors = Array.new(results.length)
+      cancelled = false
+      threads = []
+      candidates.each_with_index do |candidate, candidate_index|
+        raw = candidate[:raw].freeze
+        strategies.each_with_index do |strategy, strategy_index|
+          slot = candidate_index * strategies.length + strategy_index
+          threads << Thread.new do
+            stream = nil
+            begin
+              stream = Zlib::Deflate.new(Zlib::BEST_COMPRESSION, Zlib::MAX_WBITS, Zlib::DEF_MEM_LEVEL, strategy)
+              compressed = +''.b; offset = 0
+              while offset < raw.bytesize
+                break if cancelled
+                compressed << stream.deflate(raw.byteslice(offset, 32_768), Zlib::NO_FLUSH)
+                offset += 32_768
+              end
+              results[slot] = compressed << stream.finish unless cancelled
+            rescue StandardError => error
+              errors[slot] = error
+            ensure
+              stream.close if stream
+            end
+          end
+        end
+      end
+      while threads.any?(&:alive?)
+        checkpoint.call(0, 0, :png_deflate_workers) if checkpoint
+        sleep(0.005)
+      end
+      raise errors.compact.first if errors.any?
+      candidates.each_with_index.map do |candidate, index|
+        compressed = results.slice(index * strategies.length, strategies.length).min_by(&:bytesize)
+        candidate.merge(compressed: compressed)
+      end
+    ensure
+      cancelled = true
+      Array(threads).each(&:join)
+    end
+    private_class_method :compress_candidates
 
     def deflate_best(raw, checkpoint = nil)
       results = []

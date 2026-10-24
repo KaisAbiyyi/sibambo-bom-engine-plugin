@@ -571,13 +571,13 @@ module BOMEngine
     end
     private_class_method :normalize_profile
 
-    def compute_material_classes(model)
+    def compute_material_classes(model, checkpoint: nil)
       return {} if model.nil?
       if model.respond_to?(:material_classes)
         supplied_classes = model.material_classes
         return supplied_classes if supplied_classes.is_a?(Hash)
       end
-      return compute_material_classes_from_graph(model) if model.is_a?(Hash)
+      return compute_material_classes_from_graph(model, checkpoint: checkpoint) if model.is_a?(Hash)
 
       # Hash-backed sets keep at most A/B/C per material and one membership
       # per texture/material pair, regardless of the number of faces using it.
@@ -585,7 +585,10 @@ module BOMEngine
       texture_materials = Hash.new { |h, k| h[k] = {} }
       visited_definitions = {}
 
+      classified_count = 0
       classify_entity = lambda do |entity, parent_role = nil|
+        classified_count += 1
+        checkpoint.call(stage: :snapshot_materials, processed: classified_count, total: 0, operation_label: 'material classification') if checkpoint
         begin
           current_role = nil
           if entity.respond_to?(:name)
@@ -620,6 +623,7 @@ module BOMEngine
             end
           end
         rescue StandardError => error
+          raise if error.class.ancestors.any? { |ancestor| ancestor.name.to_s.end_with?('Cancelled', 'ModelChanged') }
           Logger.warn("Skipping material classification for #{entity.class}: #{error.message}") if defined?(Logger)
         end
       end
@@ -645,7 +649,7 @@ module BOMEngine
       result
     end
 
-    def compute_material_classes_from_graph(graph)
+    def compute_material_classes_from_graph(graph, checkpoint: nil)
       material_usages = Hash.new { |h, k| h[k] = {} }
       texture_materials = Hash.new { |h, k| h[k] = {} }
 
@@ -661,7 +665,8 @@ module BOMEngine
       end
 
       Array(graph[:meshes]).each do |mesh|
-        Array(mesh[:faces]).each do |face|
+        Array(mesh[:faces]).each_with_index do |face, face_index|
+          checkpoint.call(stage: :snapshot_materials, processed: face_index, total: 0, operation_label: 'material classification') if checkpoint
           role = face[:semantic_role] || face[:role]
           klass = BOMCGeometryPolicy.classify_role(role)
           [face[:front_material], face[:back_material], face[:material]].compact.each do |m_ref|
@@ -740,7 +745,7 @@ module BOMEngine
       end
       effective_cache[:scope_digest] = source_info[:sha256].to_s if source_info && source_info[:sha256]
 
-      material_classes = PerformanceTrace.stage(:material_classification) { compute_material_classes(model) }
+      material_classes = PerformanceTrace.stage(:material_classification) { compute_material_classes(model, checkpoint: checkpoint) }
       extracted_materials = PerformanceTrace.stage(:material_extraction, sample_resources: true) do
         MaterialExtractor.extract(
           model,
@@ -754,7 +759,8 @@ module BOMEngine
           allow_semantic_colorize: allow_semantic_colorize,
           record_reference_pixel_hash: texture_representation.to_sym == :portable,
           prepared_color_maps: prepared_color_maps,
-          candidate_cache: effective_cache
+          candidate_cache: effective_cache,
+          cooperative_png: true
         )
       end
       entity_total = model.entities.respond_to?(:length) ? model.entities.length : 0
@@ -790,7 +796,7 @@ module BOMEngine
       end
       PerformanceTrace.stage(:texture_attach) do
         attach_staged_textures(graph, extracted_materials, texture_directory, profile: profile,
-          texture_representation: texture_representation)
+          texture_representation: texture_representation, checkpoint: checkpoint)
       end
       texture_evidence = Array(graph[:materials]).map do |material|
         texture = material[:texture]
@@ -842,11 +848,13 @@ module BOMEngine
     end
     private_class_method :validate_compiled_result
 
-    def attach_staged_textures(graph, extracted_materials, texture_directory, profile: DEFAULT_PROFILE, texture_representation: :bomc)
+    def attach_staged_textures(graph, extracted_materials, texture_directory, profile: DEFAULT_PROFILE, texture_representation: :bomc, checkpoint: nil)
       by_name = {}
       Array(extracted_materials).each { |material| by_name[material[:name].to_s] = material }
       prof = normalize_profile(profile)
-      Array(graph[:materials]).each do |material|
+      Array(graph[:materials]).each_with_index do |material, index|
+        checkpoint.call(stage: :snapshot_textures, processed: index, total: Array(graph[:materials]).length,
+          operation_label: "#{material[:name]} / attach staged texture") if checkpoint
         extracted = by_name[material[:name].to_s]
         next unless extracted && extracted[:texture]
         material[:material_type]=extracted[:material_type] if extracted.key?(:material_type)
@@ -856,8 +864,12 @@ module BOMEngine
         material[:colorize_output_sha256]=extracted[:colorize_output_sha256] if extracted[:colorize_output_sha256]
         staged_path = File.join(texture_directory, extracted[:texture][:filename].to_s)
         source_path = extracted[:texture][:source_path].to_s
-        source_supported = texture_representation.to_sym == :bomc && File.file?(source_path) && supported_texture_path?(source_path)
         staging = extracted[:texture][:staging_evidence]
+        # A measured detached capture forbids the external source path anyway.
+        # Do not probe stale network/machine paths before applying that rule.
+        checked_capture = staging && staging[:policy_revision]
+        source_supported = !checked_capture && texture_representation.to_sym == :bomc &&
+          supported_texture_path?(source_path) && File.file?(source_path)
         if staging && staging[:policy_revision]
           captured_staged_bytes = extracted[:texture][:bytes]
           captured_staged_sha = extracted[:texture][:sha256].to_s.downcase
@@ -926,7 +938,7 @@ module BOMEngine
           native_jpeg: !!verified_native_jpeg,
           selected: source_supported ? :source : :staged,
           source_path: source_path.empty? ? nil : source_path,
-          source_bytes: File.file?(source_path) ? File.size(source_path) : nil,
+          source_bytes: !checked_capture && File.file?(source_path) ? File.size(source_path) : nil,
           staged_path: File.file?(staged_path) ? staged_path : nil,
           staged_bytes: File.file?(staged_path) ? File.size(staged_path) : nil,
           reason: source_supported ? :native_source_preserved : :source_unavailable_or_unsupported,
