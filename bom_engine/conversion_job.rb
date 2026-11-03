@@ -3,6 +3,7 @@
 require 'json'
 require 'uri'
 require_relative 'performance_trace'
+require_relative 'native_export_lease'
 
 module BOMEngine
   class ConversionJob
@@ -26,12 +27,23 @@ module BOMEngine
           return @active
         end
 
+        if SibamboNativeExportLease.owned?
+          UI.messagebox('Another native export or Overnight Batch owns SketchUp.', MB_OK)
+          return nil
+        end
+
         job = new(title: title, output_path: output_path, batch_size: batch_size, kind: kind, &work)
         @active = job
-        job.start
+        begin
+          job.start
+        rescue StandardError
+          release(job)
+          raise
+        end
       end
 
       def release(job)
+        SibamboNativeExportLease.release(job)
         @active = nil if @active.equal?(job)
       end
     end
@@ -85,13 +97,14 @@ module BOMEngine
     end
 
     def start
+      SibamboNativeExportLease.acquire(self)
       @started_at = Time.now
       @monotonic_started_at = monotonic_seconds
       transition_state(:capturing)
       @fiber = Fiber.new do
         begin
           raise Cancelled, 'Export dibatalkan.' if @cancel_requested
-          result = @work.call(method(:checkpoint))
+          result = SibamboNativeExportLease.with_export(self) { @work.call(method(:checkpoint)) }
           [:finished, :success, result]
         rescue Cancelled => error
           [:finished, :cancelled, error]

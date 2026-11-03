@@ -70,3 +70,12 @@ GPL-3.0-only. See [LICENSE](LICENSE).
 ## Multi-agent orchestration
 
 See [AGENTS.md](AGENTS.md) and [docs/AGENT-ORCHESTRATION.md](docs/AGENT-ORCHESTRATION.md) for unassigned tasks, exclusive agent claims, pushed checkpoint/recovery, author attribution, and cross-repository Sibambo integration acceptance. SketchUp-specific manual acceptance and E4 qualification remain required.
+
+## Overnight Batch Export (source candidate, PR #32)
+
+The selected-SKP serial queue supports recursive scan, independent Exact/Visual
+verification/reuse, pause/cancel and verified restart/resume. See the
+[Windows operator handoff](docs/worklogs/SIB-ENG-BATCH-01-WINDOWS-HANDOFF.md).
+This recovery does not package/install an RBZ or qualify real SketchUp exports.
+Cloud/synthetic results and owner native acceptance remain separate; do not merge
+or start unattended work before the owner gates are accepted.

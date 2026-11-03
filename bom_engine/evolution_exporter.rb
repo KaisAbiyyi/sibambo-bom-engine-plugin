@@ -231,7 +231,11 @@ module BOMEngine
       { path: path, receipt: receipt }
     end
 
-    def export(model, engine:, profile:, output_path:, processing: nil, progress: nil, active_model: nil, performance_trace: nil)
+    def export(model, **options)
+      SibamboNativeExportLease.direct { export_owned(model, **options) }
+    end
+
+    def export_owned(model, engine:, profile:, output_path:, processing: nil, progress: nil, active_model: nil, performance_trace: nil)
       engine = normalize_engine(engine)
       profile = normalize_profile(profile)
       if Gem.win_platform? && Dir.exist?('D:/') && !File.expand_path(output_path).match?(/\AD:[\\\/]/i)
@@ -357,6 +361,8 @@ module BOMEngine
         end
       end
     end
+
+    private_class_method :export_owned
 
     def build_provenance(model, artifact_path, engine:, profile:, source_tree_sha256:, format:, writer_id:, source_info: nil, artifact_sha256: nil, artifact_bytes: nil)
       bytes = artifact_bytes || File.size(artifact_path)

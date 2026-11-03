@@ -18,6 +18,7 @@ require_relative 'conversion_job'
 require_relative 'capture_ir'
 require_relative 'performance_trace'
 require_relative 'evolution_export_policy'
+require_relative 'overnight_batch_dialog'
 
 if defined?(Sketchup) && defined?(UI)
   require_relative 'core'
@@ -248,7 +249,11 @@ module BOMEngine
       jcm_selected?(candidate) ? published.merge(required_loader: 'bomc-next-jcm-v1') : published
     end
 
-    def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil, allow_jpeg_color_map: nil, prepared_color_maps: nil, candidate_cache: nil, performance_trace: nil)
+    def export(model, **options)
+      SibamboNativeExportLease.direct { export_owned(model, **options) }
+    end
+
+    def export_owned(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil, allow_jpeg_color_map: nil, prepared_color_maps: nil, candidate_cache: nil, performance_trace: nil)
       profile = EvolutionExportPolicy.profile(profile)
       if Gem.win_platform? && Dir.exist?('D:/') && !File.expand_path(output_path).match?(/\AD:[\\\/]/i)
         raise ArgumentError, 'Simpan hasil ekspor BOMC di drive D:.'
@@ -273,6 +278,7 @@ module BOMEngine
       ).merge(format: 'bomc', profile: profile, performance_receipt_path: performance_receipt_path(output_path))
       jcm_selected?(result) ? result.merge(required_loader: 'bomc-next-jcm-v1') : result
     end
+    private_class_method :export_owned
 
     def runtime_build_sha
       path = File.join(File.dirname(__FILE__), 'BUILD_SHA.txt')
@@ -462,6 +468,7 @@ module BOMEngine
     private_class_method :report_interactive_error
 
     def register_menu(menu)
+      menu.add_item('Overnight Batch Export...') { OvernightBatch::Dialog.show }
       menu.add_item('Sibambo BOMC Engine: Export BOMC 1.2...') do
         export_interactive
       end

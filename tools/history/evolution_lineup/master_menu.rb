@@ -9,6 +9,18 @@ module SibamboHistory
     ENGINES = JSON.parse(File.read(File.join(__dir__, 'engines.json'))).select { |slot| %w[e2 e3 e4].include?(slot.fetch('engine')) }.freeze
 
     class << self
+      def open_overnight_batch
+        slot = ENGINES.find { |item| item.fetch('id') == 'e4-bomc' && item.fetch('engine') == 'e4' }
+        raise 'Evolution E4 slot is unavailable.' unless slot
+        entry = File.join(__dir__, slot.fetch('entry'))
+        raise 'Evolution E4 runtime entry is missing.' unless File.file?(entry)
+        require entry
+        target = slot.fetch('moduleName').split('::').inject(Object) { |scope, name| scope.const_get(name) }
+        target.load_engine::OvernightBatch::Dialog.show
+      rescue StandardError => error
+        UI.messagebox("Overnight Batch failed:\n#{error.message}", MB_OK)
+      end
+
       def open_engine(id, model = Sketchup.active_model)
         raise ArgumentError, 'Tidak ada model SketchUp yang terbuka.' unless model
         slot = ENGINES.find { |item| item.fetch('id') == id }
@@ -33,6 +45,7 @@ module SibamboHistory
         return if @menus_initialized
         @menus_initialized = true
         active_menu = UI.menu('Extensions').add_submenu(MENU_TITLE)
+        active_menu.add_item('Overnight Batch Export...') { open_overnight_batch }
         ENGINES.each do |slot|
           label = "#{slot.fetch('title')} · #{slot.fetch('sha')[0, 8]}"
           active_menu.add_item(label) { open_engine(slot.fetch('id'), Sketchup.active_model) }
