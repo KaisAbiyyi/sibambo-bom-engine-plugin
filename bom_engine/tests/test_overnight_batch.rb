@@ -114,6 +114,13 @@ class TestOvernightBatch < Minitest::Test
     assert_equal 1, q.counts['completed']
     assert_equal ['exact'], @host.exports.map(&:last)
   end
+  def test_cancel_while_native_open_is_busy_stops_before_export
+    q = queue(create)
+    @host.define_singleton_method(:open) { |path| q.cancel; path }
+    q.step
+    assert_equal 'cancelled', q.run['status']
+    assert_empty @host.exports
+  end
   def test_reuse_both_then_only_missing_profile
     q = queue(create); drain(q)
     run = create
@@ -352,6 +359,18 @@ class TestOvernightBatch
     assert_raises(B::Unsafe) { dialog.command('action' => 'resume') }
     assert_raises(B::Unsafe) { dialog.command('action' => 'start', 'selected' => ['same.skp'], 'profiles' => ['visual']) }
     dialog.command('action' => 'cancel'); 10.times { UI.tick }
+  end
+  def test_dialog_changing_root_detaches_old_run_and_loading_refreshes_rows
+    dialog = dialog_start; dialog.command('action' => 'cancel')
+    old_id = @queue.run['run_id']
+    other = File.join(@dir, 'other'); Dir.mkdir(other); File.write(File.join(other, 'other.skp'), 'other')
+    dialog.command('action' => 'scan', 'root' => other)
+    assert_nil dialog.queue
+    assert_equal ['other.skp'], dialog.state['rows'].map { |r| r['relative'] }
+    dialog.command('action' => 'load', 'run_id' => old_id)
+    @queue = dialog.queue
+    assert_equal %w[nested/same.SKP same.skp], dialog.state['rows'].map { |r| r['relative'] }
+    assert_equal @catalog.root, dialog.state['root']
   end
   def test_evolution_template_exposes_batch_through_e4_without_building_package
     template = File.expand_path('../../tools/history/evolution_lineup/master_menu.rb', __dir__)

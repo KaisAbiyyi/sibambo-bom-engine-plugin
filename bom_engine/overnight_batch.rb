@@ -494,6 +494,7 @@ module BOMEngine
           yield @run['current'] if block_given?
           raise Cancelled, 'Cancel before open.' if @cancel_requested
           model = @host.open(source)
+          raise Cancelled, 'Cancel after native open, before export.' if @cancel_requested
           @catalog.assert_source!(row)
           result = SibamboNativeExportLease.with_export(self) do
             @host.export(model, output, profile) do |event|

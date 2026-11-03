@@ -66,7 +66,8 @@ module BOMEngine
           release_queue
           run = @store.load(data.fetch('run_id'))
           @source_root = run.fetch('source_root')
-          @catalog = Catalog.new(@source_root, output_root: @store.root, require_d: @require_d)
+          @rows = []
+          scan(@source_root)
           attach(run) # load/reverify only; Resume remains explicit.
         when 'resume'
           raise Unsafe, 'Load a run first.' unless @queue
@@ -79,7 +80,12 @@ module BOMEngine
       end
       def scan(root)
         raise Unsafe, 'Cannot scan during active export.' if active?
-        @catalog = Catalog.new(root, output_root: @store.root, require_d: @require_d)
+        catalog = Catalog.new(root, output_root: @store.root, require_d: @require_d)
+        if @queue && OvernightBatch.canonical(@queue.run['source_root']) != OvernightBatch.canonical(catalog.root)
+          release_queue
+        end
+        @catalog = catalog
+        @rows = []
         @source_root = @catalog.root
         runtime = @host.runtime
         @rows = @catalog.scan.map do |row|
