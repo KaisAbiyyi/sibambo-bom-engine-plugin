@@ -480,7 +480,13 @@ module BOMEngine
     def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE, diagnostics: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil, processing: nil, performance_trace: nil)
       parent = File.dirname(File.expand_path(output_path))
       FileUtils.mkdir_p(parent)
-      texture_directory = Dir.mktmpdir('bomc-textures', parent)
+      # Batch attempt paths are already deep; the PNG worker adds a 64-byte
+      # cache key. SketchUp's Windows Ruby cannot reliably unlink those paths
+      # beyond MAX_PATH, even after successful publication. Keep export-owned
+      # textures/codecs on D: under a short parent and retain normal cleanup.
+      texture_parent = Gem.win_platform? && Dir.exist?('D:/') ? 'D:/projects/sibambo/scratch' : parent
+      FileUtils.mkdir_p(texture_parent)
+      texture_directory = Dir.mktmpdir('bomc-textures', texture_parent)
       effective_cache = candidate_cache
       captured_source_info = nil
       unless effective_cache
