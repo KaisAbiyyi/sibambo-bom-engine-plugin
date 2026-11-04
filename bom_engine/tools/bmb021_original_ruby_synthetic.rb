@@ -4,7 +4,9 @@ require 'digest'
 require 'json'
 require 'base64'
 require 'fileutils'
-require_relative 'benchmark_bomc'
+require_relative '../bomc_writer'
+require_relative '../bomc_decoder'
+require_relative '../bomc_validator'
 
 root = ENV.fetch('BMB021_RUBY_EXPORT_DIR')
 producer_sha = ENV.fetch('BMB021_RUBY_SHA')
@@ -12,14 +14,18 @@ abort 'producer SHA must be full immutable commit' unless /\A[0-9a-f]{40}\z/.mat
 
 # Pure-Ruby test corpus constructor from the original repository, not a cloned
 # Builder implementation, native SketchUp model, or owner artifact.
-graph = BOMEngine::BOMCBenchmark.shared_graph(1)
+source = File.expand_path('../../examples/model-eval-json-v1-small.json', __dir__)
+graph = JSON.parse(File.read(source), symbolize_names: true)
 packed = BOMEngine::BOMCWriter.pack(graph, profile: :production)
 bytes = packed.fetch(:bytes)
 decoded = BOMEngine::BOMCDecoder.decode(bytes)
 BOMEngine::BOMCValidator.validate!(graph, decoded)
 
-materials = graph.fetch(:materials)
-meshes = graph.fetch(:meshes)
+# Source-side counts come from the original Ruby adapter, not from the
+# decoded output under test (which would make those assertions circular).
+normalized = BOMEngine::BOMC::ModelAdapter.normalize(graph)
+materials = normalized.fetch(:materials)
+meshes = normalized.fetch(:meshes)
 faces = meshes.flat_map { |mesh| mesh.fetch(:faces) }
 manifest = {
   gate: 'BMB021_ORIGINAL_RUBY_PRODUCER',
@@ -34,10 +40,10 @@ manifest = {
     meshes: meshes.length,
     faces: faces.length,
     triangles: faces.sum { |f| f.fetch(:triangles).length / 3 },
-    definitions: graph.fetch(:definitions).length,
-    instances: graph.fetch(:nodes).length,
+    definitions: normalized.fetch(:definitions).length,
+    instances: normalized.fetch(:instances).length,
     frontBackDistinctFaces: faces.count { |f|
-      f[:front_material_id] && f[:back_material_id] && f[:front_material_id] != f[:back_material_id]
+      f[:front_material] && f[:back_material] && f[:front_material] != f[:back_material]
     }
   }
 }
