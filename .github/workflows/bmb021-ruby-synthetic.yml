@@ -1,0 +1,43 @@
+name: BMB-021 original pure-Ruby synthetic producer
+on:
+  push:
+    branches:
+      - test/bmb-021-ruby-synthetic-20261104
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  original-ruby-producer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EXPECTED_RUBY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Pin original Ruby source and run SketchUp-free writer
+        env:
+          BMB021_RUBY_EXPORT_DIR: ${{ runner.temp }}/bmb021-ruby-synthetic
+          BMB021_RUBY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BMB021_PRINT_BASE64: "1"
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_RUBY_SHA"
+          ruby --version
+          ruby bom_engine/tools/bmb021_original_ruby_synthetic.rb
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bmb021-original-ruby-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/bmb021-ruby-synthetic/
+          retention-days: 14
+          if-no-files-found: error
+      - name: Receipt
+        if: always()
+        run: |
+          echo "Original Ruby producer: \`$EXPECTED_RUBY_SHA\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Original entrypoint: \`BOMEngine::BOMCWriter.pack\` with \`BOMBenchmark.shared_graph(1)\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "No SketchUp APIs, private SKPs, or real owner data. Actual consumer reads are separate gates." >> "$GITHUB_STEP_SUMMARY"
+          echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> "$GITHUB_STEP_SUMMARY"
