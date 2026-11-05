@@ -105,12 +105,14 @@ class TestOvernightBatch < Minitest::Test
       record = records.fetch(profile)
       path = record.fetch('display_path')
       assert_equal "same__E4__#{profile.upcase}.bomc", File.basename(path)
-      assert_equal File.join(@out, 'visible-exports'), File.dirname(path)
+      assert_equal File.join(@out, 'visible-exports', 'same'), File.dirname(path)
       assert_equal B.fingerprint(record.fetch('path')), B.fingerprint(path)
+      assert File.file?("#{path}.performance.json")
+      assert File.file?("#{path}.batch-validation.json")
     end
   end
   def test_readable_name_collision_never_overwrites_existing_file
-    directory = @store.visible_root; FileUtils.mkdir_p(directory)
+    directory = File.join(@store.visible_root, 'same'); FileUtils.mkdir_p(directory)
     old = File.join(directory, 'same__E4__EXACT.bomc'); File.binwrite(old, 'existing export')
     q = queue(create_versions(engines: ['e4'], profiles: ['exact'])); drain(q)
     path = q.run['models'][0]['exports']['e4']['exact'].fetch('display_path')

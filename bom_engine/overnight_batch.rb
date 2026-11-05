@@ -166,29 +166,42 @@ module BOMEngine
         basename = 'Model' if basename.empty?
         basename = "_#{basename}" if basename.match?(/\A(?:con|prn|aux|nul|com[1-9]|lpt[1-9])\z/i)
         basename = basename.each_char.take(80).join
+        parent = File.dirname(row.fetch('relative').tr('\\', '/'))
+        folder = parent == '.' ? basename : "#{basename} (#{parent.gsub(/[<>:\"\/\\|?*\x00-\x1f]/, '_')})".each_char.take(80).join
+        destination = File.join(visible_root, folder)
+        OvernightBatch.unlinked!(destination)
+        FileUtils.mkdir_p(destination)
         original = OvernightBatch.fingerprint(source)
+        sidecars = %w[performance.json provenance.json batch-validation.json].filter_map do |suffix|
+          file = "#{source}.#{suffix}"
+          [file, suffix, OvernightBatch.fingerprint(file)] if File.file?(file)
+        end
         (1..9999).each do |number|
           suffix = number == 1 ? '' : " (#{number})"
-          path = File.join(visible_root, "#{basename}#{suffix}__#{engine.upcase}__#{profile.upcase}#{EXTENSIONS.fetch(engine)}")
+          path = File.join(destination, "#{basename}#{suffix}__#{engine.upcase}__#{profile.upcase}#{EXTENSIONS.fetch(engine)}")
           OvernightBatch.unlinked!(path)
-          if File.exist?(path)
-            return path if File.file?(path) && OvernightBatch.fingerprint(path) == original
-            next
-          end
-          created = false
+          pairs = [[source, path, original]] + sidecars.map { |file, label, fingerprint| [file, "#{path}.#{label}", fingerprint] }
+          next if pairs.any? { |_, target, fingerprint| File.exist?(target) && (!File.file?(target) || OvernightBatch.fingerprint(target) != fingerprint) }
           begin
-            File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |output|
-              created = true
-              File.open(source, 'rb') { |input| IO.copy_stream(input, output) }
-              output.flush; output.fsync
+            pairs.each do |input_path, target, fingerprint|
+              OvernightBatch.unlinked!(target)
+              next if File.file?(target) && OvernightBatch.fingerprint(target) == fingerprint
+              created = false
+              begin
+                File.open(target, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |output|
+                  created = true
+                  File.open(input_path, 'rb') { |input| IO.copy_stream(input, output) }
+                  output.flush; output.fsync
+                end
+                raise Unsafe, 'Readable copy failed verification.' unless OvernightBatch.fingerprint(target) == fingerprint
+              rescue StandardError
+                File.delete(target) if created && File.file?(target)
+                raise
+              end
             end
-            raise Unsafe, 'Readable copy failed verification.' unless OvernightBatch.fingerprint(path) == original
             return path
           rescue Errno::EEXIST
             next
-          rescue StandardError
-            File.delete(path) if created && File.file?(path)
-            raise
           end
         end
         raise Unsafe, 'No available readable output name.'
