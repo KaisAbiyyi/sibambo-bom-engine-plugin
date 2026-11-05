@@ -260,7 +260,11 @@ module BOMEngine
         guard = ModelRevisionGuard.new(model, active_model: active_model).attach
         parent = File.dirname(File.expand_path(output_path))
         FileUtils.mkdir_p(parent)
-        Dir.mktmpdir('.evolution-export-', parent) do |job_dir|
+        # Deep batch attempts must not push codec caches past Windows cleanup
+        # limits. Match BOMC's short D: scratch ownership and block cleanup.
+        scratch_parent = Gem.win_platform? && Dir.exist?('D:/') ? 'D:/projects/sibambo/scratch' : parent
+        FileUtils.mkdir_p(scratch_parent)
+        Dir.mktmpdir('.evolution-export-', scratch_parent) do |job_dir|
           texture_dir = File.join(job_dir, 'textures')
           FileUtils.mkdir_p(texture_dir)
           checkpoint = lambda do |event = {}|

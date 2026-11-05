@@ -73,9 +73,16 @@ See [AGENTS.md](AGENTS.md) and [docs/AGENT-ORCHESTRATION.md](docs/AGENT-ORCHESTR
 
 ## Overnight Batch Export (source candidate, PR #32)
 
-The selected-SKP serial queue supports recursive scan, independent Exact/Visual
-verification/reuse, pause/cancel and verified restart/resume. See the
-[Windows operator handoff](docs/worklogs/SIB-ENG-BATCH-01-WINDOWS-HANDOFF.md).
-This recovery does not package/install an RBZ or qualify real SketchUp exports.
-Cloud/synthetic results and owner native acceptance remain separate; do not merge
-or start unattended work before the owner gates are accepted.
+The selected-SKP serial queue supports recursive scan and version checkboxes:
+**E2 Canonical JSON gzip, E3 CleanPKG, E4 BOMC**, with E4 selected by default.
+Select one or several versions, then Exact, Visual, or both. Each selected model
+exports its versions in E2/E3/E4 order, Exact before Visual, with separate status,
+artifact, provenance and verified reuse for each combination. Pause/cancel and
+verified restart/resume retain completed combinations.
+
+The multi-version run schema is v3. Older v2 runs can be viewed read-only and
+cannot be silently migrated or resumed. Start a new run after updating runtime.
+See the [version-selection Windows handoff](docs/worklogs/SIB-ENG-BATCH-VERSIONS-001-WINDOWS-HANDOFF.md).
+The owner's delivery request is **RBZ only, without installation**. Synthetic/CI
+proof remains separate from real SketchUp and owner acceptance; do not merge or
+start unattended work before the owner gates are accepted.

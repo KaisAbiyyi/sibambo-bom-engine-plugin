@@ -12,16 +12,30 @@ require_relative 'native_export_lease'
 
 module BOMEngine
   module OvernightBatch
-    SCHEMA = 'sibambo-overnight-batch-v2'.freeze
+    SCHEMA = 'sibambo-overnight-batch-v3'.freeze
+    LEGACY_SCHEMA = 'sibambo-overnight-batch-v2'.freeze
     SOURCE_ROOT = 'D:/projects/sibambo/skps'.freeze
     OUTPUT_ROOT = 'D:/projects/sibambo/private-evidence/batch-exports'.freeze
     PROFILES = %w[exact visual].freeze
+    ENGINES = %w[e2 e3 e4].freeze
+    FORMATS = {'e2' => 'canonical-v3', 'e3' => 'cleanpkg', 'e4' => 'bomc-1.2'}.freeze
+    EXTENSIONS = {'e2' => '.json.gz', 'e3' => '.cleanpkg', 'e4' => '.bomc'}.freeze
     MIN_FREE_BYTES = 512 * 1024 * 1024
     RUN_ID = /\A\d{8}T\d{6}Z-[a-f0-9]{10}\z/
     class Unsafe < StandardError; end
     class Cancelled < StandardError; end
 
     module_function
+    def jobs(run)
+      run.fetch('models').flat_map do |row|
+        row.fetch('exports').flat_map { |engine, records| records.map { |profile, record| [row, engine, profile, record] } }
+      end
+    end
+    def artifact_path(directory, engine, profile)
+      raise Unsafe, 'Unsupported batch version/profile.' unless ENGINES.include?(engine) && PROFILES.include?(profile)
+      name = engine == 'e4' ? 'artifact.bomc' : "artifact__#{engine.upcase}__#{profile.upcase}#{EXTENSIONS.fetch(engine)}"
+      File.join(directory, name)
+    end
     def canonical(path)
       value = File.expand_path(path.to_s).tr('\\', '/').sub(%r{/+\z}, '')
       Gem.win_platform? ? value.downcase : value
@@ -83,7 +97,7 @@ module BOMEngine
       { 'files_sha256' => digest.hexdigest, 'file_count' => paths.length,
         'identity_kind' => 'runtime_disk_inventory_at_batch_load',
         'build_sha' => (defined?(Branding) ? Branding.build_sha : 'unavailable'),
-        'engine_wire' => 'e4', 'engine_display' => 'E3', 'format' => 'bomc-1.2',
+        'supported_engines' => ENGINES, 'formats' => FORMATS,
         'package_sha256' => nil, 'authenticated_producer' => false }
     end
     # A disk inventory is deliberately not described as an authenticated loaded
@@ -167,7 +181,7 @@ module BOMEngine
           begin
             OvernightBatch.existing_safe_file!(path, dir)
             data = OvernightBatch.read_json(path, limit: 32 * 1024 * 1024)
-            next unless data['schema'] == SCHEMA && data['run_id'] == id && data['output_root'] == @root
+            next unless [SCHEMA, LEGACY_SCHEMA].include?(data['schema']) && data['run_id'] == id && data['output_root'] == @root
             # A torn latest snapshot must not cause an EXCL collision on recovery.
             data['sequence'] = [data.fetch('sequence'), snapshot_sequence(dir)].max
             return data
@@ -181,6 +195,7 @@ module BOMEngine
         Dir.glob(File.join(dir, 'snapshots', 'state-*.json')).map { |p| File.basename(p)[/state-(\d+)\.json/, 1].to_i }.max || 0
       end
       def save(run)
+        raise Unsafe, 'Historical batch is read-only; start a new run.' unless run['schema'] == SCHEMA
         dir = directory(run.fetch('run_id'))
         raise Unsafe, 'Missing run directory.' unless Dir.exist?(dir)
         snapshots = File.join(dir, 'snapshots'); OvernightBatch.unlinked!(snapshots)
@@ -199,40 +214,47 @@ module BOMEngine
         end
         run
       end
-      def create(catalog:, selected:, profiles:, runtime:, stop_on_error:, free_bytes:)
+      def create(catalog:, selected:, profiles:, runtime:, stop_on_error:, free_bytes:, engines: ['e4'])
         raise Unsafe, 'Choose at least one SKP, without duplicates.' if selected.empty? || selected.uniq.size != selected.size
         raise Unsafe, 'Choose Exact, Visual, or both.' if profiles.empty? || (profiles - PROFILES).any? || profiles.uniq.size != profiles.size
+        raise Unsafe, 'Choose E2, E3, E4, or a combination without duplicates.' unless engines.is_a?(Array) && !engines.empty? && (engines - ENGINES).empty? && engines.uniq.size == engines.size
+        engines = ENGINES.select { |engine| engines.include?(engine) }
+        profiles = PROFILES.select { |profile| profiles.include?(profile) }
         rows = catalog.scan.to_h { |r| [r['relative'], r] }
         raise Unsafe, 'Selection is stale; refresh.' unless selected.all? { |s| rows.key?(s) }
-        required = MIN_FREE_BYTES + selected.sum { |s| rows.fetch(s)['bytes'] * profiles.size }
+        required = MIN_FREE_BYTES + selected.sum { |s| rows.fetch(s)['bytes'] * profiles.size * engines.size }
         raise Unsafe, "Insufficient disk space: need at least #{required} bytes." unless free_bytes.is_a?(Integer) && free_bytes >= required
         prepare!
         id = "#{Time.now.utc.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(5)}"
         Dir.mkdir(directory(id), 0o700) # EXCL: a collision is a failure, never overwrite.
         run = {'schema' => SCHEMA, 'run_id' => id, 'sequence' => 0, 'status' => 'pending',
           'source_root' => catalog.root, 'output_root' => @root, 'runtime' => runtime,
+          'engines' => engines, 'profiles' => profiles,
           'created_at' => OvernightBatch.timestamp, 'stop_on_error' => stop_on_error == true,
           'certified' => false, 'research_qualified' => false,
           'models' => selected.map { |s| rows.fetch(s) }.sort_by { |r| [r['relative'].downcase, r['relative']] }.map do |row|
-            row.merge('profiles' => PROFILES.select { |p| profiles.include?(p) }.to_h do |p|
-              prior, reason = reusable(row, p, runtime, catalog.root)
-              [p, prior ? prior.merge('status' => 'reused') : {'status' => 'pending', 'reuse_reason' => reason, 'attempts' => []}]
+            row.merge('exports' => engines.to_h do |engine|
+              [engine, profiles.to_h do |p|
+                prior, reason = reusable(row, p, runtime, catalog.root, engine: engine)
+                [p, prior ? prior.merge('status' => 'reused') : {'status' => 'pending', 'reuse_reason' => reason, 'attempts' => []}]
+              end]
             end)
           end}
         save(run)
       end
-      def reusable(source, profile, runtime, source_root)
+      def reusable(source, profile, runtime, source_root, engine: 'e4')
         incomplete = false
         run_ids.each do |id|
           begin
             run = load(id)
+            next unless run['schema'] == SCHEMA
             next unless OvernightBatch.canonical(run['source_root']) == OvernightBatch.canonical(source_root)
             row = Array(run['models']).find { |r| r['relative'] == source['relative'] }
-            record = row && row.fetch('profiles', {})[profile]
+            record = row && row.fetch('exports', {}).fetch(engine, {})[profile]
             next unless record
             incomplete = true
             next unless row.slice('bytes', 'sha256') == source.slice('bytes', 'sha256')
-            return [Marshal.load(Marshal.dump(record)), 'verified_reuse'] if valid_record?(record, row, profile, run, runtime)
+            return [Marshal.load(Marshal.dump(record)), 'verified_reuse'] if valid_record?(record, row, profile, run, runtime, engine: engine)
           rescue Unsafe, JSON::ParserError, SystemCallError, KeyError, TypeError
             incomplete = true
           end
@@ -242,7 +264,7 @@ module BOMEngine
         OvernightBatch.unlinked!(legacy_dir)
         if Dir.exist?(legacy_dir)
           base = File.basename(source['relative'], File.extname(source['relative']))
-          incomplete ||= Dir.children(legacy_dir).any? { |name| name.downcase.start_with?(base.downcase + '__') && name.downcase.end_with?("__#{profile}.bomc") }
+          incomplete ||= Dir.children(legacy_dir).any? { |name| name.downcase.start_with?(base.downcase + '__') && name.downcase.end_with?("__#{profile}#{EXTENSIONS.fetch(engine)}") }
         end
         [nil, incomplete ? 'needs_verification' : 'no_previous_verified_artifact']
       end
@@ -251,25 +273,47 @@ module BOMEngine
         raise Unsafe, 'Evidence hash/bytes mismatch.' unless OvernightBatch.fingerprint(path) == ref.slice('bytes', 'sha256')
         OvernightBatch.read_json(path)
       end
-      def valid_record?(record, source, profile, run, runtime)
+      def valid_record?(record, source, profile, run, runtime, engine: 'e4')
         return false unless %w[success reused].include?(record['status']) && PROFILES.include?(profile)
-        return false unless record.values_at('format', 'engine_wire', 'engine_display', 'profile', 'validation') == ['bomc-1.2', 'e4', 'E3', profile, 'passed']
+        return false unless run['schema'] == SCHEMA && ENGINES.include?(engine)
+        return false unless record.values_at('format', 'engine_wire', 'engine_display', 'profile', 'validation') == [FORMATS.fetch(engine), engine, engine.upcase, profile, 'passed']
         return false unless run['runtime'] == runtime && record['runtime'] == runtime
         path = OvernightBatch.existing_safe_file!(record['path'], @root)
         artifact = OvernightBatch.fingerprint(path)
         return false unless artifact == record.slice('bytes', 'sha256')
-        return false if profile == 'exact' && artifact['bytes'] >= source['bytes']
+        return false if engine == 'e4' && profile == 'exact' && artifact['bytes'] >= source['bytes']
         trace = evidence(record.fetch('performance_receipt'))
         return false unless trace['schema'] == 'sibambo-performance-trace-v1' && trace['status'] == 'success' && trace['total_wall_ms'].is_a?(Numeric) && trace['total_wall_ms'] >= 0
         meta = trace.fetch('metadata')
-        return false unless meta.values_at('engine', 'format', 'profile') == ['e4', 'bomc-1.2', profile]
-        return false unless meta.fetch('source').slice('bytes', 'sha256') == source.slice('bytes', 'sha256')
+        return false unless meta.values_at('engine', 'format', 'profile') == [engine, FORMATS.fetch(engine), profile]
+        if engine == 'e4'
+          return false unless meta.fetch('source').slice('bytes', 'sha256') == source.slice('bytes', 'sha256')
+        else
+          model = meta.fetch('source_model')
+          return false unless model.values_at('sourceBytes', 'sourceSha256') == source.values_at('bytes', 'sha256')
+          provenance = evidence(record.fetch('provenance_receipt'))
+          return false unless provenance['schema'] == 'sibambo-research-provenance-v1' && provenance['engine'] == engine
+          return false unless provenance.fetch('artifact').slice('bytes', 'sha256', 'format', 'profile') == artifact.merge('format' => FORMATS.fetch(engine), 'profile' => profile)
+          return false unless provenance.fetch('model').values_at('sourceBytes', 'sourceSha256') == source.values_at('bytes', 'sha256')
+          producer_sha = provenance.dig('producer', 'sourceTreeSha256')
+          return false unless producer_sha.is_a?(String) && producer_sha.match?(/\A[a-f0-9]{64}\z/) && producer_sha == meta['source_tree_sha256']
+        end
         return false unless meta.fetch('artifact').slice('bytes', 'sha256') == artifact
         validation = evidence(record.fetch('validation_receipt'))
-        return false unless validation['schema'] == 'sibambo-batch-validation-v1' && validation['runtime'] == runtime && validation['profile'] == profile
+        return false unless validation['schema'] == 'sibambo-batch-validation-v2' && validation['runtime'] == runtime && validation['profile'] == profile && validation['engine'] == engine
         return false unless validation['source'] == source.slice('bytes', 'sha256') && validation['artifact'] == artifact
         return false unless validation['performance_receipt'] == record['performance_receipt'] && validation.dig('report', 'passed') == true && validation.dig('report', 'profile').to_s == profile
-        @profile_checker.call(path, profile) == true
+        if engine == 'e4'
+          @profile_checker.call(path, profile) == true
+        else
+          # The exporter and host read back the actual wire format before this
+          # binding is written. Reuse streams artifact hashes and rechecks the
+          # immutable proof; do not parse a large E2/E3 file on every UI scan.
+          validation['provenance_receipt'] == record['provenance_receipt'] &&
+            validation.dig('report', 'engine') == engine &&
+            validation.dig('report', 'sha256') == artifact['sha256'] &&
+            validation.dig('report', 'bytes') == artifact['bytes']
+        end
       rescue StandardError
         false # Missing/old/unrecognized evidence is Needs Verification, never PASS.
       end
@@ -334,19 +378,33 @@ module BOMEngine
         m = Sketchup.active_model
         m && OvernightBatch.canonical(m.path) == OvernightBatch.canonical(path) && safe_to_switch?
       end
-      def export(model, path, profile, &progress)
+      def export(model, path, profile, engine: 'e4', &progress)
+        raise Unsafe, 'Unsupported batch version.' unless ENGINES.include?(engine)
         raise Unsafe, 'Another conversion is active.' if ConversionJob.active && ConversionJob.active.running?
         temp = File.join(File.dirname(path), 'temp'); FileUtils.mkdir_p(temp)
         old = ENV.values_at('TEMP', 'TMP')
         begin
           ENV['TEMP'] = ENV['TMP'] = temp
-          BOMCExtension.export(model, output_path: path, profile: profile.to_sym,
-            settings: BOMCProcessing.from_ui(batch_mode: 'auto'), progress: progress)
+          settings = BOMCProcessing.from_ui(batch_mode: 'auto')
+          if engine == 'e4'
+            BOMCExtension.export(model, output_path: path, profile: profile.to_sym,
+              settings: settings, progress: progress)
+          else
+            require_relative 'evolution_exporter'
+            result = EvolutionExporter.export(model, engine: engine.to_sym, profile: profile.to_sym,
+              output_path: path, processing: settings, progress: progress, active_model: -> { Sketchup.active_model })
+            result.merge(validation: {report: result.fetch(:validation)})
+          end
         ensure
           ENV['TEMP'], ENV['TMP'] = old
         end
       end
-      def validate(path, profile); Store.new.check_bomc_profile(path, profile); end
+      def validate(path, profile, engine: 'e4')
+        return Store.new.check_bomc_profile(path, profile) if engine == 'e4'
+        return false unless ENGINES.include?(engine)
+        require_relative 'evolution_validator'
+        EvolutionValidator.validate_file!(path, engine: engine, expected_profile: profile)[:passed] == true
+      end
       def runtime
         current = OvernightBatch.runtime_identity
         raise Unsafe, 'Runtime files changed since batch code loaded; restart SketchUp.' unless current == INITIAL_RUNTIME
@@ -371,6 +429,7 @@ module BOMEngine
     class Queue
       attr_reader :run
       def initialize(store:, catalog:, run:, host:)
+        raise Unsafe, 'Historical batch is read-only; start a new run.' unless run['schema'] == SCHEMA
         @store, @catalog, @run, @host = store, catalog, run, host
         @attempted = {}; @cancel_requested = @pause_requested = @stepping = false
         @lock = store.lock(run.fetch('run_id'))
@@ -384,36 +443,38 @@ module BOMEngine
         end
       end
       def verify!
+        raise Unsafe, 'Historical batch is read-only; start a new run.' unless @run['schema'] == SCHEMA
         raise Unsafe, 'Source root mismatch.' unless OvernightBatch.canonical(@run.fetch('source_root')) == OvernightBatch.canonical(@catalog.root)
         raise Unsafe, 'Output root mismatch.' unless @run['output_root'] == @store.root
         raise Unsafe, 'Runtime/version differs; start a new run, no silent migration.' unless @run['runtime'] == @host.runtime
         models = @run.fetch('models')
+        engines, profiles = @run.values_at('engines', 'profiles')
+        raise Unsafe, 'Invalid saved versions/profiles.' unless engines.is_a?(Array) && !engines.empty? && engines == ENGINES.select { |e| engines.include?(e) } && profiles.is_a?(Array) && !profiles.empty? && profiles == PROFILES.select { |p| profiles.include?(p) }
         raise Unsafe, 'Empty or duplicate model list.' if models.empty? || models.map { |r| r['key'] }.uniq.size != models.size
         models.each do |r|
           @catalog.assert_source!(r)
-          raise Unsafe, 'Invalid saved profile selection.' if r['profiles'].empty? || (r['profiles'].keys - PROFILES).any?
+          raise Unsafe, 'Invalid saved version selection.' unless r['exports'].is_a?(Hash) && r['exports'].keys == engines
+          raise Unsafe, 'Invalid saved profile selection.' unless r['exports'].values.all? { |records| records.is_a?(Hash) && records.keys == profiles }
         end
       end
       def reverify_existing!
-        @run.fetch('models').each do |row|
-          row.fetch('profiles').each do |p, r|
-            if %w[success reused].include?(r['status'])
-              next if @store.valid_record?(r, row, p, @run, @run.fetch('runtime'))
-              row['profiles'][p] = {'status' => 'pending', 'reuse_reason' => 'needs_verification', 'attempts' => Array(r['attempts'])}
-            elsif r['status'] == 'in_progress'
-              recovered = recover_attempt(row, p, r)
-              if recovered
-                row['profiles'][p] = recovered
-                next
-              end
-              # No durable validation binding: preserve orphan bytes, retry in a
-              # fresh directory. Never adopt a file merely because it exists.
-              r['status'] = 'pending'; r['recovery_reason'] = 'interrupted_attempt_not_committed'
+        OvernightBatch.jobs(@run).each do |row, engine, p, r|
+          if %w[success reused].include?(r['status'])
+            next if @store.valid_record?(r, row, p, @run, @run.fetch('runtime'), engine: engine)
+            row['exports'][engine][p] = {'status' => 'pending', 'reuse_reason' => 'needs_verification', 'attempts' => Array(r['attempts'])}
+          elsif r['status'] == 'in_progress'
+            recovered = recover_attempt(row, engine, p, r)
+            if recovered
+              row['exports'][engine][p] = recovered
+              next
             end
+            # No durable validation binding: preserve orphan bytes, retry in a
+            # fresh directory. Never adopt a file merely because it exists.
+            r['status'] = 'pending'; r['recovery_reason'] = 'interrupted_attempt_not_committed'
           end
         end
       end
-      def recover_attempt(row, profile, record)
+      def recover_attempt(row, engine, profile, record)
         path = Array(record['attempts']).last&.fetch('path', nil)
         return nil unless path
         OvernightBatch.existing_safe_file!(path, @store.directory(@run['run_id']))
@@ -422,12 +483,13 @@ module BOMEngine
         ref = OvernightBatch.fingerprint(receipt_path).merge('path' => receipt_path)
         binding = @store.evidence(ref)
         candidate = record.merge('status' => 'success', 'profile' => profile,
-          'format' => 'bomc-1.2', 'engine_wire' => 'e4', 'engine_display' => 'E3',
+          'format' => FORMATS.fetch(engine), 'engine_wire' => engine, 'engine_display' => engine.upcase,
           'validation' => 'passed', 'runtime' => @run['runtime'], 'path' => path,
           'bytes' => binding.dig('artifact', 'bytes'), 'sha256' => binding.dig('artifact', 'sha256'),
           'performance_receipt' => binding['performance_receipt'], 'validation_receipt' => ref,
+          'provenance_receipt' => binding['provenance_receipt'],
           'recovery_reason' => 'verified_commit_after_interruption')
-        @store.valid_record?(candidate, row, profile, @run, @run['runtime']) ? candidate : nil
+        @store.valid_record?(candidate, row, profile, @run, @run['runtime'], engine: engine) ? candidate : nil
       rescue StandardError
         nil
       end
@@ -456,7 +518,7 @@ module BOMEngine
         SibamboNativeExportLease.release(self) unless @stepping
       end
       def counts
-        states = @run['models'].flat_map { |r| r['profiles'].values.map { |p| p['status'] } }
+        states = OvernightBatch.jobs(@run).map { |_,_,_,record| record['status'] }
         {'completed' => states.count { |s| %w[success reused].include?(s) }, 'failed' => states.count('failed'),
           'cancelled' => states.count('cancelled'), 'pending' => states.count { |s| !%w[success reused failed cancelled].include?(s) }, 'total' => states.size}
       end
@@ -468,10 +530,10 @@ module BOMEngine
         return finish('cancelled') if @cancel_requested
         return finish('paused') if @pause_requested
         return counts unless @run['status'] == 'running'
-        task = @run['models'].flat_map { |r| r['profiles'].map { |p,v| [r,p,v] } }.find { |r,p,v| !%w[success reused].include?(v['status']) && !@attempted[[r['key'],p]] }
+        task = OvernightBatch.jobs(@run).find { |r,e,p,v| !%w[success reused].include?(v['status']) && !@attempted[[r['key'],e,p]] }
         return finish(counts['completed'] == counts['total'] ? 'complete' : 'complete_with_failures') unless task
-        row, profile, record = task
-        @stepping = true; @attempted[[row['key'],profile]] = true
+        row, engine, profile, record = task
+        @stepping = true; @attempted[[row['key'],engine,profile]] = true
         source = nil
         begin
           source = @catalog.assert_source!(row)
@@ -479,17 +541,17 @@ module BOMEngine
           raise Unsafe, 'Insufficient remaining disk space.' unless @host.free_bytes(@store.root) >= MIN_FREE_BYTES + row['bytes']
           base = File.join(@store.directory(@run['run_id']), row['key']); OvernightBatch.unlinked!(base)
           FileUtils.mkdir_p(base, mode: 0o700)
-          attempt_dir = File.join(base, "#{profile}-#{SecureRandom.hex(12)}")
+          attempt_dir = File.join(base, "#{engine}-#{profile}-#{SecureRandom.hex(12)}")
           begin
             Dir.mkdir(attempt_dir, 0o700)
           rescue Errno::EEXIST
             raise Unsafe, 'Attempt path collision; output preserved. Investigate before resume.'
           end
-          output = File.join(attempt_dir, 'artifact.bomc')
+          output = OvernightBatch.artifact_path(attempt_dir, engine, profile)
           record['attempts'] ||= []
           record['attempts'] << {'path' => output, 'started_at' => OvernightBatch.timestamp}
           record['status'] = 'in_progress'
-          @run['current'] = {'model' => row['relative'], 'profile' => profile, 'stage' => 'OPEN_SKP'}
+          @run['current'] = {'model' => row['relative'], 'engine' => engine, 'profile' => profile, 'stage' => 'OPEN_SKP'}
           @store.save(@run)
           yield @run['current'] if block_given?
           raise Cancelled, 'Cancel before open.' if @cancel_requested
@@ -497,7 +559,7 @@ module BOMEngine
           raise Cancelled, 'Cancel after native open, before export.' if @cancel_requested
           @catalog.assert_source!(row)
           result = SibamboNativeExportLease.with_export(self) do
-            @host.export(model, output, profile) do |event|
+            @host.export(model, output, profile, engine: engine) do |event|
               stage = (event[:stage] || event['stage'] || 'EXPORT').to_s.upcase
               @run['current']['stage'] = stage
               yield @run['current'] if block_given?
@@ -511,20 +573,24 @@ module BOMEngine
           raise Unsafe, 'Host identity/dirty state changed.' unless @host.safe_after_failure?(source)
           report = result.dig(:validation, :report)
           raise Unsafe, 'Missing passing fidelity/profile validation.' unless report && report[:passed] == true && report[:profile].to_s == profile
-          raise Unsafe, 'Output wire profile failed.' unless @host.validate(output, profile)
+          raise Unsafe, 'Exporter returned a different output path.' unless OvernightBatch.canonical(result.fetch(:path)) == OvernightBatch.canonical(output)
+          raise Unsafe, 'Output wire profile failed.' unless @host.validate(output, profile, engine: engine)
           artifact = OvernightBatch.fingerprint(output)
-          raise Unsafe, 'Exact must remain strictly below original SKP bytes.' if profile == 'exact' && artifact['bytes'] >= row['bytes']
+          raise Unsafe, 'Exact must remain strictly below original SKP bytes.' if engine == 'e4' && profile == 'exact' && artifact['bytes'] >= row['bytes']
           performance = OvernightBatch.fingerprint("#{output}.performance.json").merge('path' => "#{output}.performance.json")
           # No rewrite of the exporter's performance receipt: this separate
           # batch-owned binding interoperates without taking receipt-writer files.
-          binding = {'schema' => 'sibambo-batch-validation-v1', 'profile' => profile,
+          provenance = engine == 'e4' ? nil : OvernightBatch.fingerprint("#{output}.provenance.json").merge('path' => "#{output}.provenance.json")
+          binding = {'schema' => 'sibambo-batch-validation-v2', 'engine' => engine, 'profile' => profile,
             'source' => row.slice('bytes','sha256'), 'artifact' => artifact, 'runtime' => @run['runtime'],
-            'performance_receipt' => performance, 'report' => JSON.parse(JSON.generate(report)), 'finished_at' => OvernightBatch.timestamp}
+            'performance_receipt' => performance, 'provenance_receipt' => provenance,
+            'report' => JSON.parse(JSON.generate(report)), 'finished_at' => OvernightBatch.timestamp}
           validation = OvernightBatch.write_new("#{output}.batch-validation.json", binding)
-          record.merge!('status' => 'success', 'profile' => profile, 'format' => 'bomc-1.2', 'engine_wire' => 'e4', 'engine_display' => 'E3',
+          record.merge!('status' => 'success', 'profile' => profile, 'format' => FORMATS.fetch(engine), 'engine_wire' => engine, 'engine_display' => engine.upcase,
             'validation' => 'passed', 'runtime' => @run['runtime'], 'path' => output, 'bytes' => artifact['bytes'], 'sha256' => artifact['sha256'],
-            'performance_receipt' => performance, 'validation_receipt' => validation, 'finished_at' => OvernightBatch.timestamp)
-          raise Unsafe, 'Artifact/receipt validation failed; output retained for investigation.' unless @store.valid_record?(record, row, profile, @run, @run['runtime'])
+            'performance_receipt' => performance, 'provenance_receipt' => provenance,
+            'validation_receipt' => validation, 'finished_at' => OvernightBatch.timestamp)
+          raise Unsafe, 'Artifact/receipt validation failed; output retained for investigation.' unless @store.valid_record?(record, row, profile, @run, @run['runtime'], engine: engine)
           @store.save(@run)
         rescue Cancelled => e
           record['status'] = 'cancelled'; record['error'] = "#{e.class}: #{e.message}"; @cancel_requested = true
@@ -536,7 +602,7 @@ module BOMEngine
             @pause_requested = true
           else
             # Continue on error means next MODEL. Other profiles remain pending.
-            row['profiles'].each_key { |p| @attempted[[row['key'],p]] = true }
+            row['exports'].each { |e, profiles| profiles.each_key { |p| @attempted[[row['key'],e,p]] = true } }
           end
         ensure
           @run.delete('current'); @stepping = false

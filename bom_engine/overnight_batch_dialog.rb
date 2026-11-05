@@ -60,6 +60,7 @@ module BOMEngine
           @catalog = Catalog.new(@source_root, output_root: @store.root, require_d: @require_d)
           runtime = @host.runtime
           run = @store.create(catalog: @catalog, selected: data.fetch('selected'), profiles: data.fetch('profiles'),
+            engines: data.fetch('engines', ['e4']),
             runtime: runtime, stop_on_error: data['stop_on_error'], free_bytes: @host.free_bytes(@store.root))
           attach(run); @queue.resume; schedule
         when 'load'
@@ -68,7 +69,11 @@ module BOMEngine
           @source_root = run.fetch('source_root')
           @rows = []
           scan(@source_root)
-          attach(run) # load/reverify only; Resume remains explicit.
+          if run['schema'] == LEGACY_SCHEMA
+            @legacy_run = run # Read/display only. Never save or migrate v2.
+          else
+            attach(run) # load/reverify only; Resume remains explicit.
+          end
         when 'resume'
           raise Unsafe, 'Load a run first.' unless @queue
           @queue.resume; schedule
@@ -84,14 +89,17 @@ module BOMEngine
         if @queue && OvernightBatch.canonical(@queue.run['source_root']) != OvernightBatch.canonical(catalog.root)
           release_queue
         end
+        @legacy_run = nil if @legacy_run && OvernightBatch.canonical(@legacy_run['source_root']) != OvernightBatch.canonical(catalog.root)
         @catalog = catalog
         @rows = []
         @source_root = @catalog.root
         runtime = @host.runtime
         @rows = @catalog.scan.map do |row|
-          statuses = PROFILES.to_h do |p|
-            prior, reason = @store.reusable(row, p, runtime, @source_root)
-            [p, {'status' => prior ? 'Verified' : (reason == 'needs_verification' ? 'Needs Verification' : 'Missing'), 'reason' => reason}]
+          statuses = ENGINES.to_h do |engine|
+            [engine, PROFILES.to_h do |p|
+              prior, reason = @store.reusable(row, p, runtime, @source_root, engine: engine)
+              [p, {'status' => prior ? 'Verified' : (reason == 'needs_verification' ? 'Needs Verification' : 'Missing'), 'reason' => reason}]
+            end]
           end
           row.merge('statuses' => statuses)
         end
@@ -130,22 +138,28 @@ module BOMEngine
       def release_queue
         @queue.close if @queue
         @queue = nil
+        @legacy_run = nil
       end
       def state
+        run = (@queue && @queue.run) || @legacy_run
         rows = @rows.map do |row|
-          live = @queue && @queue.run['models'].find { |m| m['relative'] == row['relative'] && m['sha256'] == row['sha256'] }
+          live = run && run['models'].find { |m| m['relative'] == row['relative'] && m['sha256'] == row['sha256'] }
           next row unless live
-          statuses = row['statuses'].dup
-          live['profiles'].each do |p, r|
-            label = %w[success reused].include?(r['status']) ? 'Verified' : r['status'].tr('_', ' ').capitalize
-            statuses[p] = {'status' => label, 'reason' => r['error'] || r['reuse_reason'] || r['status']}
+          statuses = row['statuses'].transform_values(&:dup)
+          exports = @legacy_run ? {'e4' => live.fetch('profiles')} : live.fetch('exports')
+          exports.each do |engine, records|
+            records.each do |p, r|
+              label = %w[success reused].include?(r['status']) ? 'Verified' : r['status'].tr('_', ' ').capitalize
+              label = 'Historical' if @legacy_run && %w[success reused].include?(r['status'])
+              statuses[engine][p] = {'status' => label, 'reason' => r['error'] || r['reuse_reason'] || r['status']}
+            end
           end
           row.merge('statuses' => statuses)
         end
         {'root' => @source_root, 'rows' => rows, 'error' => @error, 'active' => !!active?,
-          'run' => @queue && @queue.run, 'counts' => @queue && @queue.counts,
+          'run' => run, 'counts' => @queue && @queue.counts, 'read_only' => !!@legacy_run,
           'output_root' => @store.root, 'runs' => @store.run_ids,
-          'manifest' => @queue && File.join(@store.root, @queue.run['run_id'], 'manifest.json')}
+          'manifest' => run && File.join(@store.root, run['run_id'], 'manifest.json')}
       end
       def render
         return if @closed || !@dialog
