@@ -98,6 +98,26 @@ class TestOvernightBatch < Minitest::Test
     assert_equal ['nested/same.SKP', 'same.skp'], rows.map { |r| r['relative'] }
     assert_equal 2, rows.map { |r| r['key'] }.uniq.size
   end
+  def test_new_batch_exports_have_readable_names_outside_run_folders
+    q = queue(create_versions(engines: %w[e4], profiles: %w[exact visual])); drain(q)
+    records = q.run['models'][0]['exports']['e4']
+    %w[exact visual].each do |profile|
+      record = records.fetch(profile)
+      path = record.fetch('display_path')
+      assert_equal "same__E4__#{profile.upcase}.bomc", File.basename(path)
+      assert_equal File.join(@out, 'visible-exports'), File.dirname(path)
+      assert_equal B.fingerprint(record.fetch('path')), B.fingerprint(path)
+    end
+  end
+  def test_readable_name_collision_never_overwrites_existing_file
+    directory = @store.visible_root; FileUtils.mkdir_p(directory)
+    old = File.join(directory, 'same__E4__EXACT.bomc'); File.binwrite(old, 'existing export')
+    q = queue(create_versions(engines: ['e4'], profiles: ['exact'])); drain(q)
+    path = q.run['models'][0]['exports']['e4']['exact'].fetch('display_path')
+    assert_equal 'same (2)__E4__EXACT.bomc', File.basename(path)
+    assert_equal 'existing export', File.binread(old)
+    assert_equal 1, q.counts['completed']
+  end
   def create_versions(engines: %w[e2 e3 e4], profiles: %w[exact visual])
     @store.create(catalog: @catalog, selected: ['same.skp'], engines: engines, profiles: profiles,
       runtime: @host.runtime, stop_on_error: false, free_bytes: 10**12)

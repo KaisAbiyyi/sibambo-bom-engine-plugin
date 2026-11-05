@@ -153,6 +153,46 @@ module BOMEngine
         FileUtils.mkdir_p(@root, mode: 0o700)
         raise Unsafe, 'Output directory is not writable.' unless File.writable?(@root)
       end
+      def visible_root
+        @root == File.expand_path(OUTPUT_ROOT) ? 'D:/SibamboExports' : File.join(@root, 'visible-exports')
+      end
+      # Published user-facing copies retain the private validated original and
+      # receipts for recovery; never overwrite a different existing export.
+      def publish_visible(source, row, engine, profile)
+        OvernightBatch.unlinked!(visible_root)
+        FileUtils.mkdir_p(visible_root)
+        basename = File.basename(row.fetch('relative'), File.extname(row.fetch('relative')))
+          .gsub(/[<>:"\/\\|?*\x00-\x1f]/, '_').sub(/[ .]+\z/, '')
+        basename = 'Model' if basename.empty?
+        basename = "_#{basename}" if basename.match?(/\A(?:con|prn|aux|nul|com[1-9]|lpt[1-9])\z/i)
+        basename = basename.each_char.take(80).join
+        original = OvernightBatch.fingerprint(source)
+        (1..9999).each do |number|
+          suffix = number == 1 ? '' : " (#{number})"
+          path = File.join(visible_root, "#{basename}#{suffix}__#{engine.upcase}__#{profile.upcase}#{EXTENSIONS.fetch(engine)}")
+          OvernightBatch.unlinked!(path)
+          if File.exist?(path)
+            return path if File.file?(path) && OvernightBatch.fingerprint(path) == original
+            next
+          end
+          created = false
+          begin
+            File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |output|
+              created = true
+              File.open(source, 'rb') { |input| IO.copy_stream(input, output) }
+              output.flush; output.fsync
+            end
+            raise Unsafe, 'Readable copy failed verification.' unless OvernightBatch.fingerprint(path) == original
+            return path
+          rescue Errno::EEXIST
+            next
+          rescue StandardError
+            File.delete(path) if created && File.file?(path)
+            raise
+          end
+        end
+        raise Unsafe, 'No available readable output name.'
+      end
       def directory(id)
         raise Unsafe, 'Invalid batch run ID.' unless id.to_s.match?(RUN_ID)
         path = File.join(@root, id)
@@ -222,7 +262,7 @@ module BOMEngine
         profiles = PROFILES.select { |profile| profiles.include?(profile) }
         rows = catalog.scan.to_h { |r| [r['relative'], r] }
         raise Unsafe, 'Selection is stale; refresh.' unless selected.all? { |s| rows.key?(s) }
-        required = MIN_FREE_BYTES + selected.sum { |s| rows.fetch(s)['bytes'] * profiles.size * engines.size }
+        required = MIN_FREE_BYTES + selected.sum { |s| rows.fetch(s)['bytes'] * profiles.size * engines.size * 2 }
         raise Unsafe, "Insufficient disk space: need at least #{required} bytes." unless free_bytes.is_a?(Integer) && free_bytes >= required
         prepare!
         id = "#{Time.now.utc.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(5)}"
@@ -236,6 +276,7 @@ module BOMEngine
             row.merge('exports' => engines.to_h do |engine|
               [engine, profiles.to_h do |p|
                 prior, reason = reusable(row, p, runtime, catalog.root, engine: engine)
+                prior['display_path'] = publish_visible(prior.fetch('path'), row, engine, p) if prior
                 [p, prior ? prior.merge('status' => 'reused') : {'status' => 'pending', 'reuse_reason' => reason, 'attempts' => []}]
               end]
             end)
@@ -460,11 +501,15 @@ module BOMEngine
       def reverify_existing!
         OvernightBatch.jobs(@run).each do |row, engine, p, r|
           if %w[success reused].include?(r['status'])
-            next if @store.valid_record?(r, row, p, @run, @run.fetch('runtime'), engine: engine)
+            if @store.valid_record?(r, row, p, @run, @run.fetch('runtime'), engine: engine)
+              r['display_path'] = @store.publish_visible(r.fetch('path'), row, engine, p)
+              next
+            end
             row['exports'][engine][p] = {'status' => 'pending', 'reuse_reason' => 'needs_verification', 'attempts' => Array(r['attempts'])}
           elsif r['status'] == 'in_progress'
             recovered = recover_attempt(row, engine, p, r)
             if recovered
+              recovered['display_path'] = @store.publish_visible(recovered.fetch('path'), row, engine, p)
               row['exports'][engine][p] = recovered
               next
             end
@@ -591,6 +636,7 @@ module BOMEngine
             'performance_receipt' => performance, 'provenance_receipt' => provenance,
             'validation_receipt' => validation, 'finished_at' => OvernightBatch.timestamp)
           raise Unsafe, 'Artifact/receipt validation failed; output retained for investigation.' unless @store.valid_record?(record, row, profile, @run, @run['runtime'], engine: engine)
+          record['display_path'] = @store.publish_visible(output, row, engine, profile)
           @store.save(@run)
         rescue Cancelled => e
           record['status'] = 'cancelled'; record['error'] = "#{e.class}: #{e.message}"; @cancel_requested = true

@@ -158,7 +158,7 @@ module BOMEngine
         end
         {'root' => @source_root, 'rows' => rows, 'error' => @error, 'active' => !!active?,
           'run' => run, 'counts' => @queue && @queue.counts, 'read_only' => !!@legacy_run,
-          'output_root' => @store.root, 'runs' => @store.run_ids,
+          'output_root' => @store.visible_root, 'runs' => @store.run_ids,
           'manifest' => run && File.join(@store.root, run['run_id'], 'manifest.json')}
       end
       def render
