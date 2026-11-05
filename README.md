@@ -73,12 +73,14 @@ See [AGENTS.md](AGENTS.md) and [docs/AGENT-ORCHESTRATION.md](docs/AGENT-ORCHESTR
 
 ## Overnight Batch Export (source candidate, PR #32)
 
-The selected-SKP serial queue supports recursive scan and version checkboxes:
-**E2 Canonical JSON gzip, E3 CleanPKG, E4 BOMC**, with E4 selected by default.
-Select one or several versions, then Exact, Visual, or both. Each selected model
-exports its versions in E2/E3/E4 order, Exact before Visual, with separate status,
-artifact, provenance and verified reuse for each combination. Pause/cancel and
-verified restart/resume retain completed combinations.
+Evolution provides three separate batch menus: **Batch E2 Export**, **Batch E3
+Export**, and **Batch E4 Export**, in one RBZ. Each opens its own version-locked
+dialog with Exact, Visual or both, and scans/reuses only that version. Only one
+native export may run at once across all dialogs. Outputs and technical files
+remain grouped in the same model-named folder regardless of menu. Each batch
+retains independent status, validation and reuse. The shared capture/writer
+performance and native responsiveness still require qualification; separating
+menus does not establish an optimization or Not Responding fix.
 
 The multi-version run schema is v3. Older v2 runs can be viewed read-only and
 cannot be silently migrated or resumed. Start a new run after updating runtime.

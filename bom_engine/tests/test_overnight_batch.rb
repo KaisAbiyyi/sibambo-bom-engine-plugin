@@ -105,7 +105,7 @@ class TestOvernightBatch < Minitest::Test
       record = records.fetch(profile)
       path = record.fetch('display_path')
       assert_equal "same__E4__#{profile.upcase}.bomc", File.basename(path)
-      assert_equal File.join(@out, 'visible-exports', 'same'), File.dirname(path)
+      assert_equal B.canonical(File.join(@out, 'visible-exports', 'same')), B.canonical(File.dirname(path))
       assert_equal B.fingerprint(record.fetch('path')), B.fingerprint(path)
       assert File.file?("#{path}.performance.json")
       assert File.file?("#{path}.batch-validation.json")
@@ -119,6 +119,18 @@ class TestOvernightBatch < Minitest::Test
     assert_equal 'same (2)__E4__EXACT.bomc', File.basename(path)
     assert_equal 'existing export', File.binread(old)
     assert_equal 1, q.counts['completed']
+  end
+  def test_version_specific_dialog_locks_start_and_rejects_other_versions
+    %w[e2 e3 e4].each do |engine|
+      dialog = B::Dialog.new(host: @host, store: @store, require_d: false, engine: engine)
+      dialog.command('action' => 'scan', 'root' => @src)
+      assert_equal engine, dialog.state['fixed_engine']
+      assert_raises(B::Unsafe) { dialog.command('action' => 'start', 'selected' => ['same.skp'], 'profiles' => ['exact'], 'engines' => (B::ENGINES - [engine])) }
+      dialog.command('action' => 'start', 'selected' => ['same.skp'], 'profiles' => ['exact'])
+      @queue = dialog.queue
+      assert_equal [engine], @queue.run['engines']
+      dialog.command('action' => 'cancel'); @queue.close
+    end
   end
   def create_versions(engines: %w[e2 e3 e4], profiles: %w[exact visual])
     @store.create(catalog: @catalog, selected: ['same.skp'], engines: engines, profiles: profiles,
@@ -550,7 +562,7 @@ class TestOvernightBatch
       'entry' => 'synthetic-entry.rb', 'moduleName' => 'SibamboBatchFixture'}]
     original = File.method(:read)
     File.stub(:read, ->(path, **opts) { path.end_with?('/engines.json') ? JSON.generate(slots) : original.call(path, **opts) }) { load template }
-    assert_includes labels, 'Overnight Batch Export...'
+    %w[E2 E3 E4].each { |engine| assert_includes labels, "Batch #{engine} Export..." }
     fixture = Module.new
     fixture.define_singleton_method(:load_engine) { BOMEngine }
     Object.const_set(:SibamboBatchFixture, fixture)
@@ -559,7 +571,7 @@ class TestOvernightBatch
     lab.define_singleton_method(:require) { |path| required << path }
     shown = 0
     File.stub(:file?, true) do
-      B::Dialog.stub(:show, -> { shown += 1 }) { lab.open_overnight_batch }
+      B::Dialog.stub(:show, ->(engine:) { assert_equal 'e4', engine; shown += 1 }) { lab.open_overnight_batch }
     end
     assert_equal 1, shown
     assert_equal [File.join(File.dirname(template), 'synthetic-entry.rb')], required

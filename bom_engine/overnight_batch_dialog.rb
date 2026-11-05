@@ -6,12 +6,15 @@ module BOMEngine
     # HtmlDialog callbacks only request state transitions. One timer owns one
     # fiber, and never resumes it recursively when SketchUp pumps UI events.
     class Dialog
-      def self.show
-        @instance ||= new
-        @instance.show
+      def self.show(engine: 'e4')
+        raise Unsafe, 'Unsupported batch version.' unless ENGINES.include?(engine)
+        @instances ||= {}
+        (@instances[engine] ||= new(engine: engine)).show
       end
       attr_reader :queue
-      def initialize(host: SketchupHost.new, store: Store.new, require_d: true)
+      def initialize(host: SketchupHost.new, store: Store.new, require_d: true, engine: nil)
+        raise Unsafe, 'Unsupported batch version.' if engine && !ENGINES.include?(engine)
+        @engine = engine
         @host, @store, @require_d = host, store, require_d
         @source_root = SOURCE_ROOT; @rows = []; @busy = false; @closed = false
       end
@@ -21,7 +24,7 @@ module BOMEngine
           return
         end
         @closed = false
-        @dialog = UI::HtmlDialog.new(dialog_title: 'Overnight Batch Export', preferences_key: 'sibambo.overnight_batch',
+        @dialog = UI::HtmlDialog.new(dialog_title: @engine ? "Batch #{@engine.upcase} Export" : 'Overnight Batch Export', preferences_key: "sibambo.overnight_batch.#{@engine || 'legacy'}",
           scrollable: true, resizable: true, width: 1050, height: 740, style: UI::HtmlDialog::STYLE_DIALOG)
         @dialog.set_file(File.join(__dir__, 'overnight_batch.html'))
         @dialog.add_action_callback('batch') do |_, payload|
@@ -56,16 +59,19 @@ module BOMEngine
           root = UI.select_directory(title: 'Choose SKP source root on D:', directory: @source_root)
           scan(root) if root
         when 'start'
+          raise Unsafe, 'This batch accepts only its selected version.' if @engine && data.fetch('engines', [@engine]) != [@engine]
           release_queue
           @catalog = Catalog.new(@source_root, output_root: @store.root, require_d: @require_d)
           runtime = @host.runtime
           run = @store.create(catalog: @catalog, selected: data.fetch('selected'), profiles: data.fetch('profiles'),
-            engines: data.fetch('engines', ['e4']),
+            engines: @engine ? [@engine] : data.fetch('engines', ['e4']),
             runtime: runtime, stop_on_error: data['stop_on_error'], free_bytes: @host.free_bytes(@store.root))
           attach(run); @queue.resume; schedule
         when 'load'
           release_queue
           run = @store.load(data.fetch('run_id'))
+          saved_engines = run['engines'] || ['e4']
+          raise Unsafe, 'Open this run in its matching version batch.' if @engine && saved_engines != [@engine]
           @source_root = run.fetch('source_root')
           @rows = []
           scan(@source_root)
@@ -95,7 +101,7 @@ module BOMEngine
         @source_root = @catalog.root
         runtime = @host.runtime
         @rows = @catalog.scan.map do |row|
-          statuses = ENGINES.to_h do |engine|
+          statuses = (@engine ? [@engine] : ENGINES).to_h do |engine|
             [engine, PROFILES.to_h do |p|
               prior, reason = @store.reusable(row, p, runtime, @source_root, engine: engine)
               [p, {'status' => prior ? 'Verified' : (reason == 'needs_verification' ? 'Needs Verification' : 'Missing'), 'reason' => reason}]
@@ -158,7 +164,7 @@ module BOMEngine
         end
         {'root' => @source_root, 'rows' => rows, 'error' => @error, 'active' => !!active?,
           'run' => run, 'counts' => @queue && @queue.counts, 'read_only' => !!@legacy_run,
-          'output_root' => @store.visible_root, 'runs' => @store.run_ids,
+          'output_root' => @store.visible_root, 'runs' => @store.run_ids, 'fixed_engine' => @engine,
           'manifest' => run && File.join(@store.root, run['run_id'], 'manifest.json')}
       end
       def render
