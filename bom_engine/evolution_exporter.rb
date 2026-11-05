@@ -267,9 +267,20 @@ module BOMEngine
         Dir.mktmpdir('.evolution-export-', scratch_parent) do |job_dir|
           texture_dir = File.join(job_dir, 'textures')
           FileUtils.mkdir_p(texture_dir)
+          capture_controller = BOMCProcessing::Controller.new(
+            settings: processing || BOMCProcessing.settings(:balanced),
+            clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
+            cancelled: -> { false },
+            on_yield: ->(event) { progress.call(event.merge(phase: :capturing)) if progress })
           checkpoint = lambda do |event = {}|
             guard.check!
-            progress.call(event.merge(phase: :capturing)) if progress
+            # Capture emits work checkpoints per entity/pixel block. Forward
+            # only budgeted slices to the UI; each raw callback otherwise costs
+            # a complete overnight timer interval. Keep forced boundaries.
+            payload = {stage: :capture, processed: 0, total: 0}.merge(event.slice(
+              :stage, :processed, :total, :candidate_bytes, :source_bytes,
+              :savings_bytes, :phase, :force, :operation_label, :unit))
+            capture_controller.checkpoint(**payload)
           end
           checkpoint.call(stage: :capture, processed: 0, total: 1, force: true)
           graph = PerformanceTrace.stage(:evolution_capture) do
