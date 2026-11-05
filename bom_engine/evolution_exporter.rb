@@ -231,7 +231,11 @@ module BOMEngine
       { path: path, receipt: receipt }
     end
 
-    def export(model, engine:, profile:, output_path:, processing: nil, progress: nil, active_model: nil, performance_trace: nil)
+    def export(model, **options)
+      SibamboNativeExportLease.direct { export_owned(model, **options) }
+    end
+
+    def export_owned(model, engine:, profile:, output_path:, processing: nil, progress: nil, active_model: nil, performance_trace: nil)
       engine = normalize_engine(engine)
       profile = normalize_profile(profile)
       if Gem.win_platform? && Dir.exist?('D:/') && !File.expand_path(output_path).match?(/\AD:[\\\/]/i)
@@ -256,12 +260,27 @@ module BOMEngine
         guard = ModelRevisionGuard.new(model, active_model: active_model).attach
         parent = File.dirname(File.expand_path(output_path))
         FileUtils.mkdir_p(parent)
-        Dir.mktmpdir('.evolution-export-', parent) do |job_dir|
+        # Deep batch attempts must not push codec caches past Windows cleanup
+        # limits. Match BOMC's short D: scratch ownership and block cleanup.
+        scratch_parent = Gem.win_platform? && Dir.exist?('D:/') ? 'D:/projects/sibambo/scratch' : parent
+        FileUtils.mkdir_p(scratch_parent)
+        Dir.mktmpdir('.evolution-export-', scratch_parent) do |job_dir|
           texture_dir = File.join(job_dir, 'textures')
           FileUtils.mkdir_p(texture_dir)
+          capture_controller = BOMCProcessing::Controller.new(
+            settings: processing || BOMCProcessing.settings(:balanced),
+            clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
+            cancelled: -> { false },
+            on_yield: ->(event) { progress.call(event.merge(phase: :capturing)) if progress })
           checkpoint = lambda do |event = {}|
             guard.check!
-            progress.call(event.merge(phase: :capturing)) if progress
+            # Capture emits work checkpoints per entity/pixel block. Forward
+            # only budgeted slices to the UI; each raw callback otherwise costs
+            # a complete overnight timer interval. Keep forced boundaries.
+            payload = {stage: :capture, processed: 0, total: 0}.merge(event.slice(
+              :stage, :processed, :total, :candidate_bytes, :source_bytes,
+              :savings_bytes, :phase, :force, :operation_label, :unit))
+            capture_controller.checkpoint(**payload)
           end
           checkpoint.call(stage: :capture, processed: 0, total: 1, force: true)
           graph = PerformanceTrace.stage(:evolution_capture) do
@@ -357,6 +376,8 @@ module BOMEngine
         end
       end
     end
+
+    private_class_method :export_owned
 
     def build_provenance(model, artifact_path, engine:, profile:, source_tree_sha256:, format:, writer_id:, source_info: nil, artifact_sha256: nil, artifact_bytes: nil)
       bytes = artifact_bytes || File.size(artifact_path)

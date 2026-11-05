@@ -32,6 +32,11 @@ module UI
 
   class << self
     attr_reader :opened_url
+    attr_accessor :beep_count, :beep_error
+    def beep
+      self.beep_count = beep_count.to_i + 1
+      raise 'sound unavailable' if beep_error
+    end
     def start_timer(_interval, _repeat, &callback)
       @timer_callback = callback
       1
@@ -77,6 +82,12 @@ raise 'Nested tick failed to release the active job' unless BOMEngine::Conversio
 scripts = UI::HtmlDialog.last.scripts
 raise 'Nested timer triggered failure during a successful export' if scripts.any? { |script| script.include?('failConversion(') }
 raise 'Nested timer dispatched duplicate terminal events' unless scripts.count { |script| script.include?('completeConversion(') } == 1
+raise 'Successful single export must sound once' unless UI.beep_count == 1
+UI.beep_error = true
+sound_error_job = BOMEngine::ConversionJob.start(title: 'Sound error', output_path: 'D:/SibamboExports/test') { { path: 'D:/SibamboExports/test', validation: {} } }
+UI.tick while sound_error_job.running?
+raise 'Sound error must not fail export' unless sound_error_job.state == :completed
+UI.beep_error = false
 
 def assert(condition, message)
   raise "FAIL: #{message}" unless condition

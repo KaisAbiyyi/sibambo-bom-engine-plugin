@@ -70,3 +70,21 @@ GPL-3.0-only. See [LICENSE](LICENSE).
 ## Multi-agent orchestration
 
 See [AGENTS.md](AGENTS.md) and [docs/AGENT-ORCHESTRATION.md](docs/AGENT-ORCHESTRATION.md) for unassigned tasks, exclusive agent claims, pushed checkpoint/recovery, author attribution, and cross-repository Sibambo integration acceptance. SketchUp-specific manual acceptance and E4 qualification remain required.
+
+## Overnight Batch Export (source candidate, PR #32)
+
+Evolution provides three separate batch menus: **Batch E2 Export**, **Batch E3
+Export**, and **Batch E4 Export**, in one RBZ. Each opens its own version-locked
+dialog with Exact, Visual or both, and scans/reuses only that version. Only one
+native export may run at once across all dialogs. Outputs and technical files
+remain grouped in the same model-named folder regardless of menu. Each batch
+retains independent status, validation and reuse. The shared capture/writer
+performance and native responsiveness still require qualification; separating
+menus does not establish an optimization or Not Responding fix.
+
+The multi-version run schema is v3. Older v2 runs can be viewed read-only and
+cannot be silently migrated or resumed. Start a new run after updating runtime.
+See the [version-selection Windows handoff](docs/worklogs/SIB-ENG-BATCH-VERSIONS-001-WINDOWS-HANDOFF.md).
+The owner's delivery request is **RBZ only, without installation**. Synthetic/CI
+proof remains separate from real SketchUp and owner acceptance; do not merge or
+start unattended work before the owner gates are accepted.

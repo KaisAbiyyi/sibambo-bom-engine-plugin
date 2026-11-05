@@ -4,8 +4,35 @@ require 'test/unit'
 require 'tmpdir'
 require_relative '../evolution_exporter'
 require_relative '../performance_trace'
+require_relative 'support/evolution_fixture'
 
 class TestEvolutionPublication < Test::Unit::TestCase
+  def test_portable_capture_batches_work_checkpoints_before_yielding_to_ui
+    original = BOMEngine::BOMCExtension.method(:capture_graph)
+    BOMEngine::BOMCExtension.define_singleton_method(:capture_graph) do |_, **options|
+      checkpoint = options.fetch(:checkpoint)
+      10_000.times { |n| checkpoint.call(stage: :snapshot_materials, processed: n + 1, total: 10_000) }
+      checkpoint.call(stage: :snapshot_materials, processed: 10_000, total: 10_000, force: true, operation_label: 'finished material scan')
+      EvolutionFixture.graph
+    end
+    [:e2, :e3].each do |engine|
+    Dir.mktmpdir('portable-cooperation-') do |dir|
+      source = File.join(dir, 'fixture.skp'); File.binwrite(source, 'fixture source')
+      model = FakeModel.new(source, 'fixture', 'fixture', false, [])
+      events = []
+      result = BOMEngine::EvolutionExporter.export(model, engine: engine, profile: :exact,
+        output_path: File.join(dir, 'fixture'), processing: BOMEngine::BOMCProcessing.settings(:interactive),
+        progress: ->(event) { events << event }, active_model: -> { model })
+      assert_operator events.length, :<, 500, 'UI yields must be bounded by processing budgets, not one yield per entity'
+      puts "Portable #{engine}: 10000 raw work checkpoints -> #{events.length} UI events (synthetic, no SketchUp)"
+      assert events.any? { |event| event[:operation_label] == 'finished material scan' }, 'forced completion remains visible'
+      assert result[:validation][:passed]
+      assert_empty model.observers
+    end
+    end
+  ensure
+    BOMEngine::BOMCExtension.define_singleton_method(:capture_graph, original) if original
+  end
   FakeModel = Struct.new(:path, :guid, :name, :modified, :observers) do
     def initialize(*args)
       super

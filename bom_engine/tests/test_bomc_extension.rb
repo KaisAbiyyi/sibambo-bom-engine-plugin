@@ -135,8 +135,8 @@ module BOMEngine
         menu = FakeMenu.new
         BOMCExtension.register_menu(menu)
         assert(
-          menu.labels == ['Sibambo BOMC Engine: Export BOMC 1.2...', 'About Sibambo BOMC Engine'],
-          'JCM is part of standard Exact and no longer needs a separate experimental menu'
+          menu.labels == ['Overnight Batch Export...', 'Sibambo BOMC Engine: Export BOMC 1.2...', 'About Sibambo BOMC Engine'],
+          'Overnight Batch menu is present and JCM remains part of standard Exact without a separate experimental menu'
         )
 
         texture_dir = Dir.mktmpdir('bomc-texture-choice')

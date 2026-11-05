@@ -20,7 +20,7 @@ jobs:
           $env:TEMP = Join-Path $env:GITHUB_WORKSPACE 'scratch/png-worker-temp'
           $env:TMP = $env:TEMP
           New-Item -ItemType Directory -Force $env:TEMP | Out-Null
-          foreach ($test in @('test_windows_codec_process.rb', 'test_candidate013_png_worker.rb', 'test_candidate013_cooperation.rb', 'test_candidate012_cooperation.rb')) {
+          foreach ($test in @('test_windows_codec_process.rb', 'test_candidate013_png_worker.rb', 'test_batch_texture_cleanup.rb', 'test_candidate013_cooperation.rb', 'test_candidate012_cooperation.rb', 'test_overnight_batch.rb')) {
             ruby "bom_engine/tests/$test"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
@@ -53,17 +53,29 @@ jobs:
           git fetch https://github.com/rdwnilyas-coder/sibambo-bom-engine.git main
 
       - name: Run BOM Engine Production Tests
+        env:
+          TEMP: ${{ runner.temp }}/sibambo-batch-temp
+          TMP: ${{ runner.temp }}/sibambo-batch-temp
         run: |
           set -euo pipefail
+          mkdir -p "$TEMP"
           for f in bom_engine/tests/test_*.rb; do
             echo "Running $f..."
             ruby -I . "$f"
           done
 
+      - name: Verify Overnight Batch HtmlDialog in Chromium
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/sibambo-ui/node_modules/@playwright/test
+        run: node bom_engine/tests/overnight_batch_ui.cjs
+
       - name: Build Evolution Lab Packages
+        # Owner explicitly prohibited RBZ packaging for this batch recovery.
+        if: github.head_ref != 'work/sib-eng-batch-01-overnight-20261103'
         run: ruby tools/history/build_evolution_lab.rb
 
       - name: Run History & Provenance Tests
+        if: github.head_ref != 'work/sib-eng-batch-01-overnight-20261103'
         env:
           PLAYWRIGHT_MODULE: ${{ runner.temp }}/sibambo-ui/node_modules/@playwright/test
         run: |
@@ -74,9 +86,11 @@ jobs:
           done
 
       - name: Build current Evolution lineup candidate
+        if: github.head_ref != 'work/sib-eng-batch-01-overnight-20261103'
         run: ruby tools/history/build_evolution_lineup.rb --output "$RUNNER_TEMP/evolution-lineup-candidate"
 
       - name: Preserve candidate RBZ and identity manifest
+        if: github.head_ref != 'work/sib-eng-batch-01-overnight-20261103'
         uses: actions/upload-artifact@v4
         with:
           name: evolution-lineup-candidate-${{ github.sha }}

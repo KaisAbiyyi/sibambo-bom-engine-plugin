@@ -18,6 +18,7 @@ require_relative 'conversion_job'
 require_relative 'capture_ir'
 require_relative 'performance_trace'
 require_relative 'evolution_export_policy'
+require_relative 'overnight_batch_dialog'
 
 if defined?(Sketchup) && defined?(UI)
   require_relative 'core'
@@ -248,7 +249,11 @@ module BOMEngine
       jcm_selected?(candidate) ? published.merge(required_loader: 'bomc-next-jcm-v1') : published
     end
 
-    def export(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil, allow_jpeg_color_map: nil, prepared_color_maps: nil, candidate_cache: nil, performance_trace: nil)
+    def export(model, **options)
+      SibamboNativeExportLease.direct { export_owned(model, **options) }
+    end
+
+    def export_owned(model, output_path:, profile: DEFAULT_PROFILE, progress: nil, settings: nil, diagnostics: nil, allow_jpeg_color_map: nil, prepared_color_maps: nil, candidate_cache: nil, performance_trace: nil)
       profile = EvolutionExportPolicy.profile(profile)
       if Gem.win_platform? && Dir.exist?('D:/') && !File.expand_path(output_path).match?(/\AD:[\\\/]/i)
         raise ArgumentError, 'Simpan hasil ekspor BOMC di drive D:.'
@@ -273,6 +278,7 @@ module BOMEngine
       ).merge(format: 'bomc', profile: profile, performance_receipt_path: performance_receipt_path(output_path))
       jcm_selected?(result) ? result.merge(required_loader: 'bomc-next-jcm-v1') : result
     end
+    private_class_method :export_owned
 
     def runtime_build_sha
       path = File.join(File.dirname(__FILE__), 'BUILD_SHA.txt')
@@ -462,6 +468,7 @@ module BOMEngine
     private_class_method :report_interactive_error
 
     def register_menu(menu)
+      menu.add_item('Overnight Batch Export...') { OvernightBatch::Dialog.show }
       menu.add_item('Sibambo BOMC Engine: Export BOMC 1.2...') do
         export_interactive
       end
@@ -473,7 +480,13 @@ module BOMEngine
     def export_context(output_path, yield_callback, profile: DEFAULT_PROFILE, diagnostics: nil, allow_jpeg_color_map: false, prepared_color_maps: nil, candidate_cache: nil, processing: nil, performance_trace: nil)
       parent = File.dirname(File.expand_path(output_path))
       FileUtils.mkdir_p(parent)
-      texture_directory = Dir.mktmpdir('bomc-textures', parent)
+      # Batch attempt paths are already deep; the PNG worker adds a 64-byte
+      # cache key. SketchUp's Windows Ruby cannot reliably unlink those paths
+      # beyond MAX_PATH, even after successful publication. Keep export-owned
+      # textures/codecs on D: under a short parent and retain normal cleanup.
+      texture_parent = Gem.win_platform? && Dir.exist?('D:/') ? 'D:/projects/sibambo/scratch' : parent
+      FileUtils.mkdir_p(texture_parent)
+      texture_directory = Dir.mktmpdir('bomc-textures', texture_parent)
       effective_cache = candidate_cache
       captured_source_info = nil
       unless effective_cache

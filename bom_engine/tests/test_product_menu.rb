@@ -11,9 +11,10 @@ product_menu = plugins_menu.submenus.find { |menu| menu.name == 'Sibambo BOMC En
 raise 'Sibambo BOMC Engine submenu was not registered.' unless product_menu
 
 expected = [
+  'Overnight Batch Export...',
   'Sibambo BOMC Engine: Export BOMC 1.2...',
   'About Sibambo BOMC Engine'
 ]
 raise "Unexpected product menu: #{product_menu.items.inspect}" unless product_menu.items == expected
 
-puts 'Sibambo BOMC Engine menu: production export and About only PASS'
+puts 'Sibambo BOMC Engine menu: Overnight Batch, production export, and About; no experimental JCM PASS'
