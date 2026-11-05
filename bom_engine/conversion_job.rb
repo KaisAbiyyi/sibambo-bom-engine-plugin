@@ -334,6 +334,11 @@ module BOMEngine
       transition_state(:publishing)
       transition_state(:completed)
       @finished = true
+      begin
+        UI.beep if @kind == :export
+      rescue StandardError
+        # Notification failure must not change the export result.
+      end
       @result_path = result[:path] if @kind == :batch_export
       resize_result(650)
       stats = result[:validation] || {}
