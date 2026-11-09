@@ -11,6 +11,15 @@ module BOMEngine
     MAX_DEPTH = 64
     MAX_TEXTURE_PIXELS = 16_384 * 16_384
 
+    # Decode limits are a property of the decoding context, not of the format.
+    # READER_LIMITS guard every untrusted reader and must never be raised.
+    # PRODUCER_VERIFY_LIMITS is used only by the exporter to read back the
+    # container it has just built itself, so large exact exports are not rejected
+    # by the reader-sized guards. Still bounded: a runaway producer fails closed.
+    Limits = Struct.new(:max_input_bytes, :max_expanded_bytes, :max_allocation_bytes)
+    READER_LIMITS = Limits.new(MAX_INPUT_BYTES, MAX_EXPANDED_BYTES, MAX_ALLOCATION_BYTES).freeze
+    PRODUCER_VERIFY_LIMITS = Limits.new(512 * 1024 * 1024, 768 * 1024 * 1024, 768 * 1024 * 1024).freeze
+
     module_function
 
     def checked_table_bytes(count, components, element_bytes, available_payload_bytes = nil, budget: MAX_ALLOCATION_BYTES, min_wire: element_bytes)

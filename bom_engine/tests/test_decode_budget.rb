@@ -123,6 +123,72 @@ module BOMEngine
         end
       end
 
+      def test_reader_and_producer_limits_are_separate
+        reader = DecodeBudget::READER_LIMITS
+        producer = DecodeBudget::PRODUCER_VERIFY_LIMITS
+        assert(reader.max_input_bytes == DecodeBudget::MAX_INPUT_BYTES &&
+          reader.max_expanded_bytes == DecodeBudget::MAX_EXPANDED_BYTES &&
+          reader.max_allocation_bytes == DecodeBudget::MAX_ALLOCATION_BYTES, 'reader limits keep the 80/120/256 MiB defaults')
+        assert(producer.max_input_bytes > reader.max_input_bytes &&
+          producer.max_expanded_bytes > reader.max_expanded_bytes &&
+          producer.max_allocation_bytes > reader.max_allocation_bytes, 'producer verify limits exceed reader limits')
+        assert(producer.max_input_bytes <= 1024 * 1024 * 1024, 'producer verify input limit stays bounded')
+        assert(reader.frozen? && producer.frozen?, 'limit sets are frozen')
+      end
+
+      def test_container_input_budget_reader_vs_producer
+        # 90 MiB incompressible payload: larger than the 80 MiB reader input budget.
+        payload = Random.new(7).bytes(90 * 1024 * 1024)
+        bytes = BOMC::Container.pack([{ type: BOMC::SECTION_STRINGS, count: 1, bytes: payload, compress: false }], flags: BOMC::PROFILE_PRODUCTION)
+        assert(bytes.bytesize > DecodeBudget::MAX_INPUT_BYTES, 'fixture container exceeds the reader input budget')
+        assert_raises('reader rejects a 90 MiB container', "exceeds budget of #{DecodeBudget::MAX_INPUT_BYTES} bytes")  do
+          BOMC::Container.parse(bytes)
+        end
+        parsed = BOMC::Container.parse(bytes, limits: DecodeBudget::PRODUCER_VERIFY_LIMITS)
+        assert(parsed[:sections].length == 1 && parsed[:sections][0][:bytes].bytesize == payload.bytesize, 'producer verify limits parse the same 90 MiB container')
+        assert_raises('a container above the producer input limit is still rejected', 'exceeds budget of 64 bytes') do
+          BOMC::Container.parse(bytes, limits: DecodeBudget::Limits.new(64, 1024, 1024))
+        end
+      end
+
+      def test_container_expanded_budget_reader_vs_producer
+        # Highly compressible: tiny container, 140 MiB expanded across two sections (each under 120 MiB).
+        zeros = "\x00".b * (70 * 1024 * 1024)
+        sections = [
+          { type: BOMC::SECTION_STRINGS, count: 1, bytes: zeros, compress: true },
+          { type: BOMC::SECTION_MODEL, count: 1, bytes: zeros, compress: true }
+        ]
+        bytes = BOMC::Container.pack(sections, flags: BOMC::PROFILE_PRODUCTION)
+        assert(bytes.bytesize < DecodeBudget::MAX_INPUT_BYTES, 'fixture container is small')
+        assert_raises('reader rejects 140 MiB expanded total', "total uncompressed bytes #{140 * 1024 * 1024} exceeds budget of #{DecodeBudget::MAX_EXPANDED_BYTES} bytes") do
+          BOMC::Container.parse(bytes)
+        end
+        parsed = BOMC::Container.parse(bytes, limits: DecodeBudget::PRODUCER_VERIFY_LIMITS)
+        assert(parsed[:sections].length == 2, 'producer verify limits accept 140 MiB expanded total')
+      end
+
+      def test_decoder_allocation_budget_follows_limits
+        header = [1, 2, 0, 0, 20_000_000, 0].pack('CCCCVV') + [0.0, 0.0, 0.0].pack('E*') + [1.0, 1.0, 1.0].pack('E*')
+        reader_decoder = BOMCDecoder::Decoder.allocate
+        assert_raises('reader decoder rejects a 480 MB position table by allocation budget', 'exceeds allocation budget of 268435456') do
+          reader_decoder.send(:decode_position_block, header)
+        end
+        producer_decoder = BOMCDecoder::Decoder.allocate
+        producer_decoder.instance_variable_set(:@limits, DecodeBudget::PRODUCER_VERIFY_LIMITS)
+        # Allocation budget passes under producer limits; the wire-availability check is next and still rejects.
+        assert_raises('producer decoder passes the allocation budget and reaches the wire check', 'requires at least') do
+          producer_decoder.send(:decode_position_block, header)
+        end
+      end
+
+      def test_exporter_readback_call_sites_use_producer_limits
+        source = File.read(File.expand_path('../bomc_extension.rb', __dir__))
+        calls = source.lines.select { |line| line =~ /BOMCDecoder\.(decode|profile)\(|Container\.read_directory\(/ }
+        assert(calls.length >= 4, 'exporter has decode/profile/read_directory call sites to guard')
+        offenders = calls.reject { |line| line.include?('DecodeBudget::PRODUCER_VERIFY_LIMITS') }
+        assert(offenders.empty?, "every exporter readback uses PRODUCER_VERIFY_LIMITS (offenders: #{offenders.map(&:strip).inspect})")
+      end
+
       def run
         test_budget_limits_constants
         test_checked_table_bytes_valid
@@ -133,6 +199,11 @@ module BOMEngine
         test_container_raw_size_budget
         test_decoder_position_block_f08_rejection
         test_decoder_codec_section_budget_overflow
+        test_reader_and_producer_limits_are_separate
+        test_container_input_budget_reader_vs_producer
+        test_container_expanded_budget_reader_vs_producer
+        test_decoder_allocation_budget_follows_limits
+        test_exporter_readback_call_sites_use_producer_limits
         puts 'Decode Budget Tests: ALL PASSED'
         true
       rescue StandardError => error

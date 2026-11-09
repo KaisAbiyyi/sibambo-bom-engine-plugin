@@ -182,7 +182,7 @@ module BOMEngine
     # A passing historical validator report does not authorize a new export.
     # Inspect only the small encoding contract, without decoding model geometry.
     def require_active_candidate_profile!(bytes, report)
-      sections = BOMC::Container.read_directory(bytes).fetch(:sections).select do |section|
+      sections = BOMC::Container.read_directory(bytes, limits: DecodeBudget::PRODUCER_VERIFY_LIMITS).fetch(:sections).select do |section|
         section[:type] == BOMC::SECTION_ENCODING_CONTRACT
       end
       unless sections.length == 1 && sections.first[:raw_size] == BOMCEncodingContract::SECTION_BYTE_SIZE
@@ -235,7 +235,7 @@ module BOMEngine
         base_path: base_path,
         strict_exact_source: prof == :exact && !source_info.nil?
       )
-      decoded = BOMCDecoder.decode(candidate.fetch(:bytes), allow_jpeg_color_map: jcm_enabled)
+      decoded = BOMCDecoder.decode(candidate.fetch(:bytes), allow_jpeg_color_map: jcm_enabled, limits: DecodeBudget::PRODUCER_VERIFY_LIMITS)
       texture_evidence = (graph.is_a?(Hash) && graph[:materials]) ? graph[:materials].map { |m| m.dig(:texture, :encoding_evidence) }.compact : nil
       report = BOMCValidator.validate_profile!(
         source: graph,
@@ -530,7 +530,7 @@ module BOMEngine
         end,
         validate: lambda do |result, graph = nil, validation_checkpoint = nil|
           profiled = PerformanceTrace.stage(:decode_readback, counts: { bytes: result.fetch(:bytes).bytesize }) do
-            BOMCDecoder.profile(result.fetch(:bytes), allow_jpeg_color_map: allow_jpeg_color_map, checkpoint: validation_checkpoint)
+            BOMCDecoder.profile(result.fetch(:bytes), allow_jpeg_color_map: allow_jpeg_color_map, checkpoint: validation_checkpoint, limits: DecodeBudget::PRODUCER_VERIFY_LIMITS)
           end
           decoded = profiled.fetch(:model)
           profiled.fetch(:timings, {}).each do |phase, milliseconds|
@@ -849,7 +849,7 @@ module BOMEngine
     private_class_method :canonical_work_checkpoint
 
     def validate_compiled_result(result)
-      decoded = BOMCDecoder.decode(result.fetch(:bytes))
+      decoded = BOMCDecoder.decode(result.fetch(:bytes), limits: DecodeBudget::PRODUCER_VERIFY_LIMITS)
       triangles = decoded[:meshes].map do |mesh|
         mesh[:faces].map { |face| face[:triangles].length / 3 }.inject(0, :+)
       end.inject(0, :+)

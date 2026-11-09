@@ -20,15 +20,15 @@ module BOMEngine
       decode(File.binread(path))
     end
 
-    def self.decode(bytes, allow_jpeg_color_map: true, checkpoint: nil)
-      Decoder.new(bytes, allow_jpeg_color_map: allow_jpeg_color_map, checkpoint: checkpoint).decode
+    def self.decode(bytes, allow_jpeg_color_map: true, checkpoint: nil, limits: DecodeBudget::READER_LIMITS)
+      Decoder.new(bytes, allow_jpeg_color_map: allow_jpeg_color_map, checkpoint: checkpoint, limits: limits).decode
     end
 
-    def self.profile(bytes, allow_jpeg_color_map: true, checkpoint: nil)
+    def self.profile(bytes, allow_jpeg_color_map: true, checkpoint: nil, limits: DecodeBudget::READER_LIMITS)
       timings = {}
       total_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       container_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      decoder = Decoder.new(bytes, allow_jpeg_color_map: allow_jpeg_color_map, checkpoint: checkpoint)
+      decoder = Decoder.new(bytes, allow_jpeg_color_map: allow_jpeg_color_map, checkpoint: checkpoint, limits: limits)
       timings[:container_ms] = elapsed_ms(container_started)
       logical_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       model = decoder.decode(timings)
@@ -42,7 +42,7 @@ module BOMEngine
     end
 
     class Decoder
-      def initialize(bytes, allow_jpeg_color_map: true, checkpoint: nil)
+      def initialize(bytes, allow_jpeg_color_map: true, checkpoint: nil, limits: DecodeBudget::READER_LIMITS)
         processed = 0
         @work_cursor = if checkpoint
           SceneVisibilityResolver::WorkCursor.new(on_checkpoint: lambda do |event|
@@ -53,7 +53,8 @@ module BOMEngine
         end
         @work_cursor&.flush('decode_container')
         @allow_jpeg_color_map = allow_jpeg_color_map == true
-        @container = BOMC::Container.parse(bytes, checkpoint: @work_cursor && -> { @work_cursor.step('decode_container') })
+        @limits = limits
+        @container = BOMC::Container.parse(bytes, checkpoint: @work_cursor && -> { @work_cursor.step('decode_container') }, limits: @limits)
         @sections = {}
         @container[:sections].each do |section|
           raise "BOMC invalid: duplicate section type #{section[:type]}." if @sections.key?(section[:type])
@@ -175,6 +176,12 @@ module BOMEngine
 
       private
 
+      # Decoders built with Decoder.allocate (unit tests) have no limits set; fall
+      # back to the reader limits so the default can never be looser.
+      def active_limits
+        @limits || DecodeBudget::READER_LIMITS
+      end
+
       def measure(timings, key)
         @work_cursor&.flush(key.to_s)
         return yield if timings.nil?
@@ -266,7 +273,7 @@ module BOMEngine
       end
 
       def decode_materials(bytes, strings)
-        cursor = Cursor.new(bytes)
+        cursor = Cursor.new(bytes, active_limits)
         version, string_width, texture_width, reserved = cursor.read(4).unpack('CCCC')
         raise 'BOMC invalid: material section header.' unless [1,2].include?(version) && reserved.zero?
         count = cursor.read_u32
@@ -299,7 +306,7 @@ module BOMEngine
       end
 
       def decode_tags(bytes, strings)
-        cursor = Cursor.new(bytes)
+        cursor = Cursor.new(bytes, active_limits)
         version, string_width, reserved_a, reserved_b = cursor.read(4).unpack('CCCC')
         raise 'BOMC invalid: tag section header.' unless version == 1 && reserved_a.zero? && reserved_b.zero?
         count = cursor.read_u32
@@ -314,7 +321,7 @@ module BOMEngine
       end
 
       def decode_meshes(bytes)
-        cursor = Cursor.new(bytes)
+        cursor = Cursor.new(bytes, active_limits)
         version, definition_width, reserved_a, reserved_b = cursor.read(4).unpack('CCCC')
         raise 'BOMC invalid: mesh section header.' unless version == 1 && reserved_a.zero? && reserved_b.zero?
         count = cursor.read_u32
@@ -335,7 +342,7 @@ module BOMEngine
       end
 
       def decode_faces(bytes, strings)
-        cursor = Cursor.new(bytes)
+        cursor = Cursor.new(bytes, active_limits)
         header = cursor.read(24).unpack('CCCCVVVVV')
         version, material_width, tag_width, string_width, count, total_loops, loop_count_bytes, triangle_count_bytes, loop_length_bytes = header
         raise 'BOMC invalid: face section version.' unless version == 1
@@ -378,7 +385,7 @@ module BOMEngine
       end
 
       def decode_definitions(bytes, strings)
-        cursor = Cursor.new(bytes)
+        cursor = Cursor.new(bytes, active_limits)
         version, string_width, mesh_width, reserved = cursor.read(4).unpack('CCCC')
         raise 'BOMC invalid: definition section header.' unless version == 1 && reserved.zero?
         count = cursor.read_u32
@@ -393,7 +400,7 @@ module BOMEngine
       end
 
       def decode_instances(bytes, strings)
-        cursor = Cursor.new(bytes)
+        cursor = Cursor.new(bytes, active_limits)
         header = cursor.read(12).unpack('CCCCCCCCV')
         version, string_width, definition_width, transform_width, material_width, tag_width, reserved_a, reserved_b, count = header
         raise 'BOMC invalid: instance section header.' unless version == 1 && reserved_a.zero? && reserved_b.zero?
@@ -430,10 +437,10 @@ module BOMEngine
         raise 'BOMC invalid: codec section byte count.' unless bytes.bytesize == 12 + payload_length
         if codec_module == BOMC::NormalCodec
           min_bytes_per_normal = codec == 1 ? 12 : (codec == 2 ? 4 : 24)
-          DecodeBudget.checked_table_bytes(count, 3, 8, payload_length, min_wire: min_bytes_per_normal / 3.0)
+          DecodeBudget.checked_table_bytes(count, 3, 8, payload_length, min_wire: min_bytes_per_normal / 3.0, budget: active_limits.max_allocation_bytes)
         elsif codec_module == BOMC::TransformCodec
           min_bytes_per_matrix = codec == 0 ? 0 : (codec == 5 ? 1 : (codec == 6 ? 128 : (codec == 4 ? 24 : (codec == 3 ? 40 : (codec == 2 ? 48 : 96)))))
-          DecodeBudget.checked_table_bytes(count, 16, 8, payload_length, min_wire: min_bytes_per_matrix / 16.0)
+          DecodeBudget.checked_table_bytes(count, 16, 8, payload_length, min_wire: min_bytes_per_matrix / 16.0, budget: active_limits.max_allocation_bytes)
         end
         codec_module.decode(codec: codec, count: count, bytes: bytes.byteslice(12, payload_length))
       end
@@ -492,7 +499,7 @@ module BOMEngine
         raise 'BOMC invalid: position block header.' unless version == 1 && reserved_a.zero? && reserved_b.zero?
         raise 'BOMC invalid: position block byte count.' unless bytes.bytesize == 60 + payload_length
         min_bytes_per_vertex = codec == 1 ? 24 : (codec == 2 || codec == 3 ? 12 : (codec == 4 ? 6 : 3))
-        DecodeBudget.checked_table_bytes(count, 3, 8, payload_length, min_wire: min_bytes_per_vertex / 3.0)
+        DecodeBudget.checked_table_bytes(count, 3, 8, payload_length, min_wire: min_bytes_per_vertex / 3.0, budget: active_limits.max_allocation_bytes)
         origin = bytes.byteslice(12, 24).unpack('E*')
         scale = bytes.byteslice(36, 24).unpack('E*')
         BOMC::PositionCodec.decode(codec: codec, count: count, origin: origin, scale: scale, bytes: bytes.byteslice(60, payload_length))
@@ -504,7 +511,7 @@ module BOMEngine
         raise 'BOMC invalid: UV block header.' unless version == 1 && reserved_a.zero? && reserved_b.zero?
         raise 'BOMC invalid: UV block byte count.' unless bytes.bytesize == 44 + payload_length
         min_bytes_per_uv = codec == 1 ? 8 : (codec == 2 || codec == 3 ? 4 : (codec == 4 ? 2 : 16))
-        DecodeBudget.checked_table_bytes(count, 2, 8, payload_length, min_wire: min_bytes_per_uv / 2.0)
+        DecodeBudget.checked_table_bytes(count, 2, 8, payload_length, min_wire: min_bytes_per_uv / 2.0, budget: active_limits.max_allocation_bytes)
         origin = bytes.byteslice(12, 16).unpack('E*')
         scale = bytes.byteslice(28, 16).unpack('E*')
         BOMC::UVCodec.decode(codec: codec, count: count, origin: origin, scale: scale, bytes: bytes.byteslice(44, payload_length))
@@ -515,8 +522,8 @@ module BOMEngine
         version, reserved_a, reserved_b, reserved_c, loop_count, triangle_count, loop_length, triangle_length = bytes.byteslice(0, 20).unpack('CCCCVVVV')
         raise 'BOMC invalid: topology block header.' unless version == 1 && [reserved_a, reserved_b, reserved_c].all?(&:zero?)
         raise 'BOMC invalid: topology block byte count.' unless bytes.bytesize == 20 + loop_length + triangle_length
-        DecodeBudget.checked_table_bytes(loop_count, 1, 4, loop_length, min_wire: 1)
-        DecodeBudget.checked_table_bytes(triangle_count, 1, 4, triangle_length, min_wire: 1)
+        DecodeBudget.checked_table_bytes(loop_count, 1, 4, loop_length, min_wire: 1, budget: active_limits.max_allocation_bytes)
+        DecodeBudget.checked_table_bytes(triangle_count, 1, 4, triangle_length, min_wire: 1, budget: active_limits.max_allocation_bytes)
         loop_bytes = bytes.byteslice(20, loop_length)
         triangle_bytes = bytes.byteslice(20 + loop_length, triangle_length)
         {
@@ -526,7 +533,7 @@ module BOMEngine
       end
 
       def decode_delta_indices(bytes, count)
-        DecodeBudget.checked_table_bytes(count, 1, 4, bytes.bytesize, min_wire: 1)
+        DecodeBudget.checked_table_bytes(count, 1, 4, bytes.bytesize, min_wire: 1, budget: active_limits.max_allocation_bytes)
         cursor = 0
         previous = 0
         values = count.times.map do
@@ -566,7 +573,7 @@ module BOMEngine
       end
 
       def decode_edges(bytes, mesh_rows, meshes)
-        cursor = Cursor.new(bytes)
+        cursor = Cursor.new(bytes, active_limits)
         version, tag_width, reserved_a, reserved_b = cursor.read(4).unpack('CCCC')
         raise 'BOMC invalid: edge section header.' unless version == 1 && reserved_a.zero? && reserved_b.zero?
         count = cursor.read_u32
@@ -595,7 +602,7 @@ module BOMEngine
       end
 
       def decode_textures(table_bytes, blob_bytes)
-        cursor = Cursor.new(table_bytes)
+        cursor = Cursor.new(table_bytes, active_limits)
         version, reserved_a, reserved_b, reserved_c = cursor.read(4).unpack('CCCC')
         raise 'BOMC requires a JPEG color-map capable loader.' if version == 2 && !@allow_jpeg_color_map
         raise 'BOMC invalid: texture table header.' unless [1,2].include?(version) && [reserved_a, reserved_b, reserved_c].all?(&:zero?)
@@ -637,7 +644,7 @@ module BOMEngine
       end
 
       def decode_fallback(bytes, strings)
-        cursor = Cursor.new(bytes)
+        cursor = Cursor.new(bytes, active_limits)
         version, instance_width, texture_width, string_width = cursor.read(4).unpack('CCCC')
         raise 'BOMC invalid: fallback section version.' unless version == 1
         count = cursor.read_u32
@@ -662,7 +669,7 @@ module BOMEngine
       end
 
       def decode_debug(bytes, strings)
-        cursor = Cursor.new(bytes)
+        cursor = Cursor.new(bytes, active_limits)
         version, reserved_a, reserved_b, reserved_c = cursor.read(4).unpack('CCCC')
         raise 'BOMC invalid: debug section header.' unless version == 1 && [reserved_a, reserved_b, reserved_c].all?(&:zero?)
         count = cursor.read_u32
@@ -1137,8 +1144,9 @@ module BOMEngine
     end
 
     class Cursor
-      def initialize(bytes)
+      def initialize(bytes, limits = DecodeBudget::READER_LIMITS)
         @bytes = bytes
+        @limits = limits
         @offset = 0
       end
 
@@ -1148,7 +1156,7 @@ module BOMEngine
 
       def read(length)
         count = Integer(length)
-        if count > DecodeBudget::MAX_ALLOCATION_BYTES
+        if count > @limits.max_allocation_bytes
           raise "BOMC invalid: read size #{count} exceeds allocation budget."
         end
         value = @bytes.byteslice(@offset, count)
@@ -1166,7 +1174,7 @@ module BOMEngine
       end
 
       def read_indices(width, count)
-        DecodeBudget.checked_table_bytes(count, 1, 4, remaining, min_wire: width)
+        DecodeBudget.checked_table_bytes(count, 1, 4, remaining, min_wire: width, budget: @limits.max_allocation_bytes)
         BOMC::Binary.unpack_indices(read(width * count), width, count)
       end
 

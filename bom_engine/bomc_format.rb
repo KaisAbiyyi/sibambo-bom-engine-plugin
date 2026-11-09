@@ -315,15 +315,15 @@ module BOMEngine
         )[:bytes]
       end
 
-      def parse(bytes, verify_checksums: true, checkpoint: nil)
+      def parse(bytes, verify_checksums: true, checkpoint: nil, limits: DecodeBudget::READER_LIMITS)
         content = bytes.b
-        if content.bytesize > DecodeBudget::MAX_INPUT_BYTES
-          raise "BOMC invalid: container byte length #{content.bytesize} exceeds budget of #{DecodeBudget::MAX_INPUT_BYTES} bytes."
+        if content.bytesize > limits.max_input_bytes
+          raise "BOMC invalid: container byte length #{content.bytesize} exceeds budget of #{limits.max_input_bytes} bytes."
         end
-        directory = read_directory(content)
+        directory = read_directory(content, limits: limits)
         total_raw = directory[:sections].sum { |s| s[:raw_size] }
-        if total_raw > DecodeBudget::MAX_EXPANDED_BYTES
-          raise "BOMC invalid: total uncompressed bytes #{total_raw} exceeds budget of #{DecodeBudget::MAX_EXPANDED_BYTES} bytes."
+        if total_raw > limits.max_expanded_bytes
+          raise "BOMC invalid: total uncompressed bytes #{total_raw} exceeds budget of #{limits.max_expanded_bytes} bytes."
         end
         decoded = directory[:sections].map do |descriptor|
           stored = content.byteslice(descriptor[:offset], descriptor[:stored_size]).b
@@ -359,7 +359,7 @@ module BOMEngine
         raise "BOMC invalid: compressed section #{error.message}"
       end
 
-      def read_directory(bytes)
+      def read_directory(bytes, limits: DecodeBudget::READER_LIMITS)
         content = bytes.b
         raise 'BOMC invalid: truncated header.' if content.bytesize < HEADER_BYTES
 
@@ -392,8 +392,8 @@ module BOMEngine
           if !compact && !reserved.zero?
             raise "BOMC invalid: section #{index} reserved field."
           end
-          if raw_size > DecodeBudget::MAX_EXPANDED_BYTES
-            raise "BOMC invalid: section #{index} raw size #{raw_size} exceeds budget of #{DecodeBudget::MAX_EXPANDED_BYTES} bytes."
+          if raw_size > limits.max_expanded_bytes
+            raise "BOMC invalid: section #{index} raw size #{raw_size} exceeds budget of #{limits.max_expanded_bytes} bytes."
           end
           if offset < Binary.align(directory_end) || offset + stored_size > content.bytesize
             raise "BOMC invalid: section #{index} outside file."
