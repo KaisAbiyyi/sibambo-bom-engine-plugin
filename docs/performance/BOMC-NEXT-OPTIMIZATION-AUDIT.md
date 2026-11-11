@@ -1,7 +1,8 @@
 # BOMC engine: audit optimisasi berikutnya (ukuran + kecepatan ekspor)
 
 **Tanggal:** 2026-11-11 · **Kelas bukti:** CLOUD FIXTURE LAB. Tidak menjalankan SketchUp, tidak memakai tekstur asli, dan tidak mengklaim apa pun secara native.
-**Basis:** `main@4328778` (producer `bom_engine/`, BOMC 1.2) · **Lingkup:** kerja *next step*. Ini **tidak** dipakai di Research 01/02, dan tidak mengubah runtime, RBZ, atau kontrak format.
+**Basis:** `main@4328778` (producer `bom_engine/`, BOMC 1.2). Draft PR #29 / candidate013 (`6725a0e`) **tidak** ikut diaudit, jadi optimisasi tekstur di branch itu perlu dicek ulang sebelum mengerjakan T1.
+**Lingkup:** kerja *next step* menuju **BOMC 2.0**. Ini **tidak** dipakai di Research 01/02, dan tidak mengubah runtime, RBZ, atau kontrak format 1.2.
 **Skrip yang bisa diulang:** [`tools/performance/bomc_lab/`](../../tools/performance/bomc_lab/). Python membutuhkan `numpy zstandard brotli`; Ruby membutuhkan `stackprof` (opsional).
 
 Fixture yang dipakai: `skps/model-eval-exports/*.json` (RUMAH Y 121.833 face, SBOOST 2, house2) dan `skps/*_canonical.json` (presentation20 dengan 11.625 face, test). Fixture **canonical** adalah bentuk yang dihasilkan jalur SketchUp nyata (`CanonicalGraphBuilder`). Fixture **model-eval** adalah impor ulang dari JSON lama yang sudah dikuantisasi uint16.
@@ -16,12 +17,12 @@ Semua angka "stream" di bawah adalah ukuran stream yang diukur sendiri-sendiri. 
 |---|---|---|---|
 | **S1** | **Budget solver Visual/Research memilih kandidat *terbesar*** saat ukuran SKP diketahui, padahal kondisi itu berlaku di **setiap** ekspor nyata | RUMAH Y Visual **2.762.393 → 1.630.317 B (−41%)** tanpa melonggarkan toleransi | Tidak |
 | **T1** | Tahap tekstur menghabiskan ~81% waktu ekspor model berat. Perbandingan piksel lossy dilakukan dengan loop Ruby per piksel | `compare()` = **2,4 detik per tekstur 4 MP per kandidat** (cloud Ruby 3.3); ada sekitar 6 kandidat per tekstur di Visual | Tidak |
-| **S2** | Triangle bisa direkonstruksi dari loop: pola fan-corner, dan untuk quad hanya ada 4 pola exact | Stream triangle RUMAH Y **436 KB → 76 KB (deflate)** | Ya (blok topology v2) |
+| **S2** | Triangle bisa direkonstruksi dari loop: pola fan-corner, dan untuk quad hanya ada 4 pola exact | Stream triangle RUMAH Y **436 KB → 76 KB (deflate)** | Ya (BOMC 2.0) |
 | **S3** | Normal bisa diturunkan dari posisi; cukup simpan daftar pengecualian | Visual: ~95% face tidak perlu normal. Exact: 46 KB → 8,3 KB | Ya |
 | **S4** | Exact canonical: **100% koordinat ada di grid 1e-9 m**, sehingga integer nano bersifat lossless | Posisi Exact presentation20 62 KB → 36 KB (−42%). Normal, UV, dan transform punya pola yang sama | Ya |
 | **S5** | Posisi Visual: grid 2⁻ᵏ mm + SoA + prediksi di dalam face | RUMAH Y 441 KB → 300 KB (−32%) | Ya |
 | **S6** | UV Exact: weld per-vertex + integer nano | presentation20 220 KB → 107 KB (−51%) | Ya |
-| **S7** | Codec section zstd/brotli | −12% (zstd19) dan −18% (brotli11) dibanding DEFLATE-9 | Ya (codec 2/3 sudah reserved) |
+| **S7** | Codec section zstd/brotli | −12% (zstd19) dan −18% (brotli11) dibanding DEFLATE-9 | Ya (BOMC 2.0; codec 2/3 sudah reserved) |
 | **T3** | Visibilitas scene menghitung ulang `page.layers.to_a`, `layer_folders`, dan `hidden_entities` untuk **setiap entity × setiap page** | Belum diukur native; kompleksitasnya O(entity × page × tag) | Tidak |
 | **T5** | Compile: gerbang area memanggil Newell sumber ulang untuk setiap kandidat | Compile RUMAH Y **14,0 → 11,0 detik (−22%)**, output byte-identical | Tidak |
 
@@ -277,8 +278,15 @@ Ide lain:
 
 ## 5. Urutan pengerjaan yang disarankan
 
-1. **Fase A (tanpa perubahan format, aman untuk producer 1.2):** S1 → T1 (1, 2, 3, 5) → T3 → T5 → T2 → T4 (bagian yang tidak bergantung format).
-2. **Fase B (BOMC 1.3: versi blok baru, decoder lama tetap membaca 1.2):** S2 (TOPOLOGY v2), S3 (NORMALS derived + exceptions), S4/S6 (codec integer nano untuk Exact), S5 (grid metrik + prediksi), S8. Consumer TS di Editor, Rooms, dan Benchmark harus mendukung versi blok baru sebelum producer memakainya, sesuai §26 forward-compatibility.
-3. **Fase C:** codec container zstd (S7) dan eksperimen tekstur S9. Keduanya butuh matriks native dan keputusan owner.
+**Keputusan owner (2026-11-11):** semua perubahan format digabung sebagai **BOMC 2.0** (major version), bukan 1.3.
+
+Alasannya: S2–S8 mengubah layout beberapa section sekaligus, dan codec container zstd mengubah default kompresi. Header BOMC menolak major version yang tidak dikenal (`read_directory`: `major == VERSION_MAJOR`), jadi decoder 1.x akan gagal tegas (fail-closed) saat membaca file 2.0. Itu lebih jujur daripada minor bump yang diam-diam butuh fitur baru.
+
+1. **Fase A — producer 1.2, tanpa perubahan format:** S1 → T1 (1, 2, 3, 5) → T3 → T5 → T2 → T4 (bagian yang tidak bergantung format). Hasilnya tetap file BOMC 1.2 yang valid bagi semua consumer yang ada.
+2. **Fase B — spesifikasi dan referensi BOMC 2.0:**
+   - `BOM_COMPILED_FORMAT_2_0.md` memuat TOPOLOGY v2 (S2), NORMALS derived + exceptions (S3), codec integer nano untuk Exact (S4/S6), grid metrik + prediksi (S5), dictionary string yang bersih + MESHES ramping (S8), dan codec section zstd sebagai default (S7) dengan DEFLATE sebagai fallback.
+   - Encoder dan decoder referensi Ruby, plus fixture sintetis.
+   - Consumer TS di Editor, Rooms, dan Benchmark harus bisa membaca **1.x dan 2.0** sebelum producer default ke 2.0. Selama transisi, producer tetap bisa mengeluarkan 1.2 (opsi profil/format).
+3. **Fase C — eksperimen tekstur S9** (cap texel density, AVIF, gerbang SSIM). Butuh matriks native dan keputusan owner soal kebijakan kualitas Visual.
 
 Setiap langkah tetap butuh gerbang native: matriks SketchUp pada build terpasang yang sama, fidelity sumber-vs-hasil, dan waktu per tahap. Ini sejalan dengan SIB-PERF-00 §7. Dokumen ini **tidak** menggantikan baseline native.
