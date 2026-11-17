@@ -108,7 +108,7 @@ module SibamboModelTruthV1
         excluded: excluded_list(sexc, bdiag),
         disclosures: { uv_q0_vertices: sc['uv_q0_vertices'], non_triangle_polygons: sc['non_triangle_polygons'], deleted_skipped: sc['deleted_skipped'],
                        inherited_paint_exposure: bdiag['inherited_paint_exposure'] },
-        diagnostics: geo[:diagnostics],
+        diagnostics: geo[:diagnostics].merge(texture_info: tex[:info].first(MAX_PAIRS), texture_info_count: tex[:info].length),
         runtime: { bomc_side_s: bm.dig('timings_s', 'total'), skp_side_s: sm.dig('runtime', 'duration_s'),
                    skp_max_ruby_slice_ms: sm.dig('runtime', 'max_ruby_slice_ms'), skp_max_native_call_ms: sm.dig('runtime', 'max_native_call_ms'),
                    skp_max_native_call_label: sm.dig('runtime', 'max_native_call_label'), skp_max_tick_gap_ms: sm.dig('runtime', 'max_tick_gap_ms') }
@@ -513,6 +513,7 @@ module SibamboModelTruthV1
       btex = btab['textures']
       pmism = []
       cmism = []
+      info = []
       pmatch = 0
       cmatch = 0
       ccount = 0
@@ -536,7 +537,23 @@ module SibamboModelTruthV1
           next
         end
         semantic = b['semantic_colorize_active']
-        side = ref[semantic ? 'false' : 'true']
+        needed_flag = semantic ? 'false' : 'true'
+        side = ref[needed_flag]
+        # The side D27 does not use for this material may fail without failing the
+        # category (review F1); it is reported as info. The needed side stays strict.
+        ref.each do |flag, v|
+          next if flag == needed_flag || v.nil? || v['status'] != 'FAIL'
+
+          info << { name: name, field: 'unneeded_side_failed', flag: flag, code: v['code'], bits_per_pixel: v['bits_per_pixel'], severity: 'info' }
+        end
+        if side.nil? || side['status'] == 'FAIL'
+          pmism << { name: name, field: (side && side['code']) || 'skp_pixels_missing', flag: needed_flag, bits_per_pixel: side && side['bits_per_pixel'] }
+          if semantic
+            ccount += 1
+            cmism << { name: name, field: 'colorize_base_unavailable', flag: needed_flag }
+          end
+          next
+        end
         if side['width'] != row['width_px'] || side['height'] != row['height_px']
           pmism << { name: name, field: 'dimension_mismatch', skp: [side['width'], side['height']], bomc: [row['width_px'], row['height_px']] }
         elsif side['sha256'] != bp[:sha256]
@@ -548,6 +565,10 @@ module SibamboModelTruthV1
 
         ccount += 1
         before = cmism.length
+        if ref['true'].nil? || ref['true']['status'] == 'FAIL'
+          cmism << { name: name, field: 'colorize_output_unavailable', flag: 'true', code: ref['true'] && ref['true']['code'] }
+          next
+        end
         cmism << { name: name, field: 'colorize_output_sha256', skp: ref['true']['sha256'], bomc: b['colorize_output_sha256'] } unless b['colorize_output_sha256'] == ref['true']['sha256']
         cmism << { name: name, field: 'colorize_type', skp: s['colorize_type'], bomc: b['colorize_type'] } unless b['colorize_type'] == s['colorize_type']
         cmism << { name: name, field: 'colorize_deltas', skp: s['colorize_deltas_hex'], bomc: b['colorize_deltas_hex'] } unless b['colorize_deltas_hex'] == s['colorize_deltas_hex']
@@ -558,7 +579,8 @@ module SibamboModelTruthV1
         pixels: { category: 'textures_pixels', verdict: pmism.empty? ? 'PASS' : 'FAIL', skpCount: skp_textured.length, bomcCount: bomc_textured,
                   matches: pmatch, firstMismatches: pmism.first(MAX_MISMATCHES) },
         colorize: { category: 'textures_colorize', verdict: cmism.empty? ? 'PASS' : 'FAIL', skpCount: ccount,
-                    bomcCount: btab['materials'].count { |m| m['semantic_colorize_active'] }, matches: cmatch, firstMismatches: cmism.first(MAX_MISMATCHES) }
+                    bomcCount: btab['materials'].count { |m| m['semantic_colorize_active'] }, matches: cmatch, firstMismatches: cmism.first(MAX_MISMATCHES) },
+        info: info
       }
     end
   end

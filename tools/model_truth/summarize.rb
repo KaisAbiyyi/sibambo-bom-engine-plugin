@@ -103,6 +103,7 @@ module SibamboModelTruthV1
       lines << "- UV with q = 0 mapped to [0, 0] (`uv_q0_vertices`): #{sum.call { |d| d['disclosures']['uv_q0_vertices'] }}."
       lines << "- Non-triangle mesh polygons dropped on both sides (`non_triangle_polygons`): #{sum.call { |d| d['disclosures']['non_triangle_polygons'] }}."
       lines << "- Deleted entities skipped (SketchUp side): #{sum.call { |d| d['disclosures']['deleted_skipped'] }}."
+      lines << "- ImageRep side not needed for the material (D27) that could not be canonicalised, reported as info and not failing (e.g. 8 bpp `image_rep(false)`): #{sum.call { |d| d['diagnostics']['texture_info_count'] }}."
       expo = have.map { |r| r[:diff]['disclosures']['inherited_paint_exposure'] }.compact
       lines << "- Inherited-paint exposure (instance paint over default faces, not compared; D21): faces at definition level #{expo.sum { |e| e['faces_definition_level'].to_i }}, instance/definition pairs #{expo.sum { |e| e['pairs'].to_i }}."
       lines << '- EXCLUDED scopes (D22), SketchUp-side counts:'

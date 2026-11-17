@@ -352,8 +352,12 @@ module SketchupMock
     model.path = skp_path
     spec[:tags].each { |t| model.layers << Sketchup::Layer.new(t[:name], t[:visible]) }
     textures = spec[:textures].map do |t|
-      rep = Sketchup::ImageRep.new(t[:w], t[:h], 24, 0, t[:bgr_true].pack('C*'))
-      rep_false = t[:bgr_false] ? Sketchup::ImageRep.new(t[:w], t[:h], 24, 0, t[:bgr_false].pack('C*')) : rep
+      make_rep = lambda do |bpp, bytes|
+        # an 8 bpp image (as SketchUp returns for a grayscale source) has one byte per pixel
+        Sketchup::ImageRep.new(t[:w], t[:h], bpp || 24, 0, bpp == 8 ? ([7] * (t[:w] * t[:h])).pack('C*') : bytes.pack('C*'))
+      end
+      rep = make_rep.call(t[:bpp_true], t[:bgr_true])
+      rep_false = t[:bgr_false] || t[:bpp_false] ? make_rep.call(t[:bpp_false], t[:bgr_false] || t[:bgr_true]) : rep
       [t, rep, rep_false]
     end
     spec[:materials].each do |m|

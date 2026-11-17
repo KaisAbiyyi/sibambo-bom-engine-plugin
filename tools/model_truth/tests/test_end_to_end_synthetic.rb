@@ -188,6 +188,48 @@ class TestEndToEndSynthetic < Test::Unit::TestCase
     assert_equal 'FAIL', v(d)['textures_pixels']
   end
 
+  def spec_with(**texture_opts)
+    spec = MTFixture.spec
+    spec[:textures][0].merge!(texture_opts)
+    spec
+  end
+
+  def test_unneeded_image_rep_side_failing_does_not_fail_non_semantic_texture
+    d = run_e2e(spec: spec_with(bpp_false: 8)).diff
+    assert_only_fail(d)
+    info = d[:diagnostics][:texture_info]
+    assert_equal 1, d[:diagnostics][:texture_info_count]
+    assert_equal 'unneeded_side_failed', info[0][:field]
+    assert_equal 'false', info[0][:flag].to_s
+    assert_equal 8, info[0][:bits_per_pixel]
+    assert_equal 'info', info[0][:severity]
+  end
+
+  def test_needed_image_rep_side_failing_fails_non_semantic_texture
+    d = run_e2e(spec: spec_with(bpp_true: 8)).diff
+    assert_only_fail(d, 'textures_pixels')
+    m = cat(d, 'textures_pixels')[:firstMismatches]
+    assert_equal ['skp_image_rep_error'], m.map { |x| x[:field] }
+    assert_equal 8, m[0][:bits_per_pixel]
+    assert_equal 'true', m[0][:flag].to_s
+  end
+
+  def test_semantic_material_needs_both_sides
+    base = lambda { semantic_spec }
+    s1 = base.call
+    s1[:textures][0][:bpp_false] = 8
+    d = run_e2e(spec: s1).diff
+    assert_equal 'FAIL', v(d)['textures_pixels']
+    assert_equal 'FAIL', v(d)['textures_colorize']
+    assert_equal ['skp_image_rep_error'], fields(d, 'textures_pixels')
+    s2 = base.call
+    s2[:textures][0][:bpp_true] = 8
+    d = run_e2e(spec: s2).diff
+    assert_equal 'PASS', v(d)['textures_pixels']
+    assert_equal 'FAIL', v(d)['textures_colorize']
+    assert_equal ['colorize_output_unavailable'], fields(d, 'textures_colorize')
+  end
+
   def test_material_and_tag_table_mismatches
     d = run_e2e(decoded_mutator: ->(h) { h[:materials][1][:color][:r] = 11 }).diff
     assert_only_fail(d, 'materials')

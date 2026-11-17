@@ -165,6 +165,44 @@ class TestSkpSide < Test::Unit::TestCase
     assert_equal true, manifest(h)['complete']
   end
 
+  def test_each_image_rep_flag_is_recorded_on_its_own
+    spec = MTFixture.spec
+    spec[:textures][0][:bpp_false] = 8
+    h = SkpHarness.setup(spec)
+    SS.capture(run_dir: h.run_dir, expected_source_sha256: h.sha)
+    UI.run_until
+    assert_equal true, manifest(h)['complete']
+    px = JSON.parse(File.read(File.join(h.run_dir, 'skp', 'tables.json')))['materials'][0]['pixels']
+    assert_equal 24, px['true']['bpp']
+    assert_nil px['true']['status']
+    assert_equal 'FAIL', px['false']['status']
+    assert_equal 'skp_image_rep_error', px['false']['code']
+    assert_equal false, px['false']['flag']
+    assert_equal 8, px['false']['bits_per_pixel']
+    assert_match(/unsupported_bpp/, px['false']['message'])
+  end
+
+  def test_manifest_records_the_slowest_slices_with_context_and_untimed_costs
+    h = SkpHarness.setup
+    SS.capture(run_dir: h.run_dir, expected_source_sha256: h.sha, budget_records: 3)
+    UI.run_until
+    rt = manifest(h)['runtime']
+    slow = rt['slowest_slices']
+    assert_operator slow.length, :<=, 5
+    assert_operator slow.length, :>=, 1
+    assert_equal slow.map { |s| -s['ruby_ms'] }, slow.map { |s| -s['ruby_ms'] }.sort
+    assert_equal rt['max_ruby_slice_ms'], slow.first['ruby_ms']
+    first = slow.first
+    %w[slice phase slice_ms native_ms ruby_ms records ctx_start ctx_end untimed_ms].each { |k| assert first.key?(k), k }
+    ctxs = slow.flat_map { |s| [s['ctx_start'], s['ctx_end']] }.compact
+    assert ctxs.any? { |c| c['phase'] == 'definitions' && c['definition_dfs'].is_a?(Integer) && c['entity_class'] }
+    totals = rt['untimed_totals_ms']
+    %w[entities_each_start face_loops mesh_polygons].each { |k| assert totals.key?(k), k }
+    # instrumentation never changes the result
+    bm = JSON.parse(File.read(File.join(h.run_dir, 'bomc', 'manifest.json')))
+    assert_equal bm['root_digest'], manifest(h)['root_digest']
+  end
+
   def test_failed_texture_load_is_recorded_not_fatal
     h = SkpHarness.setup
     File.binwrite(File.join(h.run_dir, 'bomc', 'textures', '0.jpg'), 'garbage')

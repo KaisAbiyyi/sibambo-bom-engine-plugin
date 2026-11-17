@@ -158,6 +158,11 @@ module SibamboModelTruthV1
         @last_tick_start = nil
         @last_progress = 0.0
         @items_total = 0
+        @ctx = nil
+        @ctx_start = nil
+        @slowest = []
+        @untimed_totals = Hash.new(0.0)
+        @slice_untimed = Hash.new(0.0)
         @fiber = Fiber.new do
           run_phases
           :complete
@@ -180,6 +185,8 @@ module SibamboModelTruthV1
         @slice_started = t
         @slice_records = 0
         @slice_native_ms = 0.0
+        @slice_untimed = Hash.new(0.0)
+        @ctx_start = @ctx
         @slice_accounted = false
         begin
           guard!
@@ -205,6 +212,37 @@ module SibamboModelTruthV1
         @max_slice_ms = ms if ms > @max_slice_ms
         ruby_ms = ms - @slice_native_ms
         @max_ruby_slice_ms = ruby_ms if ruby_ms > @max_ruby_slice_ms
+        record_slowest(ms, ruby_ms)
+      end
+
+      # Evidence only (review F2): keeps the five slices with the most "Ruby"
+      # time together with where they started and ended and how much of that
+      # time was spent in measured-but-not-native-classified calls. Never
+      # changes max_ruby_slice_ms, digests or verdicts.
+      def record_slowest(ms, ruby_ms)
+        return if @slowest.length >= 5 && ruby_ms <= @slowest.last[:ruby_ms]
+
+        @slowest << { slice: @slice_count, phase: @phase, slice_ms: ms.round(3), native_ms: @slice_native_ms.round(3), ruby_ms: ruby_ms.round(3),
+                      records: @slice_records, ctx_start: ctx_hash(@ctx_start), ctx_end: ctx_hash(@ctx),
+                      untimed_ms: @slice_untimed.each_with_object({}) { |(k, v), h| h[k.to_s] = v.round(3) } }
+        @slowest = @slowest.sort_by { |s| -s[:ruby_ms] }.first(5)
+      end
+
+      def ctx_hash(ctx)
+        return nil if ctx.nil?
+
+        { phase: ctx[0], definition_dfs: ctx[1], definition_kind: ctx[2], entity_index: ctx[3], entity_class: ctx[4].respond_to?(:name) ? ctx[4].name : ctx[4].to_s }
+      end
+
+      # Measures a call that is not classified as native for G-RT3 (so
+      # max_ruby_slice_ms is unchanged) but whose cost is reported per slice.
+      def untimed(label)
+        t0 = monotonic
+        result = yield
+        ms = (monotonic - t0) * 1000.0
+        @slice_untimed[label] += ms
+        @untimed_totals[label] += ms
+        result
       end
 
       def guard!
@@ -302,7 +340,8 @@ module SibamboModelTruthV1
             runtime: { duration_s: duration.round(3), slice_count: @slice_count, max_slice_ms: @max_slice_ms.round(3),
                        max_ruby_slice_ms: @max_ruby_slice_ms.round(3), max_native_call_ms: @max_native_ms.round(3),
                        max_native_call_label: @max_native_label, max_tick_gap_ms: @max_tick_gap_ms.round(3),
-                       items_per_second: duration.positive? ? (@items_total / duration).round(1) : nil },
+                       items_per_second: duration.positive? ? (@items_total / duration).round(1) : nil,
+                       slowest_slices: @slowest, untimed_totals_ms: @untimed_totals.each_with_object({}) { |(k, v), h| h[k.to_s] = v.round(3) } },
             files: files
           }
           manifest[:error] = { class: error.class.name, message: error.message } if error
@@ -387,7 +426,17 @@ module SibamboModelTruthV1
         counts = { faces: 0, edges: 0, instances: 0, images: 0, texts: 0 }
         children_dfs = []
 
+        @ctx = [@phase, my_dfs, kind, nil, nil]
+        entity_index = -1
+        each_started = monotonic
         entities.each do |e|
+          if entity_index < 0
+            ms = (monotonic - each_started) * 1000.0
+            @slice_untimed[:entities_each_start] += ms
+            @untimed_totals[:entities_each_start] += ms
+          end
+          entity_index += 1
+          @ctx = [@phase, my_dfs, kind, entity_index, e.class]
           if e.deleted?
             @counts[:deleted_skipped] += 1
             boundary
@@ -458,11 +507,14 @@ module SibamboModelTruthV1
           t += Canonical.skp_uv(helper.get_back_UVQ(v.position), @counts) if bt
           t
         end
-        outer = face.outer_loop.vertices.map(&tuple)
-        holes = face.loops.reject(&:outer?).map { |l| l.vertices.map(&tuple) }
+        outer_vertices = untimed(:face_loops) { face.outer_loop.vertices }
+        hole_loops = untimed(:face_loops) { face.loops.reject(&:outer?) }
+        outer = outer_vertices.map(&tuple)
+        holes = hole_loops.map { |l| l.vertices.map(&tuple) }
         mesh = timed(:mesh) { face.mesh }
         tris = []
-        mesh.polygons.each do |poly|
+        polygons = untimed(:mesh_polygons) { mesh.polygons }
+        polygons.each do |poly|
           pts = poly.map { |i| mesh.point_at(i.abs) }.compact
           if pts.length == 3
             tris << pts.map { |p| Canonical.skp_pos(p) }
@@ -489,21 +541,25 @@ module SibamboModelTruthV1
           next if t.nil?
 
           row = @tables[:materials][i]
-          begin
-            both = {}
-            [true, false].each do |flag|
+          # Each side is canonicalised on its own: a failure of the side the
+          # comparator does not need (review F1) must not hide the needed one.
+          both = {}
+          [true, false].each do |flag|
+            rep = nil
+            begin
               rep = timed(:"image_rep_#{flag}") { t.image_rep(flag) }
               data = timed(:image_rep_data) { rep.data }
               res = Canonical.canonical_rgba_sha(width: rep.width, height: rep.height, bits_per_pixel: rep.bits_per_pixel,
                                                  row_padding: rep.row_padding, data: data) { |_y| boundary }
               both[flag.to_s] = pixel_summary(res)
+            rescue Cancelled
+              raise
+            rescue StandardError => e
+              both[flag.to_s] = { status: 'FAIL', code: 'skp_image_rep_error', message: "#{e.class}: #{e.message}", flag: flag,
+                                  bits_per_pixel: (rep.bits_per_pixel if rep), row_padding: (rep.row_padding if rep) }
             end
-            row[:pixels] = both
-          rescue Cancelled
-            raise
-          rescue StandardError => e
-            row[:pixels] = { status: 'FAIL', code: 'skp_image_rep_error', message: "#{e.class}: #{e.message}" }
           end
+          row[:pixels] = both
           boundary
         end
       end
