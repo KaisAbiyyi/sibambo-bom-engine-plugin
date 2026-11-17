@@ -205,7 +205,21 @@ class TestSkpSide < Test::Unit::TestCase
     end
     assert_kind_of Integer, rt['gc_run']['count']
     assert_operator rt['gc_run']['allocated'], :>, 0
-    assert rt.key?('max_gc_in_slice_ms')
+    refute rt.key?('max_gc_in_slice_ms')
+    refute rt['gc_run'].key?('time_ms')
+    # thread/process CPU evidence and slice histogram
+    cpu = rt['cpu']
+    assert_include %w[clock_gettime fiddle], cpu['source']
+    %w[thread_ms process_ms native_thread_ms max_ruby_cpu_slice_ms max_off_cpu_slice_ms].each { |k| assert_kind_of Numeric, cpu[k], k }
+    assert_operator cpu['max_off_cpu_slice_ms'], :>=, 0.0
+    hist = rt['slice_histogram']
+    assert_equal %w[20 50 100 250], hist['ruby_ms'].keys
+    assert_equal %w[20 50 100 250], hist['off_cpu_ms'].keys
+    assert_equal hist['ruby_ms'].values, hist['ruby_ms'].values.sort.reverse
+    slow.each do |sl|
+      %w[thread_cpu_ms native_cpu_ms ruby_cpu_ms off_cpu_ms].each { |k| assert_kind_of Numeric, sl['cpu'][k], k }
+      assert_operator sl['cpu']['off_cpu_ms'], :<=, sl['ruby_ms'] + 0.001
+    end
     # pixel phases keep their own context (material/texture, flag, size, row)
     ctx = SS.instance_variable_get(:@ctx)
     assert_equal 'bomc_pixels', ctx[0]
@@ -245,6 +259,32 @@ class TestSkpSide < Test::Unit::TestCase
     forbidden.each { |tok| assert_no_match(/#{Regexp.escape(tok)}/, src, "skp_side.rb must not use #{tok}") }
     assert_match(/\Arequire|# frozen_string_literal: true/, src)
     requires = src.scan(/^\s*require(?:_relative)?\s+'([^']+)'/).flatten
-    assert_equal %w[digest fileutils json zlib canonical], requires
+    # fiddle is required lazily for read-only GetThreadTimes/GetProcessTimes timing (evidence only)
+    assert_equal %w[digest fileutils json zlib canonical fiddle], requires
+    assert_match(/GetThreadTimes/, src)
+    %w[GetCurrentThread GetCurrentProcess GetThreadTimes GetProcessTimes].each { |f| assert_match(/#{f}/, src) }
+    assert_equal 4, src.scan(/lib\['(\w+)'\]/).flatten.length
+    assert_equal %w[GetCurrentThread GetCurrentProcess GetThreadTimes GetProcessTimes], src.scan(/lib\['(\w+)'\]/).flatten
+  end
+
+  def test_cpu_probe_reports_a_source_and_samples
+    r = SS.cpu_probe
+    assert_include %w[clock_gettime fiddle], r[:source]
+    assert_operator r[:thread_ms_after], :>=, r[:thread_ms_before]
+  end
+
+  def test_missing_cpu_clocks_degrade_to_nil_not_failure
+    SS.instance_variable_set(:@cpu_source, 'none')
+    h = SkpHarness.setup
+    SS.capture(run_dir: h.run_dir, expected_source_sha256: h.sha)
+    UI.run_until
+    m = manifest(h)
+    assert_equal true, m['complete']
+    assert_equal 'none', m['runtime']['cpu']['source']
+    assert_equal 0.0, m['runtime']['cpu']['thread_ms']
+    assert_equal 0, m['runtime']['slice_histogram']['off_cpu_ms']['20']
+    assert_nil m['runtime']['slowest_slices'].first['cpu']
+  ensure
+    SS.instance_variable_set(:@cpu_source, nil)
   end
 end

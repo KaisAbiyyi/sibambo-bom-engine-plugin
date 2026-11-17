@@ -23,6 +23,9 @@ module SibamboModelTruthV1
     TIME_LIMIT_S = 14_400
     PROGRESS_EVERY_S = 5.0
     MAX_DEPTH = 64
+    HIST_MS = [20, 50, 100, 250].freeze
+    CPU_THREAD = Process.const_defined?(:CLOCK_THREAD_CPUTIME_ID) ? Process::CLOCK_THREAD_CPUTIME_ID : nil
+    CPU_PROCESS = Process.const_defined?(:CLOCK_PROCESS_CPUTIME_ID) ? Process::CLOCK_PROCESS_CPUTIME_ID : nil
 
     class Cancelled < ModelTruthError; end
 
@@ -53,6 +56,17 @@ module SibamboModelTruthV1
         @cancel = true
         say('ModelTruth: cancel requested; stops at the next tick')
         true
+      end
+
+      # Owner probe (about 5 s): prints which clock is used and two samples.
+      def cpu_probe
+        a = cpu_ms(:thread)
+        x = 0
+        2_000_000.times { |i| x += i }
+        b = cpu_ms(:thread)
+        r = { source: cpu_source, thread_ms_before: a, thread_ms_after: b, process_ms: cpu_ms(:process) }
+        say(r.inspect)
+        r
       end
 
       # Test seam: forget all state (never called in production).
@@ -165,7 +179,13 @@ module SibamboModelTruthV1
         @slice_untimed = Hash.new(0.0)
         @gc_slice_start = nil
         @gc_run_start = gc_snapshot
-        @max_gc_slice_ms = 0.0
+        @cpu_thread_start = nil
+        @cpu_proc_start = nil
+        @slice_native_cpu_ms = 0.0
+        @cpu_totals = { thread_ms: 0.0, process_ms: 0.0, native_thread_ms: 0.0 }
+        @max_ruby_cpu_ms = 0.0
+        @max_off_cpu_ms = 0.0
+        @hist = { 'ruby_ms' => Hash[HIST_MS.map { |k| [k.to_s, 0] }], 'off_cpu_ms' => Hash[HIST_MS.map { |k| [k.to_s, 0] }] }
         @fiber = Fiber.new do
           run_phases
           :complete
@@ -191,6 +211,9 @@ module SibamboModelTruthV1
         @slice_untimed = Hash.new(0.0)
         @ctx_start = @ctx
         @gc_slice_start = gc_snapshot
+        @cpu_thread_start = cpu_ms(:thread)
+        @cpu_proc_start = cpu_ms(:process)
+        @slice_native_cpu_ms = 0.0
         @slice_accounted = false
         begin
           guard!
@@ -217,37 +240,132 @@ module SibamboModelTruthV1
         ruby_ms = ms - @slice_native_ms
         @max_ruby_slice_ms = ruby_ms if ruby_ms > @max_ruby_slice_ms
         gc = gc_delta(@gc_slice_start, gc_snapshot)
-        @max_gc_slice_ms = gc[:time_ms] if gc[:time_ms] && gc[:time_ms] > @max_gc_slice_ms
-        record_slowest(ms, ruby_ms, gc)
+        cpu = slice_cpu(ruby_ms)
+        count_histogram(ruby_ms, cpu)
+        record_slowest(ms, ruby_ms, gc, cpu)
       end
 
-      # Evidence only (review F2, H3): Ruby GC counters, so a stall caused by
-      # garbage collection can be told apart from Ruby or native work.
+      # Evidence only (review F2, H3): Ruby GC counters. GC time is not
+      # recorded: GC.total_time produced values larger than the slice itself
+      # in the 20261117T100939Z capture, so it is not a usable measure.
       def gc_snapshot
         st = GC.stat
-        total_ns = GC.respond_to?(:total_time) ? GC.total_time : nil
-        { count: GC.count, major: st[:major_gc_count], minor: st[:minor_gc_count], time_ms: total_ns && total_ns / 1_000_000.0,
-          allocated: st[:total_allocated_objects] }
+        { count: GC.count, major: st[:major_gc_count], minor: st[:minor_gc_count], allocated: st[:total_allocated_objects] }
       end
 
       def gc_delta(a, b)
         return {} if a.nil?
 
         { count: b[:count] - a[:count], major: (b[:major].to_i - a[:major].to_i), minor: (b[:minor].to_i - a[:minor].to_i),
-          time_ms: (b[:time_ms] && a[:time_ms] ? (b[:time_ms] - a[:time_ms]) : nil), allocated: (b[:allocated].to_i - a[:allocated].to_i) }
+          allocated: (b[:allocated].to_i - a[:allocated].to_i) }
+      end
+
+      # Evidence only: CPU time of this thread and of the whole process, in ms,
+      # or nil when the platform has no such clock. Windows accounts thread time
+      # in scheduler ticks (about 15.6 ms), so values below that are coarse.
+      def cpu_ms(kind)
+        case cpu_source
+        when 'clock_gettime' then Process.clock_gettime(kind == :thread ? CPU_THREAD : CPU_PROCESS, :float_millisecond)
+        when 'fiddle' then fiddle_cpu_ms(kind)
+        end
+      rescue StandardError, NotImplementedError
+        nil
+      end
+
+      # 'clock_gettime' when Ruby has both CPU clocks, else 'fiddle' (read-only
+      # GetThreadTimes/GetProcessTimes from kernel32), else 'none'. Ruby 2.5 on
+      # Windows defines the constants but raises EINVAL, so each is tried.
+      def cpu_source
+        @cpu_source ||= detect_cpu_source
+      end
+
+      def detect_cpu_source
+        if CPU_THREAD && CPU_PROCESS
+          begin
+            Process.clock_gettime(CPU_THREAD, :float_millisecond)
+            Process.clock_gettime(CPU_PROCESS, :float_millisecond)
+            return 'clock_gettime'
+          rescue StandardError, NotImplementedError
+            nil
+          end
+        end
+        begin
+          init_fiddle
+          'fiddle'
+        rescue StandardError, LoadError, NotImplementedError
+          'none'
+        end
+      end
+
+      def init_fiddle
+        require 'fiddle'
+        lib = Fiddle.dlopen('kernel32.dll')
+        ptr = Fiddle::TYPE_VOIDP
+        @fd_cur_thread = Fiddle::Function.new(lib['GetCurrentThread'], [], ptr)
+        @fd_cur_process = Fiddle::Function.new(lib['GetCurrentProcess'], [], ptr)
+        @fd_thread_times = Fiddle::Function.new(lib['GetThreadTimes'], [ptr, ptr, ptr, ptr, ptr], Fiddle::TYPE_INT)
+        @fd_process_times = Fiddle::Function.new(lib['GetProcessTimes'], [ptr, ptr, ptr, ptr, ptr], Fiddle::TYPE_INT)
+        @fd_bufs = Array.new(4) { Fiddle::Pointer.malloc(8) }
+        raise 'GetThreadTimes failed' if fiddle_cpu_ms(:thread).nil?
+      end
+
+      # kernel + user time in ms (FILETIME, 100 ns units); Windows accounts it
+      # in scheduler ticks, so resolution is about 15.6 ms.
+      def fiddle_cpu_ms(kind)
+        ok = if kind == :thread
+               @fd_thread_times.call(@fd_cur_thread.call, *@fd_bufs)
+             else
+               @fd_process_times.call(@fd_cur_process.call, *@fd_bufs)
+             end
+        return nil if ok.zero?
+
+        (filetime(@fd_bufs[2]) + filetime(@fd_bufs[3])) / 10_000.0
+      end
+
+      def filetime(ptr)
+        lo, hi = ptr[0, 8].unpack('VV')
+        (hi << 32) | lo
+      end
+
+      # Splits the slice's "Ruby" wall time into time this thread spent on the
+      # CPU and time it did not (descheduled, blocked, waiting for the
+      # interpreter lock). Native calls are removed on both sides.
+      def slice_cpu(ruby_ms)
+        t1 = cpu_ms(:thread)
+        p1 = cpu_ms(:process)
+        return nil if t1.nil? || @cpu_thread_start.nil?
+
+        thread_ms = t1 - @cpu_thread_start
+        process_ms = p1 && @cpu_proc_start ? p1 - @cpu_proc_start : nil
+        ruby_cpu = [thread_ms - @slice_native_cpu_ms, 0.0].max
+        off_cpu = [ruby_ms - ruby_cpu, 0.0].max
+        @cpu_totals[:thread_ms] += thread_ms
+        @cpu_totals[:process_ms] += process_ms if process_ms
+        @cpu_totals[:native_thread_ms] += @slice_native_cpu_ms
+        @max_ruby_cpu_ms = ruby_cpu if ruby_cpu > @max_ruby_cpu_ms
+        @max_off_cpu_ms = off_cpu if off_cpu > @max_off_cpu_ms
+        { thread_cpu_ms: thread_ms, process_cpu_ms: process_ms, native_cpu_ms: @slice_native_cpu_ms, ruby_cpu_ms: ruby_cpu, off_cpu_ms: off_cpu }
+      end
+
+      def count_histogram(ruby_ms, cpu)
+        HIST_MS.each do |limit|
+          @hist['ruby_ms'][limit.to_s] += 1 if ruby_ms > limit
+          @hist['off_cpu_ms'][limit.to_s] += 1 if cpu && cpu[:off_cpu_ms] > limit
+        end
       end
 
       # Evidence only (review F2): keeps the five slices with the most "Ruby"
       # time together with where they started and ended and how much of that
       # time was spent in measured-but-not-native-classified calls. Never
       # changes max_ruby_slice_ms, digests or verdicts.
-      def record_slowest(ms, ruby_ms, gc = {})
+      def record_slowest(ms, ruby_ms, gc = {}, cpu = nil)
         return if @slowest.length >= 5 && ruby_ms <= @slowest.last[:ruby_ms]
 
         @slowest << { slice: @slice_count, phase: @phase, slice_ms: ms.round(3), native_ms: @slice_native_ms.round(3), ruby_ms: ruby_ms.round(3),
                       records: @slice_records, ctx_start: ctx_hash(@ctx_start), ctx_end: ctx_hash(@ctx),
                       untimed_ms: @slice_untimed.each_with_object({}) { |(k, v), h| h[k.to_s] = v.round(3) },
-                      gc: gc.transform_values { |v| v.is_a?(Float) ? v.round(3) : v } }
+                      gc: gc.transform_values { |v| v.is_a?(Float) ? v.round(3) : v },
+                      cpu: cpu && cpu.each_with_object({}) { |(k, v), h| h[k.to_s] = v && v.round(3) } }
         @slowest = @slowest.sort_by { |s| -s[:ruby_ms] }.first(5)
       end
 
@@ -285,8 +403,11 @@ module SibamboModelTruthV1
 
       def timed(label)
         t0 = monotonic
+        c0 = cpu_ms(:thread)
         result = yield
         ms = (monotonic - t0) * 1000.0
+        c1 = cpu_ms(:thread)
+        @slice_native_cpu_ms += (c1 - c0) if c0 && c1
         @slice_native_ms += ms
         if ms > @max_native_ms
           @max_native_ms = ms
@@ -366,7 +487,12 @@ module SibamboModelTruthV1
                        max_native_call_label: @max_native_label, max_tick_gap_ms: @max_tick_gap_ms.round(3),
                        items_per_second: duration.positive? ? (@items_total / duration).round(1) : nil,
                        gc_run: gc_delta(@gc_run_start, gc_snapshot).transform_values { |v| v.is_a?(Float) ? v.round(3) : v },
-                       max_gc_in_slice_ms: @max_gc_slice_ms.round(3), ruby_gc_version: RUBY_VERSION,
+                       ruby_gc_version: RUBY_VERSION,
+                       cpu: { source: cpu_source, resolution_note: 'Windows thread time is accounted in ~15.6 ms ticks',
+                              thread_ms: @cpu_totals[:thread_ms].round(3), process_ms: @cpu_totals[:process_ms].round(3),
+                              native_thread_ms: @cpu_totals[:native_thread_ms].round(3),
+                              max_ruby_cpu_slice_ms: @max_ruby_cpu_ms.round(3), max_off_cpu_slice_ms: @max_off_cpu_ms.round(3) },
+                       slice_histogram: @hist,
                        slowest_slices: @slowest, untimed_totals_ms: @untimed_totals.each_with_object({}) { |(k, v), h| h[k.to_s] = v.round(3) } },
             files: files
           }
