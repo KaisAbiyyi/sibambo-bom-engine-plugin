@@ -198,6 +198,19 @@ class TestSkpSide < Test::Unit::TestCase
     assert ctxs.any? { |c| c['phase'] == 'definitions' && c['definition_dfs'].is_a?(Integer) && c['entity_class'] }
     totals = rt['untimed_totals_ms']
     %w[entities_each_start face_loops mesh_polygons].each { |k| assert totals.key?(k), k }
+    slow.each do |sl|
+      assert_kind_of Hash, sl['gc']
+      %w[count major minor allocated].each { |k| assert_kind_of Integer, sl['gc'][k], k }
+      assert_operator sl['gc']['allocated'], :>=, 0
+    end
+    assert_kind_of Integer, rt['gc_run']['count']
+    assert_operator rt['gc_run']['allocated'], :>, 0
+    assert rt.key?('max_gc_in_slice_ms')
+    # pixel phases keep their own context (material/texture, flag, size, row)
+    ctx = SS.instance_variable_get(:@ctx)
+    assert_equal 'bomc_pixels', ctx[0]
+    assert_equal 0, ctx[3]
+    assert_equal ['0.jpg', 2, 2, 24], ctx[5][1, 4]
     # instrumentation never changes the result
     bm = JSON.parse(File.read(File.join(h.run_dir, 'bomc', 'manifest.json')))
     assert_equal bm['root_digest'], manifest(h)['root_digest']

@@ -163,6 +163,9 @@ module SibamboModelTruthV1
         @slowest = []
         @untimed_totals = Hash.new(0.0)
         @slice_untimed = Hash.new(0.0)
+        @gc_slice_start = nil
+        @gc_run_start = gc_snapshot
+        @max_gc_slice_ms = 0.0
         @fiber = Fiber.new do
           run_phases
           :complete
@@ -187,6 +190,7 @@ module SibamboModelTruthV1
         @slice_native_ms = 0.0
         @slice_untimed = Hash.new(0.0)
         @ctx_start = @ctx
+        @gc_slice_start = gc_snapshot
         @slice_accounted = false
         begin
           guard!
@@ -212,26 +216,46 @@ module SibamboModelTruthV1
         @max_slice_ms = ms if ms > @max_slice_ms
         ruby_ms = ms - @slice_native_ms
         @max_ruby_slice_ms = ruby_ms if ruby_ms > @max_ruby_slice_ms
-        record_slowest(ms, ruby_ms)
+        gc = gc_delta(@gc_slice_start, gc_snapshot)
+        @max_gc_slice_ms = gc[:time_ms] if gc[:time_ms] && gc[:time_ms] > @max_gc_slice_ms
+        record_slowest(ms, ruby_ms, gc)
+      end
+
+      # Evidence only (review F2, H3): Ruby GC counters, so a stall caused by
+      # garbage collection can be told apart from Ruby or native work.
+      def gc_snapshot
+        st = GC.stat
+        total_ns = GC.respond_to?(:total_time) ? GC.total_time : nil
+        { count: GC.count, major: st[:major_gc_count], minor: st[:minor_gc_count], time_ms: total_ns && total_ns / 1_000_000.0,
+          allocated: st[:total_allocated_objects] }
+      end
+
+      def gc_delta(a, b)
+        return {} if a.nil?
+
+        { count: b[:count] - a[:count], major: (b[:major].to_i - a[:major].to_i), minor: (b[:minor].to_i - a[:minor].to_i),
+          time_ms: (b[:time_ms] && a[:time_ms] ? (b[:time_ms] - a[:time_ms]) : nil), allocated: (b[:allocated].to_i - a[:allocated].to_i) }
       end
 
       # Evidence only (review F2): keeps the five slices with the most "Ruby"
       # time together with where they started and ended and how much of that
       # time was spent in measured-but-not-native-classified calls. Never
       # changes max_ruby_slice_ms, digests or verdicts.
-      def record_slowest(ms, ruby_ms)
+      def record_slowest(ms, ruby_ms, gc = {})
         return if @slowest.length >= 5 && ruby_ms <= @slowest.last[:ruby_ms]
 
         @slowest << { slice: @slice_count, phase: @phase, slice_ms: ms.round(3), native_ms: @slice_native_ms.round(3), ruby_ms: ruby_ms.round(3),
                       records: @slice_records, ctx_start: ctx_hash(@ctx_start), ctx_end: ctx_hash(@ctx),
-                      untimed_ms: @slice_untimed.each_with_object({}) { |(k, v), h| h[k.to_s] = v.round(3) } }
+                      untimed_ms: @slice_untimed.each_with_object({}) { |(k, v), h| h[k.to_s] = v.round(3) },
+                      gc: gc.transform_values { |v| v.is_a?(Float) ? v.round(3) : v } }
         @slowest = @slowest.sort_by { |s| -s[:ruby_ms] }.first(5)
       end
 
       def ctx_hash(ctx)
         return nil if ctx.nil?
 
-        { phase: ctx[0], definition_dfs: ctx[1], definition_kind: ctx[2], entity_index: ctx[3], entity_class: ctx[4].respond_to?(:name) ? ctx[4].name : ctx[4].to_s }
+        { phase: ctx[0], definition_dfs: ctx[1], definition_kind: ctx[2], entity_index: ctx[3],
+          entity_class: ctx[4].respond_to?(:name) ? ctx[4].name : ctx[4].to_s, detail: ctx[5] }
       end
 
       # Measures a call that is not classified as native for G-RT3 (so
@@ -341,6 +365,8 @@ module SibamboModelTruthV1
                        max_ruby_slice_ms: @max_ruby_slice_ms.round(3), max_native_call_ms: @max_native_ms.round(3),
                        max_native_call_label: @max_native_label, max_tick_gap_ms: @max_tick_gap_ms.round(3),
                        items_per_second: duration.positive? ? (@items_total / duration).round(1) : nil,
+                       gc_run: gc_delta(@gc_run_start, gc_snapshot).transform_values { |v| v.is_a?(Float) ? v.round(3) : v },
+                       max_gc_in_slice_ms: @max_gc_slice_ms.round(3), ruby_gc_version: RUBY_VERSION,
                        slowest_slices: @slowest, untimed_totals_ms: @untimed_totals.each_with_object({}) { |(k, v), h| h[k.to_s] = v.round(3) } },
             files: files
           }
@@ -549,8 +575,12 @@ module SibamboModelTruthV1
             begin
               rep = timed(:"image_rep_#{flag}") { t.image_rep(flag) }
               data = timed(:image_rep_data) { rep.data }
+              detail = [m.name.to_s, flag, rep.width, rep.height, rep.bits_per_pixel]
               res = Canonical.canonical_rgba_sha(width: rep.width, height: rep.height, bits_per_pixel: rep.bits_per_pixel,
-                                                 row_padding: rep.row_padding, data: data) { |_y| boundary }
+                                                 row_padding: rep.row_padding, data: data) do |y|
+                @ctx = ['skp_pixels', nil, 'material', i, Sketchup::Material, detail + [y]]
+                boundary
+              end
               both[flag.to_s] = pixel_summary(res)
             rescue Cancelled
               raise
@@ -577,8 +607,12 @@ module SibamboModelTruthV1
             rep = Sketchup::ImageRep.new
             timed(:load_file) { rep.load_file(path) }
             data = timed(:image_rep_data) { rep.data }
+            detail = [tex['index'], file, rep.width, rep.height, rep.bits_per_pixel]
             res = Canonical.canonical_rgba_sha(width: rep.width, height: rep.height, bits_per_pixel: rep.bits_per_pixel,
-                                               row_padding: rep.row_padding, data: data, keep: jcm) { |_y| boundary }
+                                               row_padding: rep.row_padding, data: data, keep: jcm) do |y|
+              @ctx = ['bomc_pixels', nil, 'texture', tex['index'], Sketchup::ImageRep, detail + [y]]
+              boundary
+            end
             if jcm
               File.open(File.join(@skp_dir, 'jcm-base', "#{tex['index']}.rgba"), File::WRONLY | File::CREAT | File::EXCL | File::BINARY, 0o600) { |f| f.write(res[:bytes]) }
             end
