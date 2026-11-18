@@ -53,6 +53,45 @@ class TestEndToEndSynthetic < Test::Unit::TestCase
     assert_raise(Errno::EEXIST) { SibamboModelTruthV1::Compare.run(run_dir: r.run_dir) }
   end
 
+  def test_directly_referenced_texture_outside_collection_is_measured
+    spec = MTFixture.spec
+    face = spec[:defs].first[:faces].first
+    face[:back] = face[:front]
+    face[:uv_back] = face[:uv_front].map { |u, v| [u + 2.0, v + 3.0] }
+    spec[:defs].first[:nodes].first[:material] = face[:front]
+
+    result = run_e2e(spec: spec, model_mutator: lambda { |model|
+      material = model.materials.shift
+      material.define_singleton_method(:persistent_id) { 42 }
+      wrapper = material.dup
+      wrapper.define_singleton_method(:persistent_id) { 42 }
+      model.entities.find { |entity| entity.is_a?(Sketchup::Face) }.back_material = wrapper
+    })
+
+    assert_only_fail(result.diff)
+    assert_equal ['Paint'], result.model.materials.map(&:name)
+    tables = JSON.parse(File.read(File.join(result.run_dir, 'skp', 'tables.json')))
+    assert_equal %w[Paint Brick], tables.fetch('materials').map { |material| material.fetch('name') }
+    assert_equal %w[true false], tables.fetch('materials').last.fetch('pixels').keys
+    assert_equal 1, cat(result.diff, 'textures_pixels')[:matches]
+  end
+
+  def test_distinct_referenced_material_with_same_name_is_incomplete
+    result = run_e2e(compare: false, model_mutator: lambda { |model|
+      ordinary = model.materials.first
+      ordinary.define_singleton_method(:persistent_id) { 42 }
+      conflicting = ordinary.dup
+      conflicting.define_singleton_method(:persistent_id) { 43 }
+      face = model.entities.find { |entity| entity.is_a?(Sketchup::Face) }
+      face.back_material = conflicting
+      face.uv_back = face.uv_front
+    })
+
+    manifest = JSON.parse(File.read(File.join(result.run_dir, 'skp', 'manifest.json')))
+    assert_equal false, manifest.fetch('complete')
+    assert_match(/material name conflict/, manifest.dig('error', 'message'))
+  end
+
   def test_result_does_not_depend_on_fiber_budget
     a = run_e2e(budget_records: 1).diff
     b = run_e2e(budget_records: 1000).diff

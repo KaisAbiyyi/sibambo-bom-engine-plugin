@@ -759,23 +759,28 @@ module BOMEngine
       effective_cache[:scope_digest] = source_info[:sha256].to_s if source_info && source_info[:sha256]
 
       material_classes = PerformanceTrace.stage(:material_classification) { compute_material_classes(model, checkpoint: checkpoint) }
-      extracted_materials = PerformanceTrace.stage(:material_extraction, sample_resources: true) do
-        MaterialExtractor.extract(
-          model,
-          texture_writer,
-          texture_directory,
-          checkpoint: checkpoint,
-          optimize_textures: true,
-          profile: profile,
-          material_classes: material_classes,
-          allow_jpeg_color_map: allow_jpeg_color_map,
-          allow_semantic_colorize: allow_semantic_colorize,
-          record_reference_pixel_hash: texture_representation.to_sym == :portable,
-          prepared_color_maps: prepared_color_maps,
-          candidate_cache: effective_cache,
-          cooperative_png: true
-        )
+      material_sources = [] if profile.to_s == 'exact' && defined?(CanonicalGraphBuilder)
+      extract_materials = lambda do
+        PerformanceTrace.stage(:material_extraction, sample_resources: true) do
+          MaterialExtractor.extract(
+            model,
+            texture_writer,
+            texture_directory,
+            checkpoint: checkpoint,
+            optimize_textures: true,
+            profile: profile,
+            material_classes: material_classes,
+            allow_jpeg_color_map: allow_jpeg_color_map,
+            allow_semantic_colorize: allow_semantic_colorize,
+            record_reference_pixel_hash: texture_representation.to_sym == :portable,
+            prepared_color_maps: prepared_color_maps,
+            candidate_cache: effective_cache,
+            cooperative_png: true,
+            material_sources: material_sources
+          )
+        end
       end
+      extracted_materials = extract_materials.call unless material_sources
       entity_total = model.entities.respond_to?(:length) ? model.entities.length : 0
       graph = PerformanceTrace.stage(:canonical_capture, counts: { root_entities: entity_total }, sample_resources: true) do
         if defined?(CanonicalGraphBuilder)
@@ -801,12 +806,14 @@ module BOMEngine
                   # Probe the adaptive controller frequently without paying a
                   # callback on every entity. The controller still owns the
                   # actual 12 ms / item slice decision.
-                  batch_size: 16
+                  batch_size: 16,
+                  material_sources: material_sources
           )
         else
           { materials: extracted_materials, meshes: [], definitions: [], nodes: [], instances: [] }
         end
       end
+      extracted_materials ||= extract_materials.call
       PerformanceTrace.stage(:texture_attach) do
         attach_staged_textures(graph, extracted_materials, texture_directory, profile: profile,
           texture_representation: texture_representation, checkpoint: checkpoint)

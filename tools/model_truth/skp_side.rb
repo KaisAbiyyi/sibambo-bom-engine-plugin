@@ -162,6 +162,10 @@ module SibamboModelTruthV1
         @digest = {}
         @records = []
         @tables = { tags: [], materials: [] }
+        @material_sources = []
+        @material_objects = {}.compare_by_identity
+        @material_pids = {}
+        @material_names = {}
         @root_digest = nil
         @slice_count = 0
         @max_slice_ms = 0.0
@@ -438,6 +442,7 @@ module SibamboModelTruthV1
       ensure
         if @finished && !@finish_done
           @finish_done = true
+          @material_sources = @material_objects = @material_pids = @material_names = nil
           ENV['TEMP'], ENV['TMP'] = @saved_temp if @saved_temp
           @phase = 'finished'
           @active = false
@@ -522,10 +527,6 @@ module SibamboModelTruthV1
         set_phase('finish')
       end
 
-      def name_or_nil(m)
-        m.nil? ? nil : Canonical.utf8!(m.name)
-      end
-
       def layer_name(e)
         e.layer.nil? ? nil : Canonical.utf8!(e.layer.name)
       end
@@ -541,24 +542,51 @@ module SibamboModelTruthV1
           @tables[:tags] << { name: Canonical.utf8!(layer.name), visible: layer.visible? ? true : false }
           boundary
         end
-        @model.materials.each do |m|
-          t = m.texture
-          c = m.color
-          deltas = (m.materialType.to_i == 2 && m.respond_to?(:colorize_deltas)) ? m.colorize_deltas : nil
-          @tables[:materials] << {
-            name: Canonical.utf8!(m.name),
-            color: [c.red, c.green, c.blue, c.alpha],
-            alpha_hex: Canonical.float_hex(m.alpha),
-            material_type: m.materialType.to_i,
-            texture: t.nil? ? nil : { width_m_hex: Canonical.float_hex((t.width.to_f * 0.0254).round(9)),
-                                      height_m_hex: Canonical.float_hex((t.height.to_f * 0.0254).round(9)),
-                                      image_width: t.image_width, image_height: t.image_height },
-            colorize_type: colorize_type_of(m),
-            colorize_deltas_hex: deltas.nil? ? nil : deltas.to_a.map { |v| Canonical.float_hex(v) },
-            pixels: nil
-          }
+        @model.materials.each do |material|
+          register_material(material)
           boundary
         end
+      end
+
+      def register_material(material, referenced: false)
+        return nil if material.nil?
+
+        known_name = @material_objects[material]
+        return known_name if known_name
+
+        pid = material.persistent_id if material.respond_to?(:persistent_id)
+        pid = nil unless pid.is_a?(Integer) && pid.positive?
+        name = Canonical.utf8!(material.name)
+        raise ModelTruthError, 'referenced material has no persistent identity' if referenced && !pid
+
+        known_name = @material_pids[pid]
+        if known_name
+          raise ModelTruthError, 'conflicting names for material identity' unless known_name == name
+
+          return known_name
+        end
+        raise ModelTruthError, "material name conflict: #{name}" if @material_names.key?(name)
+
+        t = material.texture
+        c = material.color
+        deltas = (material.materialType.to_i == 2 && material.respond_to?(:colorize_deltas)) ? material.colorize_deltas : nil
+        @tables[:materials] << {
+          name: name,
+          color: [c.red, c.green, c.blue, c.alpha],
+          alpha_hex: Canonical.float_hex(material.alpha),
+          material_type: material.materialType.to_i,
+          texture: t.nil? ? nil : { width_m_hex: Canonical.float_hex((t.width.to_f * 0.0254).round(9)),
+                                    height_m_hex: Canonical.float_hex((t.height.to_f * 0.0254).round(9)),
+                                    image_width: t.image_width, image_height: t.image_height },
+          colorize_type: colorize_type_of(material),
+          colorize_deltas_hex: deltas.nil? ? nil : deltas.to_a.map { |v| Canonical.float_hex(v) },
+          pixels: nil
+        }
+        @material_sources << material
+        @material_objects[material] = name
+        @material_pids[pid] = name if pid
+        @material_names[name] = true
+        name
       end
 
       def add_item(msets, key, code, item, dfs_idx, extra = {})
@@ -610,7 +638,8 @@ module SibamboModelTruthV1
             child = e.definition
             ck = e.is_a?(Sketchup::Group) ? 'group' : 'component'
             child_digest = visit(child, ck, depth + 1)
-            local = Canonical.instance_local_item(kind: ck, t16: Canonical.skp_t16(e.transformation), material: name_or_nil(e.material), tag: layer_name(e))
+            paint = register_material(e.material, referenced: true)
+            local = Canonical.instance_local_item(kind: ck, t16: Canonical.skp_t16(e.transformation), material: paint, tag: layer_name(e))
             msets[:inst_local].add(Canonical.canon_json(local))
             msets[:inst_merkle].add(Canonical.canon_json(Canonical.instance_merkle_item(local, child_digest)))
             @items_gz.write(jline('d' => my_dfs, 'c' => 'I', 'i' => local, 'child_dfs' => @dfs[child], 'child_digest' => child_digest))
@@ -650,6 +679,8 @@ module SibamboModelTruthV1
       def face_item(face)
         fm = face.material
         bm = face.back_material
+        front = register_material(fm, referenced: true)
+        back = register_material(bm, referenced: true)
         ft = !fm.nil? && !fm.texture.nil?
         bt = !bm.nil? && !bm.texture.nil?
         helper = (ft || bt) ? timed(:get_UVHelper) { face.get_UVHelper(ft, bt, @tw) } : nil
@@ -675,7 +706,7 @@ module SibamboModelTruthV1
           end
         end
         normal = [face.normal.x, face.normal.y, face.normal.z].map { |c| Canonical.skp_unit(c) }
-        Canonical.face_item(front: name_or_nil(fm), back: name_or_nil(bm), tag: layer_name(face), hidden: face.hidden?, normal: normal,
+        Canonical.face_item(front: front, back: back, tag: layer_name(face), hidden: face.hidden?, normal: normal,
                             outer: outer, holes: holes, triangles: tris, uv_front: ft, uv_back: bt)
       end
 
@@ -688,7 +719,7 @@ module SibamboModelTruthV1
       end
 
       def phase_skp_pixels
-        @model.materials.each_with_index do |m, i|
+        @material_sources.each_with_index do |m, i|
           t = m.texture
           next if t.nil?
 
