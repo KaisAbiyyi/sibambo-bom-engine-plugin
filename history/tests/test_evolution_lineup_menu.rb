@@ -49,7 +49,7 @@ class TestEvolutionLineupMenu < Test::Unit::TestCase
             end
           end
         RUBY
-        { 'id' => "e#{i + 2}", 'engine' => "e#{i + 2}", 'title' => "E#{i + 2} — #{kind}", 'kind' => kind,
+        { 'id' => (i == 2 ? 'e4-bomc' : "e#{i + 2}"), 'engine' => "e#{i + 2}", 'title' => "E#{i + 2} — #{kind}", 'kind' => kind,
           'formatVersion' => 'test', 'profiles' => %w[exact visual], 'sha' => (i + 2).to_s * 64,
           'entry' => "e#{i + 2}/entry.rb", 'moduleName' => "SibamboHistory::#{name}" }
       end
@@ -57,7 +57,12 @@ class TestEvolutionLineupMenu < Test::Unit::TestCase
       load File.join(dir, 'master_menu.rb')
 
       submenu = UI.menu('Extensions').items.last.last
-      labels = submenu.items.select { |name, _| name.is_a?(String) && name.start_with?('E') }.map(&:first)
+      # The three "Batch Ex Export..." items precede the version items (commit 6b2d459);
+      # select each group by label, never by position.
+      batch_items = submenu.items.select { |name, _| name.is_a?(String) && name.start_with?('Batch ') }
+      assert_equal ['Batch E2 Export...', 'Batch E3 Export...', 'Batch E4 Export...'], batch_items.map(&:first)
+      version_items = submenu.items.select { |name, _| name.is_a?(String) && name.start_with?('E') }
+      labels = version_items.map(&:first)
       assert_equal 3, labels.length
       assert_equal %w[E2 E3 E4], labels.map { |label| label.split.first }
       assert labels.all? { |label| label.include?('·') }
@@ -66,12 +71,23 @@ class TestEvolutionLineupMenu < Test::Unit::TestCase
       SibamboHistory::EvolutionLab::LineupDialog.singleton_class.define_method(:show) do |slot:, model:, target:, &block|
         captured = [slot.fetch('id'), model, target, block]
       end
-      submenu.items[0].last.call
+      version_items[0].last.call
       assert_equal 'e2', captured[0]
       assert_same Sketchup.active_model, captured[1]
       assert_nil $e4_called
-      submenu.items[2].last.call
+      version_items[2].last.call
       assert_equal true, $e4_called
+      assert_equal [], UI.messages
+
+      batch_engines = []
+      SibamboHistory::FakeE4.singleton_class.send(:remove_method, :load_engine)
+      batch_runtime = Module.new
+      batch_runtime.const_set(:OvernightBatch, Module.new)
+      batch_runtime::OvernightBatch.const_set(:Dialog, Module.new)
+      batch_runtime::OvernightBatch::Dialog.define_singleton_method(:show) { |engine:| batch_engines << engine }
+      SibamboHistory::FakeE4.define_singleton_method(:load_engine) { batch_runtime }
+      batch_items.each { |_, action| action.call }
+      assert_equal %w[e2 e3 e4], batch_engines
       assert_equal [], UI.messages
 
       SibamboHistory::EvolutionLab.open_engine('e3', Sketchup.active_model)
