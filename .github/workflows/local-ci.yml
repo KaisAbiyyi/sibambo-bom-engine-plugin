@@ -1,0 +1,179 @@
+# Self-hosted exact-target Producer CI (SIB-R1-ITCON-001-COHORT-C1, amendment v1.1 C-D12a).
+# Lives ONLY on helper branches `local-ci/<target12>[-rN]` = <target commit> + this one file.
+# NEVER MERGE this file or its branch. The job verifies that the helper commit adds only
+# this file, then tests the PARENT commit (the exact target) with an LF checkout.
+# Mirrors .github/workflows/ci.yml: job `windows-png-worker` on the owner's Windows runner
+# and job `test` on the owner's WSL2 Ubuntu 24.04 runner (both labelled `sibambo-plugin`);
+# differences from hosted CI are recorded in the receipt and in plan amendment v1.3.
+name: Producer CI (self-hosted exact-target)
+
+on:
+  push:
+    branches: ['local-ci/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-png-worker:
+    runs-on: [self-hosted, Windows, X64, sibambo-plugin]
+    timeout-minutes: 60
+    steps:
+      - name: Check out helper commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select exact target (parent of helper commit), LF, D:-only temp
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $helper = (git rev-parse HEAD).Trim()
+          $parents = (git rev-list --parents -n 1 HEAD).Trim().Split(' ')
+          if ($parents.Count -ne 2) { throw 'helper commit must have exactly one parent' }
+          $changed = @(git diff --name-only HEAD^1 HEAD)
+          if ($changed.Count -ne 1 -or $changed[0] -ne '.github/workflows/local-ci.yml') { throw "helper commit must add only .github/workflows/local-ci.yml; got: $($changed -join ', ')" }
+          $target = (git rev-parse HEAD^1).Trim()
+          git config core.autocrlf false
+          git rm -r --cached -q .
+          git reset -q --hard $target
+          Remove-Item -LiteralPath '.github/workflows/local-ci.yml' -Force  # helper file is untracked after the reset
+          if ((git rev-parse HEAD).Trim() -ne $target) { throw 'HEAD is not the target' }
+          if (git status --porcelain) { throw 'working tree not clean after LF checkout' }
+          if ((Get-Content -Raw bom_engine/bomc_decoder.rb) -match "`r`n") { throw 'CRLF working copy' }
+          $tmp = Join-Path $env:RUNNER_TEMP 'tmp'
+          New-Item -ItemType Directory -Force $tmp | Out-Null
+          if (-not $tmp.ToUpper().StartsWith('D:\')) { throw "runner temp must be on D: ($tmp)" }
+          Add-Content $env:GITHUB_PATH 'C:\Ruby32-x64\bin'
+          Add-Content $env:GITHUB_ENV "TARGET_SHA=$target"
+          Add-Content $env:GITHUB_ENV "HELPER_SHA=$helper"
+          Add-Content $env:GITHUB_ENV "TEMP=$tmp"
+          Add-Content $env:GITHUB_ENV "TMP=$tmp"
+          Write-Host "Testing exact target $target (helper $helper)"
+
+      - name: Verify detached PNG worker and cooperative boundaries
+        shell: pwsh
+        run: |
+          ruby -v
+          if (-not ((ruby -v) -match '^ruby 3\.2\.')) { throw 'Ruby 3.2 required' }
+          $env:TEMP = Join-Path $env:GITHUB_WORKSPACE 'scratch/png-worker-temp'
+          $env:TMP = $env:TEMP
+          New-Item -ItemType Directory -Force $env:TEMP | Out-Null
+          foreach ($test in @('test_windows_codec_process.rb', 'test_candidate013_png_worker.rb', 'test_batch_texture_cleanup.rb', 'test_candidate013_cooperation.rb', 'test_candidate012_cooperation.rb', 'test_overnight_batch.rb')) {
+            ruby "bom_engine/tests/$test"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+  test:
+    runs-on: [self-hosted, Linux, X64, sibambo-plugin]
+    timeout-minutes: 120
+    steps:
+      - name: Check out helper commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select exact target (parent of helper commit)
+        shell: bash
+        run: |
+          set -euo pipefail
+          helper=$(git rev-parse HEAD)
+          parents=$(git rev-list --parents -n 1 HEAD | wc -w)
+          [ "$parents" -eq 2 ] || { echo 'helper commit must have exactly one parent'; exit 1; }
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          [ "$changed" = '.github/workflows/local-ci.yml' ] || { echo "helper commit must add only .github/workflows/local-ci.yml; got: $changed"; exit 1; }
+          target=$(git rev-parse HEAD^1)
+          git config core.autocrlf false
+          git reset -q --hard "$target"
+          rm -f .github/workflows/local-ci.yml
+          [ "$(git rev-parse HEAD)" = "$target" ] || { echo 'HEAD is not the target'; exit 1; }
+          [ -z "$(git status --porcelain)" ] || { echo 'working tree not clean'; git status --porcelain; exit 1; }
+          ruby -v
+          ruby -v | grep -q '^ruby 3\.2\.' || { echo 'Ruby 3.2 required'; exit 1; }
+          echo "TARGET_SHA=$target" >> "$GITHUB_ENV"
+          echo "HELPER_SHA=$helper" >> "$GITHUB_ENV"
+          echo "Testing exact target $target (helper $helper)"
+
+      - name: Set up Node for dialog checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install isolated Chromium test tooling
+        run: |
+          npm install --prefix "$RUNNER_TEMP/sibambo-ui" @playwright/test@1.61.1
+          "$RUNNER_TEMP/sibambo-ui/node_modules/.bin/playwright" install chromium
+
+      - name: Fetch provenance source histories
+        run: |
+          git fetch origin feature/clean-json-export
+          git fetch https://github.com/rdwnilyas-coder/sibambo-bom-engine.git main
+
+      - name: Run BOM Engine Production Tests
+        env:
+          TEMP: ${{ runner.temp }}/sibambo-batch-temp
+          TMP: ${{ runner.temp }}/sibambo-batch-temp
+        run: |
+          set -euo pipefail
+          mkdir -p "$TEMP"
+          for f in bom_engine/tests/test_*.rb; do
+            echo "Running $f..."
+            ruby -I . "$f"
+          done
+
+      - name: Verify Overnight Batch HtmlDialog in Chromium
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/sibambo-ui/node_modules/@playwright/test
+        run: node bom_engine/tests/overnight_batch_ui.cjs
+
+      - name: Build Evolution Lab Packages
+        run: ruby tools/history/build_evolution_lab.rb
+
+      - name: Run History & Provenance Tests
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/sibambo-ui/node_modules/@playwright/test
+        run: |
+          set -euo pipefail
+          for f in history/tests/test_*.rb; do
+            echo "Running $f..."
+            ruby "$f"
+          done
+
+      - name: Build current Evolution lineup candidate
+        run: ruby tools/history/build_evolution_lineup.rb --output "$RUNNER_TEMP/evolution-lineup-candidate"
+
+      - name: Preserve candidate RBZ, identity manifest and receipt in the runner home
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/evolution-lineup-candidate"
+          out="$HOME/sib-ci-receipts/${GITHUB_RUN_ID}-${TARGET_SHA:0:12}"
+          mkdir -p "$HOME/sib-ci-receipts"
+          mkdir "$out"
+          cp "$src"/*.rbz "$src/manifest.json" "$out/"
+          export OUT="$out"
+          ruby -rjson -rdigest -e '
+            out = ENV.fetch("OUT")
+            m = JSON.parse(File.read(File.join(out, "manifest.json")))
+            rbz = Dir.glob(File.join(out, "*.rbz")).first
+            r = {
+              "schema" => "sib-r1-self-hosted-ci-receipt-v1",
+              "repository" => ENV["GITHUB_REPOSITORY"], "runId" => ENV["GITHUB_RUN_ID"],
+              "runAttempt" => ENV["GITHUB_RUN_ATTEMPT"], "workflow" => ENV["GITHUB_WORKFLOW"],
+              "helperRef" => ENV["GITHUB_REF"], "helperSha" => ENV["HELPER_SHA"], "targetSha" => ENV["TARGET_SHA"],
+              "job" => "test", "runnerName" => ENV["RUNNER_NAME"], "runnerOs" => ENV["RUNNER_OS"],
+              "ruby" => RUBY_DESCRIPTION, "node" => `node -v`.strip,
+              "e4SourceTreeSha256" => m["e4SourceTreeSha256"],
+              "rbzFile" => File.basename(rbz), "rbzSha256" => Digest::SHA256.file(rbz).hexdigest,
+              "finishedAtUtc" => Time.now.utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "note" => "Self-hosted substitute for hosted ci.yml job test (WSL2 Ubuntu 24.04); windows-png-worker ran on the Windows runner in the same run."
+            }
+            File.write(File.join(out, "SELF-HOSTED-CI-RECEIPT.json"), JSON.pretty_generate(r) + "\n")
+          '
+          echo "Receipt folder: $out"
+          cat "$out/SELF-HOSTED-CI-RECEIPT.json"
+          sha256sum "$out"/*
