@@ -1,0 +1,200 @@
+# Self-hosted exact-target Producer CI (SIB-R1-ITCON-001-COHORT-C1, amendment v1.1 C-D12a).
+# Lives ONLY on helper branches `local-ci/<target12>` = <target commit> + this one file.
+# NEVER MERGE this file or its branch. The job verifies that the helper commit adds only
+# this file, then tests the PARENT commit (the exact target) with an LF checkout.
+# Mirrors .github/workflows/ci.yml jobs `windows-png-worker` and `test` on the owner's
+# Windows runner (label `sibambo-plugin`); differences from the hosted Ubuntu job are
+# recorded in the receipt and in the plan amendment.
+name: Producer CI (self-hosted exact-target)
+
+on:
+  push:
+    branches: ['local-ci/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-png-worker:
+    runs-on: [self-hosted, Windows, X64, sibambo-plugin]
+    timeout-minutes: 60
+    steps:
+      - name: Check out helper commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select exact target (parent of helper commit), LF, D:-only temp
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $helper = (git rev-parse HEAD).Trim()
+          $parents = (git rev-list --parents -n 1 HEAD).Trim().Split(' ')
+          if ($parents.Count -ne 2) { throw 'helper commit must have exactly one parent' }
+          $changed = @(git diff --name-only HEAD^1 HEAD)
+          if ($changed.Count -ne 1 -or $changed[0] -ne '.github/workflows/local-ci.yml') { throw "helper commit must add only .github/workflows/local-ci.yml; got: $($changed -join ', ')" }
+          $target = (git rev-parse HEAD^1).Trim()
+          git config core.autocrlf false
+          git rm -r --cached -q .
+          git reset -q --hard $target
+          if ((git rev-parse HEAD).Trim() -ne $target) { throw 'HEAD is not the target' }
+          if (git status --porcelain) { throw 'working tree not clean after LF checkout' }
+          if ((Get-Content -Raw bom_engine/bomc_decoder.rb) -match "`r`n") { throw 'CRLF working copy' }
+          $tmp = Join-Path $env:RUNNER_TEMP 'tmp'
+          New-Item -ItemType Directory -Force $tmp | Out-Null
+          if (-not $tmp.ToUpper().StartsWith('D:\')) { throw "runner temp must be on D: ($tmp)" }
+          Add-Content $env:GITHUB_PATH 'C:\Ruby32-x64\bin'
+          Add-Content $env:GITHUB_ENV "TARGET_SHA=$target"
+          Add-Content $env:GITHUB_ENV "HELPER_SHA=$helper"
+          Add-Content $env:GITHUB_ENV "TEMP=$tmp"
+          Add-Content $env:GITHUB_ENV "TMP=$tmp"
+          Write-Host "Testing exact target $target (helper $helper)"
+
+      - name: Verify detached PNG worker and cooperative boundaries
+        shell: pwsh
+        run: |
+          ruby -v
+          if (-not ((ruby -v) -match '^ruby 3\.2\.')) { throw 'Ruby 3.2 required' }
+          $env:TEMP = Join-Path $env:GITHUB_WORKSPACE 'scratch/png-worker-temp'
+          $env:TMP = $env:TEMP
+          New-Item -ItemType Directory -Force $env:TEMP | Out-Null
+          foreach ($test in @('test_windows_codec_process.rb', 'test_candidate013_png_worker.rb', 'test_batch_texture_cleanup.rb', 'test_candidate013_cooperation.rb', 'test_candidate012_cooperation.rb', 'test_overnight_batch.rb')) {
+            ruby "bom_engine/tests/$test"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+  test:
+    runs-on: [self-hosted, Windows, X64, sibambo-plugin]
+    timeout-minutes: 120
+    steps:
+      - name: Check out helper commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select exact target (parent of helper commit), LF, D:-only temp and caches
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $helper = (git rev-parse HEAD).Trim()
+          $parents = (git rev-list --parents -n 1 HEAD).Trim().Split(' ')
+          if ($parents.Count -ne 2) { throw 'helper commit must have exactly one parent' }
+          $changed = @(git diff --name-only HEAD^1 HEAD)
+          if ($changed.Count -ne 1 -or $changed[0] -ne '.github/workflows/local-ci.yml') { throw "helper commit must add only .github/workflows/local-ci.yml; got: $($changed -join ', ')" }
+          $target = (git rev-parse HEAD^1).Trim()
+          git config core.autocrlf false
+          git rm -r --cached -q .
+          git reset -q --hard $target
+          if ((git rev-parse HEAD).Trim() -ne $target) { throw 'HEAD is not the target' }
+          if (git status --porcelain) { throw 'working tree not clean after LF checkout' }
+          if ((Get-Content -Raw bom_engine/bomc_decoder.rb) -match "`r`n") { throw 'CRLF working copy' }
+          $tmp = Join-Path $env:RUNNER_TEMP 'tmp'
+          New-Item -ItemType Directory -Force $tmp | Out-Null
+          if (-not $tmp.ToUpper().StartsWith('D:\')) { throw "runner temp must be on D: ($tmp)" }
+          $browsers = Join-Path $env:RUNNER_TOOL_CACHE 'ms-playwright'
+          Add-Content $env:GITHUB_PATH 'C:\Ruby32-x64\bin'
+          Add-Content $env:GITHUB_ENV "TARGET_SHA=$target"
+          Add-Content $env:GITHUB_ENV "HELPER_SHA=$helper"
+          Add-Content $env:GITHUB_ENV "TEMP=$tmp"
+          Add-Content $env:GITHUB_ENV "TMP=$tmp"
+          Add-Content $env:GITHUB_ENV "npm_config_cache=$(Join-Path $env:RUNNER_TEMP 'npm-cache')"
+          Add-Content $env:GITHUB_ENV "PLAYWRIGHT_BROWSERS_PATH=$browsers"
+          Add-Content $env:GITHUB_ENV "PLAYWRIGHT_MODULE=$(Join-Path $env:RUNNER_TEMP 'sibambo-ui\node_modules\@playwright\test')"
+          Write-Host "Testing exact target $target (helper $helper)"
+
+      - name: Set up Node for dialog checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install isolated Chromium test tooling
+        shell: pwsh
+        run: |
+          npm install --prefix "$env:RUNNER_TEMP/sibambo-ui" @playwright/test@1.61.1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/sibambo-ui/node_modules/.bin/playwright.cmd" install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Fetch provenance source histories
+        shell: pwsh
+        run: |
+          git fetch origin feature/clean-json-export
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git fetch https://github.com/rdwnilyas-coder/sibambo-bom-engine.git main
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run BOM Engine Production Tests
+        shell: pwsh
+        run: |
+          ruby -v
+          if (-not ((ruby -v) -match '^ruby 3\.2\.')) { throw 'Ruby 3.2 required' }
+          foreach ($f in (Get-ChildItem bom_engine/tests -Filter 'test_*.rb' | Sort-Object Name)) {
+            Write-Host "Running bom_engine/tests/$($f.Name)..."
+            ruby -I . "bom_engine/tests/$($f.Name)"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Verify Overnight Batch HtmlDialog in Chromium
+        shell: pwsh
+        run: |
+          node bom_engine/tests/overnight_batch_ui.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Evolution Lab Packages
+        shell: pwsh
+        run: |
+          ruby tools/history/build_evolution_lab.rb
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run History & Provenance Tests
+        shell: pwsh
+        run: |
+          foreach ($f in (Get-ChildItem history/tests -Filter 'test_*.rb' | Sort-Object Name)) {
+            Write-Host "Running history/tests/$($f.Name)..."
+            ruby "history/tests/$($f.Name)"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Build current Evolution lineup candidate
+        shell: pwsh
+        run: |
+          ruby tools/history/build_evolution_lineup.rb --output "$env:RUNNER_TEMP/evolution-lineup-candidate"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Preserve candidate RBZ, identity manifest and receipt on drive D
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Join-Path $env:RUNNER_TEMP 'evolution-lineup-candidate'
+          $out = "D:\projects\sibambo\outputs\sib-r1-itcon\cohort-c1\local-ci\$($env:GITHUB_RUN_ID)-$($env:TARGET_SHA.Substring(0,12))"
+          if (Test-Path $out) { throw "receipt folder exists: $out" }
+          New-Item -ItemType Directory $out | Out-Null
+          Get-ChildItem $src -Filter *.rbz | Copy-Item -Destination $out
+          Copy-Item (Join-Path $src 'manifest.json') $out
+          $manifest = Get-Content -Raw (Join-Path $out 'manifest.json') | ConvertFrom-Json
+          $rbz = Get-ChildItem $out -Filter *.rbz | Select-Object -First 1
+          $receipt = [ordered]@{
+            schema = 'sib-r1-self-hosted-ci-receipt-v1'
+            repository = $env:GITHUB_REPOSITORY
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            workflow = $env:GITHUB_WORKFLOW
+            helperRef = $env:GITHUB_REF
+            helperSha = $env:HELPER_SHA
+            targetSha = $env:TARGET_SHA
+            runnerName = $env:RUNNER_NAME
+            runnerOs = $env:RUNNER_OS
+            ruby = (ruby -v)
+            node = (node -v)
+            e4SourceTreeSha256 = $manifest.e4SourceTreeSha256
+            rbzFile = $rbz.Name
+            rbzSha256 = (Get-FileHash -Algorithm SHA256 $rbz.FullName).Hash.ToLower()
+            finishedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            note = 'Self-hosted Windows substitute for hosted ci.yml; job conclusions are on GitHub for this run id.'
+          }
+          $receipt | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $out 'SELF-HOSTED-CI-RECEIPT.json')
+          Get-Content (Join-Path $out 'SELF-HOSTED-CI-RECEIPT.json')
