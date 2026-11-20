@@ -15,7 +15,7 @@ require_relative '../../bom_engine/bomc_jpeg_color_map'
 
 module SibamboModelTruthV1
   module BomcSide
-    PRODUCER_PIN = '3f2d314a3a0147ce56914537ef98fd0b77068bb680bcb0000f4b554d44f523a1'
+    PRODUCER_PIN = '7448f3e67bd24a37f1619f625991b3304347094cd13cf5c003a347097f9ac3de' # SIB-R1 cohort C1 (plan SIB-R1-ITCON-001-COHORT-C1 C-D4); historical D4 pin 3f2d314a... stays on feat/sib-r1-model-truth-001
     DWEBP_SHA256 = '17c1488bf84b7834e9aa908bb40afd0be2e55d57567d210e96336c56bb6ae993'
     FFMPEG_SHA256 = 'b2663834d9162f6ee431e7d864d8afd7ac385ec289de70463af67beab6f2257e'
     DECODER_TIMEOUT_S = 300
