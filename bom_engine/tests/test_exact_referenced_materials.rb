@@ -113,4 +113,71 @@ class TestExactReferencedMaterials < Test::Unit::TestCase
       assert_match(/material name conflict/, error.message)
     end
   end
+
+  # Review 5986296045 item 2: fail-closed identity cases not covered above.
+  def painted_face(group)
+    group.entities.find { |entity| entity.is_a?(Sketchup::Face) }
+  end
+
+  def unenumerated_reference(name, pid)
+    material = Sketchup::Material.new(name)
+    material.define_singleton_method(:persistent_id) { pid } unless pid == :absent
+    material
+  end
+
+  def test_exact_rejects_a_referenced_material_without_persistent_identity
+    # :absent = no persistent_id method; 0, negative and non-Integer values are not identities.
+    [:absent, nil, 0, -5, 'pid_text'].each do |pid|
+      model, group = capture_fixture
+      painted_face(group).back_material = unenumerated_reference('No identity', pid)
+      Dir.mktmpdir('exact-no-pid') do |dir|
+        error = assert_raise(ArgumentError, "pid=#{pid.inspect}") { snapshot(model, dir, :exact) }
+        assert_match(/Missing persistent identity for referenced material No identity/, error.message)
+      end
+    end
+  end
+
+  def test_exact_rejects_one_persistent_identity_with_conflicting_names
+    model, group = capture_fixture
+    painted_face(group).back_material = unenumerated_reference('Renamed texture', 42)
+    Dir.mktmpdir('exact-pid-rename') do |dir|
+      error = assert_raise(ArgumentError) { snapshot(model, dir, :exact) }
+      assert_match(/Conflicting names for material identity 42/, error.message)
+    end
+  end
+
+  def test_visual_inventory_is_unaffected_by_exact_identity_guards
+    model, group = capture_fixture
+    painted_face(group).back_material = unenumerated_reference('No identity', :absent)
+    Dir.mktmpdir('visual-no-pid') do |dir|
+      graph = snapshot(model, dir, :visual)
+      assert_equal ['Unused enumerated'], graph[:materials].map { |row| row[:name] }
+    end
+  end
+
+  def test_rejected_exact_capture_compiles_and_publishes_nothing
+    model, group = capture_fixture
+    painted_face(group).back_material = unenumerated_reference('No identity', :absent)
+    Dir.mktmpdir('exact-job') do |dir|
+      output_path = File.join(dir, 'm09.bomc')
+      calls = []
+      context = {
+        clock: -> { 0.0 }, on_yield: ->(_event) {}, cancelled: -> { false },
+        source_info: ->(_model) { { path: nil, bytes: nil, available: false } },
+        snapshot: ->(source_model, _checkpoint) { snapshot(source_model, File.join(dir, 'textures'), :exact) },
+        compile: ->(*_args) { calls << :compile },
+        validate: ->(_result) { calls << :validate },
+        publish: ->(*_args) { calls << :publish },
+        cleanup: -> { calls << :cleanup }
+      }
+      error = assert_raise(ArgumentError) do
+        BOMEngine::BOMCExportJob.run(model: model, output_path: output_path,
+                                     settings: BOMEngine::BOMCProcessing.settings(:balanced), context: context)
+      end
+      assert_match(/Missing persistent identity/, error.message)
+      assert_equal [:cleanup], calls
+      assert_equal false, File.exist?(output_path)
+      assert_equal [], Dir.glob(File.join(dir, '*.part'))
+    end
+  end
 end

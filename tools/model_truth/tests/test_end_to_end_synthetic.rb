@@ -92,6 +92,45 @@ class TestEndToEndSynthetic < Test::Unit::TestCase
     assert_match(/material name conflict/, manifest.dig('error', 'message'))
   end
 
+  # Review 5986296045 item 2: identity cases that must make the capture incomplete
+  # and keep the comparator from issuing any verdict.
+  def assert_incomplete_and_refused(result, message)
+    manifest = JSON.parse(File.read(File.join(result.run_dir, 'skp', 'manifest.json')))
+    assert_equal false, manifest.fetch('complete')
+    assert_match(message, manifest.dig('error', 'message'))
+    diff = SibamboModelTruthV1::Compare.build(result.run_dir)
+    assert_equal ['ERROR', 'manifest_incomplete', []], diff.values_at(:overall, :error, :categories)
+  end
+
+  def test_referenced_material_without_persistent_identity_is_incomplete
+    # :absent = no persistent_id method; 0, negative and non-Integer values are not identities.
+    [:absent, nil, 0, -5, 'pid_text'].each do |pid|
+      result = run_e2e(compare: false, model_mutator: lambda { |model|
+        orphan = model.materials.first.dup
+        orphan.instance_variable_set(:@name, 'No identity')
+        orphan.define_singleton_method(:persistent_id) { pid } unless pid == :absent
+        face = model.entities.find { |entity| entity.is_a?(Sketchup::Face) }
+        face.back_material = orphan
+        face.uv_back = face.uv_front
+      })
+      assert_incomplete_and_refused(result, /referenced material has no persistent identity/)
+    end
+  end
+
+  def test_one_persistent_identity_with_conflicting_names_is_incomplete
+    result = run_e2e(compare: false, model_mutator: lambda { |model|
+      ordinary = model.materials.first
+      ordinary.define_singleton_method(:persistent_id) { 42 }
+      renamed = ordinary.dup
+      renamed.instance_variable_set(:@name, 'Renamed')
+      renamed.define_singleton_method(:persistent_id) { 42 }
+      face = model.entities.find { |entity| entity.is_a?(Sketchup::Face) }
+      face.back_material = renamed
+      face.uv_back = face.uv_front
+    })
+    assert_incomplete_and_refused(result, /conflicting names for material identity/)
+  end
+
   def test_result_does_not_depend_on_fiber_budget
     a = run_e2e(budget_records: 1).diff
     b = run_e2e(budget_records: 1000).diff
