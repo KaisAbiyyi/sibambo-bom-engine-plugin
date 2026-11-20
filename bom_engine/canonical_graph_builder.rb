@@ -14,19 +14,20 @@ module BOMEngine
     FORMAT_VERSION = '3.0.0'.freeze
     SCHEMA_URI = 'https://sibambo.dev/schemas/bom-engine/3.0.0/schema.json'.freeze
 
-    def self.build(model:, entities:, parent_transform:, settings:, spatial:, texture_writer: nil, progress: nil, batch_size: 24)
+    def self.build(model:, entities:, parent_transform:, settings:, spatial:, texture_writer: nil, progress: nil, batch_size: 24, material_sources: nil)
       Builder.new(
         model: model,
         settings: settings,
         spatial: spatial,
         texture_writer: texture_writer,
         progress: progress,
-        batch_size: batch_size
+        batch_size: batch_size,
+        material_sources: material_sources
       ).build(entities, parent_transform)
     end
 
     class Builder
-      def initialize(model:, settings:, spatial:, texture_writer:, progress: nil, batch_size: 24)
+      def initialize(model:, settings:, spatial:, texture_writer:, progress: nil, batch_size: 24, material_sources: nil)
         @model = model
         @settings = settings || {}
         @spatial = spatial || {}
@@ -54,7 +55,10 @@ module BOMEngine
         @transforms = []
         @transform_index = {}
         @materials = []
-        @material_ids = {}
+        @material_ids = {}.compare_by_identity
+        @material_sources = material_sources
+        @material_pids = {} if material_sources
+        @material_names = {} if material_sources
         @tags = []
         @tag_ids = {}
         @attached_labels = Hash.new { |hash, key| hash[key] = [] }
@@ -284,8 +288,8 @@ module BOMEngine
           outer: outer,
           holes: holes,
           triangles: build_face_triangles(face_mesh, positions, position_index, bounds_accumulator),
-          front_material_id: material_id(face.material),
-          back_material_id: material_id(face.back_material),
+          front_material_id: material_id(face.material, referenced: true),
+          back_material_id: material_id(face.back_material, referenced: true),
           front_appearance_required: true,
           back_appearance_required: !face.back_material.nil?,
           tag_id: tag_id(face.layer),
@@ -381,7 +385,7 @@ module BOMEngine
           owner_definition_id: owner_definition_id,
           definition_id: definition_id,
           transform_id: intern_transform(entity.transformation),
-          material_override_id: material_id(entity.material),
+          material_override_id: material_id(entity.material, referenced: true),
           tag_id: tag_id(entity.layer),
           source_identity: entity_source_identity(entity),
           attributes: Traversal.extract_dicts(entity),
@@ -462,39 +466,71 @@ module BOMEngine
       def build_materials
         @model.materials.each do |material|
           checkpoint('Reading model materials')
-          id = "material:#{safe_persistent_id(material)}"
-          @material_ids[material.object_id] = id
-          color = material.color
-          texture = material.texture
-          item = {
-            id: id,
-            source_identity: entity_source_identity(material),
-            name: material.name,
-            display_name: material.display_name,
-            color: color_hash(color),
-            opacity: material.alpha.to_f.round(6),
-            material_type: material.materialType,
-            attributes: Traversal.extract_dicts(material)
-          }
-          if material.materialType.to_i == 2 && material.respond_to?(:colorize_deltas) && material.respond_to?(:colorize_type)
-            raw_mode=material.colorize_type
-            shift_constant=defined?(Sketchup::Material::COLORIZE_SHIFT) ? Sketchup::Material::COLORIZE_SHIFT : 0
-            h,l,saturation=Array(material.colorize_deltas).map(&:to_f)
-            item[:colorize_type]=raw_mode==shift_constant ? 'shift' : 'tint'
-            item[:colorize_deltas]={h:h,l:l,s:saturation}
+          pid = material_pid(material) if @material_sources
+          id = "material:#{pid || safe_persistent_id(material)}"
+          if @material_sources
+            id = register_exact_material(material, pid, id)
+          else
+            @materials << material_row(material, id)
           end
-          if texture
-            item[:texture] = {
-              filename: texture.filename.to_s,
-              source_path: texture.filename.to_s,
-              width_m: (texture.width.to_f * Constants::IN_TO_M).round(9),
-              height_m: (texture.height.to_f * Constants::IN_TO_M).round(9),
-              image_width_px: texture.image_width,
-              image_height_px: texture.image_height
-            }
-          end
-          @materials << item
+          @material_ids[material] = id
         end
+      end
+
+      def material_row(material, id)
+        color = material.color
+        texture = material.texture
+        item = {
+          id: id,
+          source_identity: entity_source_identity(material),
+          name: material.name,
+          display_name: material.display_name,
+          color: color_hash(color),
+          opacity: material.alpha.to_f.round(6),
+          material_type: material.materialType,
+          attributes: Traversal.extract_dicts(material)
+        }
+        if material.materialType.to_i == 2 && material.respond_to?(:colorize_deltas) && material.respond_to?(:colorize_type)
+          raw_mode=material.colorize_type
+          shift_constant=defined?(Sketchup::Material::COLORIZE_SHIFT) ? Sketchup::Material::COLORIZE_SHIFT : 0
+          h,l,saturation=Array(material.colorize_deltas).map(&:to_f)
+          item[:colorize_type]=raw_mode==shift_constant ? 'shift' : 'tint'
+          item[:colorize_deltas]={h:h,l:l,s:saturation}
+        end
+        if texture
+          item[:texture] = {
+            filename: texture.filename.to_s,
+            source_path: texture.filename.to_s,
+            width_m: (texture.width.to_f * Constants::IN_TO_M).round(9),
+            height_m: (texture.height.to_f * Constants::IN_TO_M).round(9),
+            image_width_px: texture.image_width,
+            image_height_px: texture.image_height
+          }
+        end
+        item
+      end
+
+      def material_pid(material)
+        value = material.persistent_id if material.respond_to?(:persistent_id)
+        value if value.is_a?(Integer) && value.positive?
+      end
+
+      def register_exact_material(material, pid, id)
+        name = material.name
+        existing = @material_pids[pid]
+        if existing
+          raise ArgumentError, "Conflicting names for material identity #{pid}" unless existing[:name] == name
+
+          return existing[:id]
+        end
+        raise ArgumentError, "Exact material name conflict: #{name}" if @material_names.key?(name)
+
+        row = material_row(material, id)
+        @materials << row
+        @material_sources << material
+        @material_pids[pid] = row if pid
+        @material_names[name] = id
+        id
       end
 
       def build_source
@@ -801,9 +837,16 @@ module BOMEngine
         }
       end
 
-      def material_id(material)
+      def material_id(material, referenced: false)
         return nil if material.nil?
-        @material_ids[material.object_id]
+
+        id = @material_ids[material]
+        return id if id || !@material_sources || !referenced
+
+        pid = material_pid(material)
+        raise ArgumentError, "Missing persistent identity for referenced material #{material.name}" unless pid
+
+        register_exact_material(material, pid, "material:#{pid}")
       end
 
       def tag_id(layer)

@@ -254,13 +254,14 @@ class TestSkpSide < Test::Unit::TestCase
   def test_source_uses_only_allowed_sketchup_api
     src = File.read(File.expand_path('../skp_side.rb', __dir__))
     forbidden = %w[start_operation commit_operation abort_operation add_face add_line add_edges add_group add_instance add_cpoint
-                   erase! entityID persistent_id Observer model.save .save( save_copy write_all bom_engine BOMEngine
+                   erase! entityID Observer model.save .save( save_copy write_all bom_engine BOMEngine
                    remove_observer add_observer transform! explode set_attribute attribute_dictionary]
     forbidden.each { |tok| assert_no_match(/#{Regexp.escape(tok)}/, src, "skp_side.rb must not use #{tok}") }
     assert_match(/\Arequire|# frozen_string_literal: true/, src)
     requires = src.scan(/^\s*require(?:_relative)?\s+'([^']+)'/).flatten
     # fiddle is required lazily for read-only GetThreadTimes/GetProcessTimes timing (evidence only)
     assert_equal %w[digest fileutils json zlib canonical fiddle], requires
+    assert_equal ['material.persistent_id'], src.scan(/\w+\.persistent_id\b/)
     assert_match(/GetThreadTimes/, src)
     %w[GetCurrentThread GetCurrentProcess GetThreadTimes GetProcessTimes].each { |f| assert_match(/#{f}/, src) }
     assert_equal 4, src.scan(/lib\['(\w+)'\]/).flatten.length

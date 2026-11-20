@@ -69,10 +69,10 @@ module BOMEngine
       raise
     end
 
-    def self.extract(model, tw, texture_dir, checkpoint: nil, optimize_textures: false, profile: :visual, semantic_class: :class_b, material_classes: nil, allow_jpeg_color_map: false, allow_semantic_colorize: true, record_reference_pixel_hash: false, prepared_color_maps: nil, candidate_cache: nil, cooperative_png: false)
+    def self.extract(model, tw, texture_dir, checkpoint: nil, optimize_textures: false, profile: :visual, semantic_class: :class_b, material_classes: nil, allow_jpeg_color_map: false, allow_semantic_colorize: true, record_reference_pixel_hash: false, prepared_color_maps: nil, candidate_cache: nil, cooperative_png: false, material_sources: nil)
       Dir.mkdir(texture_dir) if texture_dir && !Dir.exist?(texture_dir)
       written = 0
-      materials = model.materials.to_a
+      materials = material_sources || model.materials.to_a
       total = materials.length
       PerformanceTrace.increment(:materials_seen, total)
       color_map_budget = allow_jpeg_color_map ? { remaining_pixels: 128_000_000, hashes: {} } : nil
