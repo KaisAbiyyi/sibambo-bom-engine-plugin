@@ -533,4 +533,51 @@ class TestSummarizeWatchdog < Minitest::Test
     assert_equal sum_bytes_1, sum_bytes_2
     assert_no_d36_words(res2)
   end
+
+  # R1 (P1 regression): session_end.reason == "error" -> ERROR (exit 2), deterministic JSON
+  def test_r1_watchdog_session_end_error_is_error
+    dir = make_session_dir('r1-err')
+    lines = [session_start_line, process_started_line]
+    add_ticks(lines, start_ms: 250, count: 8, phase_group: 'skp_capture', stall: false)
+    lines << session_end_line(mono_ms: 2500, reason: 'error')
+    write_ndjson(dir, lines)
+
+    res1 = run_summarizer(dir)
+    assert_equal 2, res1[:exit_code]
+    assert_equal 'ERROR', res1[:summary]['verdict']
+    assert_includes res1[:summary]['reasons'], 'WATCHDOG_SESSION_ERROR'
+    assert_no_d36_words(res1)
+
+    sum_bytes_1 = File.binread(File.join(dir, 'watchdog-summary.json'))
+    res2 = run_summarizer(dir)
+    assert_equal 2, res2[:exit_code]
+    sum_bytes_2 = File.binread(File.join(dir, 'watchdog-summary.json'))
+    assert_equal sum_bytes_1, sum_bytes_2
+  end
+
+  # R2 (P2 regression): null resource metrics stay nil (never coerced to 0.0)
+  def test_r2_null_resource_metrics_handled
+    dir = make_session_dir('r2-null-metrics')
+    lines = [session_start_line, process_started_line]
+    t1 = tick_line(mono_ms: 1000, phase_group: 'skp_capture', stall: true, is_hung: false)
+    %w[working_set_mib private_mib cpu_user_ms cpu_kernel_ms handles gdi user].each { |k| t1[k] = nil }
+    lines << t1
+    t2 = tick_line(mono_ms: 5000, phase_group: 'skp_capture', stall: false)
+    %w[working_set_mib private_mib cpu_user_ms cpu_kernel_ms handles gdi user].each { |k| t2[k] = nil }
+    lines << t2
+    t3 = tick_line(mono_ms: 5250, phase_group: 'skp_capture', stall: false)
+    %w[working_set_mib private_mib cpu_user_ms cpu_kernel_ms handles gdi user].each { |k| t3[k] = nil }
+    lines << t3
+    lines << session_end_line(mono_ms: 5500)
+    write_ndjson(dir, lines)
+
+    res = run_summarizer(dir)
+    assert_equal 0, res[:exit_code]
+    assert_equal 1, res[:episodes].length
+    assert_nil res[:episodes][0]['max_working_set_mib']
+    assert_equal 1, res[:summary]['gates']['B'].length
+    assert_nil res[:summary]['gates']['B'][0]['max_working_set_mib']
+    assert_includes res[:md], '| - |'
+    assert_no_d36_words(res)
+  end
 end

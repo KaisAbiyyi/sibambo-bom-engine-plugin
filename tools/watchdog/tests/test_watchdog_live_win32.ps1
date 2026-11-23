@@ -159,6 +159,18 @@ function Run-Scenario {
         if ($hungTicks.Count -lt 1) {
             throw "Scenario ${Tag}: expected >= 1 tick with is_hung == true, got $($hungTicks.Count) (outDir=$outDir)"
         }
+        $probeFailTicks = @($ticks | Where-Object { $_.probe_ok -eq $false })
+        if ($probeFailTicks.Count -lt 1) {
+            throw "Scenario ${Tag}: expected >= 1 tick with probe_ok == false, got $($probeFailTicks.Count) (outDir=$outDir)"
+        }
+        $timeoutTicks = @($probeFailTicks | Where-Object { $_.probe_win32_error -eq 1460 })
+        if ($timeoutTicks.Count -lt 1) {
+            throw "Scenario ${Tag}: expected >= 1 tick with probe_win32_error == 1460 (ERROR_TIMEOUT), got $($timeoutTicks.Count) (outDir=$outDir)"
+        }
+        $maxTimeoutLatency = [double](($timeoutTicks | Measure-Object -Property probe_latency_ms -Maximum).Maximum)
+        if ($maxTimeoutLatency -lt 450.0) {
+            throw "Scenario ${Tag}: expected timeout probe_latency_ms >= 450.0, got $maxTimeoutLatency (outDir=$outDir)"
+        }
 
         $sumArgs = @($summarizerScript, "--session", $outDir) + $ExtraSummarizerArgs
         & $rubyExe @sumArgs
@@ -168,6 +180,9 @@ function Run-Scenario {
         return @{
             out_dir = $outDir
             hung_tick_count = $hungTicks.Count
+            probe_fail_count = $probeFailTicks.Count
+            timeout_tick_count = $timeoutTicks.Count
+            max_timeout_latency_ms = $maxTimeoutLatency
             sum_exit = $sumExit
             summary = $sumJson
         }
@@ -193,7 +208,7 @@ if ($resA.sum_exit -ne 0) {
 if ($resA.summary.gates.C.max_open_hung_ms -lt 5500) {
     throw "Scenario A FAIL: expected max_open_hung_ms >= 5500, got $($resA.summary.gates.C.max_open_hung_ms)"
 }
-Write-Output "Scenario A PASS: out_dir=$($resA.out_dir) hung_ticks=$($resA.hung_tick_count) max_open_hung_ms=$($resA.summary.gates.C.max_open_hung_ms)"
+Write-Output "Scenario A PASS: out_dir=$($resA.out_dir) hung_ticks=$($resA.hung_tick_count) probe_fail_ticks=$($resA.probe_fail_count) timeout_ticks=$($resA.timeout_tick_count) max_timeout_ms=$($resA.max_timeout_latency_ms) max_open_hung_ms=$($resA.summary.gates.C.max_open_hung_ms)"
 
 Write-Output "Running Live Win32 Scenario B..."
 $resB = Run-Scenario -Tag "B" -CloseAtMs 14000 -Transitions @(
@@ -208,7 +223,7 @@ if ($resB.sum_exit -ne 1) {
 if ($resB.summary.reasons -notcontains "G-RT4'-A") {
     throw "Scenario B FAIL: expected reason G-RT4'-A, got $($resB.summary.reasons -join ',')"
 }
-Write-Output "Scenario B PASS: out_dir=$($resB.out_dir) hung_ticks=$($resB.hung_tick_count) reasons=$($resB.summary.reasons -join ',')"
+Write-Output "Scenario B PASS: out_dir=$($resB.out_dir) hung_ticks=$($resB.hung_tick_count) probe_fail_ticks=$($resB.probe_fail_count) timeout_ticks=$($resB.timeout_tick_count) max_timeout_ms=$($resB.max_timeout_latency_ms) reasons=$($resB.summary.reasons -join ',')"
 
 Write-Output "LIVE_WIN32_2_OF_2_PASS"
 exit 0

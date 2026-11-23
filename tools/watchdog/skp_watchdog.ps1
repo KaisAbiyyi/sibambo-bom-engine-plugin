@@ -94,7 +94,10 @@ namespace Sibambo.SkpWatchdog
         public long CpuKernelMs;
         public int GdiObjects;
         public int UserObjects;
-        public bool Ok;
+        public bool MemoryOk;
+        public bool TimesOk;
+        public bool GdiOk;
+        public bool UserOk;
     }
 
     public static class Native
@@ -193,7 +196,7 @@ namespace Sibambo.SkpWatchdog
             IntPtr hWnd, uint Msg, UIntPtr wParam, IntPtr lParam,
             uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
 
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", SetLastError = true)]
         private static extern uint GetGuiResources(IntPtr hProcess, uint uiFlags);
 
         [DllImport("kernel32.dll", SetLastError = true)]
@@ -352,7 +355,7 @@ namespace Sibambo.SkpWatchdog
             {
                 stats.WorkingSetMiB = Math.Round(mem.WorkingSetSize.ToUInt64() / 1048576.0, 1);
                 stats.PrivateMiB = Math.Round(mem.PrivateUsage.ToUInt64() / 1048576.0, 1);
-                stats.Ok = true;
+                stats.MemoryOk = true;
             }
 
             FILETIME c, e, k, u;
@@ -361,10 +364,24 @@ namespace Sibambo.SkpWatchdog
                 stats.CreationFileTimeUtc = c.ToLong();
                 stats.CpuKernelMs = k.ToLong() / 10000L;
                 stats.CpuUserMs = u.ToLong() / 10000L;
+                stats.TimesOk = true;
             }
 
-            stats.GdiObjects = unchecked((int)GetGuiResources(handle, GR_GDIOBJECTS));
-            stats.UserObjects = unchecked((int)GetGuiResources(handle, GR_USEROBJECTS));
+            uint gdi = GetGuiResources(handle, GR_GDIOBJECTS);
+            int gdiErr = Marshal.GetLastWin32Error();
+            if (gdi > 0 || (gdiErr == 0 && stats.TimesOk))
+            {
+                stats.GdiObjects = unchecked((int)gdi);
+                stats.GdiOk = true;
+            }
+
+            uint usr = GetGuiResources(handle, GR_USEROBJECTS);
+            int usrErr = Marshal.GetLastWin32Error();
+            if (usr > 0 || (usrErr == 0 && stats.TimesOk))
+            {
+                stats.UserObjects = unchecked((int)usr);
+                stats.UserOk = true;
+            }
             return stats;
         }
     }
@@ -380,27 +397,6 @@ catch {
     [Console]::Error.WriteLine("ERROR: Add-Type failed: $($_.Exception.Message)")
     exit 2
 }
-
-# 4. Prepare OutDir (existing events.ndjson -> exit 2)
-if ([string]::IsNullOrWhiteSpace($OutDir)) {
-    $utcTag = [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ")
-    $rngBytes = New-Object byte[] 3
-    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($rngBytes)
-    $hex6 = ([System.BitConverter]::ToString($rngBytes) -replace '-', '').ToLowerInvariant()
-    $OutDir = "D:\projects\sibambo\outputs\watchdog\$utcTag-$hex6"
-}
-$OutDir = [System.IO.Path]::GetFullPath($OutDir)
-
-if (-not (Test-Path -LiteralPath $OutDir)) {
-    New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-}
-$eventsPath = Join-Path $OutDir "events.ndjson"
-if (Test-Path -LiteralPath $eventsPath) {
-    [Console]::Error.WriteLine("ERROR: events.ndjson already exists at $eventsPath")
-    exit 2
-}
-
-Write-Output $OutDir
 
 # Deterministic JSON serializer (preserves empty/1-element arrays, exact booleans/nulls/numbers)
 function ConvertTo-JsonScalar {
@@ -473,14 +469,50 @@ function Get-JsonProp {
     return $p.Value
 }
 
-function Resolve-ModelTruthRoot {
-    param([string]$Root, [datetime]$CreationUtc)
-    if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root)) { return $null }
+function Test-GhostWindowMatch {
+    param([string]$LastHealthyTitle, [object]$GhostTitles)
+    if ([string]::IsNullOrEmpty($LastHealthyTitle) -or $null -eq $GhostTitles) { return $false }
+    $prefixLen = [Math]::Min(40, $LastHealthyTitle.Length)
+    $prefix = $LastHealthyTitle.Substring(0, $prefixLen)
+    foreach ($gt in $GhostTitles) {
+        if ($null -ne $gt -and ([string]$gt).StartsWith($prefix, [System.StringComparison]::Ordinal)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-ProcessMetricsSnapshot {
+    param([IntPtr]$Handle, [int]$TargetPid)
+    $pStats = [Sibambo.SkpWatchdog.Native]::GetProcStats($Handle)
+    $handleCount = $null
+    if ($Handle -ne [IntPtr]::Zero -and $TargetPid -gt 0) {
+        try {
+            $handleCount = [System.Diagnostics.Process]::GetProcessById($TargetPid).HandleCount
+        }
+        catch {
+            $handleCount = $null
+        }
+    }
+    return @{
+        working_set_mib = if ($pStats.MemoryOk) { $pStats.WorkingSetMiB } else { $null }
+        private_mib = if ($pStats.MemoryOk) { $pStats.PrivateMiB } else { $null }
+        cpu_user_ms = if ($pStats.TimesOk) { $pStats.CpuUserMs } else { $null }
+        cpu_kernel_ms = if ($pStats.TimesOk) { $pStats.CpuKernelMs } else { $null }
+        handles = $handleCount
+        gdi = if ($pStats.GdiOk) { $pStats.GdiObjects } else { $null }
+        user = if ($pStats.UserOk) { $pStats.UserObjects } else { $null }
+    }
+}
+
+function Get-ModelTruthCandidates {
+    param([string]$Root)
+    $list = @()
+    if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root)) { return ,$list }
     try {
         $files = Get-ChildItem -LiteralPath $Root -Filter "progress.json" -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object {
-                (Split-Path $_.DirectoryName -Leaf) -eq "skp" -and $_.LastWriteTimeUtc -ge $CreationUtc
-            } | Sort-Object LastWriteTimeUtc -Descending
+            Where-Object { (Split-Path $_.DirectoryName -Leaf) -eq "skp" } |
+            Sort-Object LastWriteTimeUtc -Descending
         foreach ($f in $files) {
             try {
                 $raw = [System.IO.File]::ReadAllText($f.FullName)
@@ -490,10 +522,9 @@ function Resolve-ModelTruthRoot {
                     $runDir = Split-Path $skpDir -Parent
                     $modelDir = Split-Path $runDir -Parent
                     $modelName = Split-Path $modelDir -Leaf
-                    return @{
-                        phase_group = "skp_capture"
-                        phase_source = "model_truth"
-                        model = $modelName
+                    $list += @{
+                        LastWriteTimeUtc = $f.LastWriteTimeUtc
+                        Model = $modelName
                     }
                 }
             }
@@ -501,6 +532,21 @@ function Resolve-ModelTruthRoot {
         }
     }
     catch { }
+    return ,$list
+}
+
+function Resolve-ModelTruthFromCandidates {
+    param([object]$Candidates, [datetime]$CreationUtc)
+    if ($null -eq $Candidates) { return $null }
+    foreach ($cand in $Candidates) {
+        if ($cand.LastWriteTimeUtc -ge $CreationUtc) {
+            return @{
+                phase_group = "skp_capture"
+                phase_source = "model_truth"
+                model = $cand.Model
+            }
+        }
+    }
     return $null
 }
 
@@ -527,15 +573,18 @@ function Resolve-BatchRoot {
                 $curStage = [string](Get-JsonProp $cur "stage")
                 if ([string]::IsNullOrEmpty($curModel) -or [string]::IsNullOrEmpty($curEngine) -or [string]::IsNullOrEmpty($curProfile)) { continue }
 
-                $models = Get-JsonProp $man "models"
-                if ($null -eq $models) { continue }
+                $modelsRaw = Get-JsonProp $man "models"
+                if ($null -eq $modelsRaw) { continue }
+                $models = @($modelsRaw)
                 $row = $models | Where-Object { (Get-JsonProp $_ "relative") -eq $curModel } | Select-Object -First 1
                 if ($null -eq $row) { continue }
                 $exports = Get-JsonProp $row "exports"
                 $expEngine = Get-JsonProp $exports $curEngine
                 $expProfile = Get-JsonProp $expEngine $curProfile
-                $attempts = Get-JsonProp $expProfile "attempts"
-                if ($null -eq $attempts -or $attempts.Count -eq 0) { continue }
+                $attemptsRaw = Get-JsonProp $expProfile "attempts"
+                if ($null -eq $attemptsRaw) { continue }
+                $attempts = @($attemptsRaw)
+                if ($attempts.Count -eq 0) { continue }
 
                 $lastAttempt = $attempts[$attempts.Count - 1]
                 $artifactPath = [string](Get-JsonProp $lastAttempt "path")
@@ -569,10 +618,11 @@ function Resolve-Phase {
         [string]$BeaconPath,
         [string]$ModelTruthRoot,
         [string]$BatchRoot,
-        [hashtable]$Cache
+        [hashtable]$Cache,
+        [int]$ActiveTargetCount = 1
     )
 
-    # 1. Beacon (read every tick)
+    # 1. Beacon (read every tick; unambiguous per-PID ownership)
     if (-not [string]::IsNullOrWhiteSpace($BeaconPath) -and (Test-Path -LiteralPath $BeaconPath)) {
         try {
             $b = [System.IO.File]::ReadAllText($BeaconPath) | ConvertFrom-Json
@@ -608,29 +658,42 @@ function Resolve-Phase {
     }
 
     $nowMs = $Cache.NowMs
-    # 2. ModelTruth root (scanned every 1000 ms)
+    # 2. ModelTruth root (scanned every 1000 ms; candidates cached across PIDs, filtered per PID)
+    $mtMatch = $null
     if (-not [string]::IsNullOrWhiteSpace($ModelTruthRoot)) {
         if (($nowMs - $Cache.LastMtScanMs) -ge 1000.0 -or -not $Cache.MtScanned) {
             $Cache.LastMtScanMs = $nowMs
             $Cache.MtScanned = $true
-            $Cache.MtResult = Resolve-ModelTruthRoot -Root $ModelTruthRoot -CreationUtc $ProcState.CreationUtc
+            $Cache.MtCandidates = Get-ModelTruthCandidates -Root $ModelTruthRoot
         }
-        if ($null -ne $Cache.MtResult) {
-            $ProcState.HasBeenAttributed = $true
-            return $Cache.MtResult
-        }
+        $mtMatch = Resolve-ModelTruthFromCandidates -Candidates $Cache.MtCandidates -CreationUtc $ProcState.CreationUtc
     }
 
     # 3. Batch root (scanned every 1000 ms)
+    $batchMatch = $null
     if (-not [string]::IsNullOrWhiteSpace($BatchRoot)) {
         if (($nowMs - $Cache.LastBatchScanMs) -ge 1000.0 -or -not $Cache.BatchScanned) {
             $Cache.LastBatchScanMs = $nowMs
             $Cache.BatchScanned = $true
             $Cache.BatchResult = Resolve-BatchRoot -Root $BatchRoot
         }
-        if ($null -ne $Cache.BatchResult) {
+        $batchMatch = $Cache.BatchResult
+    }
+
+    # Multi-PID: ModelTruth and Batch roots do not carry PID ownership -> fail closed to UNKNOWN
+    if ($ActiveTargetCount -gt 1) {
+        if ($null -ne $mtMatch -or $null -ne $batchMatch) {
+            return @{ phase_group = "unattributed"; phase_source = "none"; model = $null }
+        }
+    }
+    else {
+        if ($null -ne $mtMatch) {
             $ProcState.HasBeenAttributed = $true
-            return $Cache.BatchResult
+            return $mtMatch
+        }
+        if ($null -ne $batchMatch) {
+            $ProcState.HasBeenAttributed = $true
+            return $batchMatch
         }
     }
 
@@ -661,6 +724,28 @@ function Get-DescendantNames {
     [System.Array]::Sort($arr, [System.StringComparer]::Ordinal)
     return ,$arr
 }
+
+if ($MyInvocation.InvocationName -ne '.') {
+# 4. Prepare OutDir (existing events.ndjson -> exit 2)
+if ([string]::IsNullOrWhiteSpace($OutDir)) {
+    $utcTag = [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ")
+    $rngBytes = New-Object byte[] 3
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($rngBytes)
+    $hex6 = ([System.BitConverter]::ToString($rngBytes) -replace '-', '').ToLowerInvariant()
+    $OutDir = "D:\projects\sibambo\outputs\watchdog\$utcTag-$hex6"
+}
+$OutDir = [System.IO.Path]::GetFullPath($OutDir)
+
+if (-not (Test-Path -LiteralPath $OutDir)) {
+    New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+}
+$eventsPath = Join-Path $OutDir "events.ndjson"
+if (Test-Path -LiteralPath $eventsPath) {
+    [Console]::Error.WriteLine("ERROR: events.ndjson already exists at $eventsPath")
+    exit 2
+}
+
+Write-Output $OutDir
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $writer = $null
@@ -708,7 +793,7 @@ try {
         NowMs = 0.0
         LastMtScanMs = -2000.0
         MtScanned = $false
-        MtResult = $null
+        MtCandidates = @()
         LastBatchScanMs = -2000.0
         BatchScanned = $false
         BatchResult = $null
@@ -893,19 +978,10 @@ try {
                 $probeErr = if ($pr.ProbeOk) { $null } else { $pr.Win32Error }
                 $title = $mainWin.Title
                 $titleNr = ($title -match '\(Not Responding\)')
-
-                # D42.4 Ghost check across ALL top-level visible windows
-                if (-not [string]::IsNullOrEmpty($st.LastHealthyTitle)) {
-                    $prefixLen = [Math]::Min(40, $st.LastHealthyTitle.Length)
-                    $prefix = $st.LastHealthyTitle.Substring(0, $prefixLen)
-                    foreach ($gt in $ghostTitles) {
-                        if ($gt.StartsWith($prefix, [System.StringComparison]::Ordinal)) {
-                            $ghost = $true
-                            break
-                        }
-                    }
-                }
             }
+
+            # D42.4 Ghost check across ALL top-level visible windows (independent of main window presence)
+            $ghost = Test-GhostWindowMatch -LastHealthyTitle $st.LastHealthyTitle -GhostTitles $ghostTitles
 
             $stall = (-not $probeOk) -or $isHung -or $ghost -or $titleNr
             if (-not $stall -and -not [string]::IsNullOrEmpty($title)) {
@@ -913,16 +989,11 @@ try {
             }
 
             # D42.6 Process data
-            $pStats = [Sibambo.SkpWatchdog.Native]::GetProcStats($st.Handle)
-            $handleCount = 0
-            try {
-                $handleCount = [System.Diagnostics.Process]::GetProcessById($tPid).HandleCount
-            }
-            catch { }
+            $metrics = Get-ProcessMetricsSnapshot -Handle $st.Handle -TargetPid $tPid
             $childrenArr = Get-DescendantNames -RootPid $tPid -ChildrenByParent $childrenByParent
 
             # D44 Phase attribution
-            $phaseInfo = Resolve-Phase -ProcState $st -BeaconPath $BeaconFile -ModelTruthRoot $WatchModelTruthRoot -BatchRoot $WatchBatchRoot -Cache $scanCache
+            $phaseInfo = Resolve-Phase -ProcState $st -BeaconPath $BeaconFile -ModelTruthRoot $WatchModelTruthRoot -BatchRoot $WatchBatchRoot -Cache $scanCache -ActiveTargetCount $tracked.Count
             $phaseGroup = $phaseInfo.phase_group
             $phaseSource = $phaseInfo.phase_source
             $modelVal = $phaseInfo.model
@@ -1022,13 +1093,13 @@ try {
                     phase_group = $phaseGroup
                     phase_source = $phaseSource
                     model = $modelVal
-                    working_set_mib = $pStats.WorkingSetMiB
-                    private_mib = $pStats.PrivateMiB
-                    cpu_user_ms = $pStats.CpuUserMs
-                    cpu_kernel_ms = $pStats.CpuKernelMs
-                    handles = $handleCount
-                    gdi = $pStats.GdiObjects
-                    user = $pStats.UserObjects
+                    working_set_mib = $metrics.working_set_mib
+                    private_mib = $metrics.private_mib
+                    cpu_user_ms = $metrics.cpu_user_ms
+                    cpu_kernel_ms = $metrics.cpu_kernel_ms
+                    handles = $metrics.handles
+                    gdi = $metrics.gdi
+                    user = $metrics.user
                     children = $childrenArr
                 }
             }
@@ -1070,3 +1141,4 @@ finally {
 }
 
 exit 0
+}

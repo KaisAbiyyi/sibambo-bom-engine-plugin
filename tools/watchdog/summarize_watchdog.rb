@@ -103,8 +103,10 @@ module SibamboWatchdogSummarizer
       os_hung_seen = seg_ticks.any? { |t| t['is_hung'] == true }
       ghost_seen = seg_ticks.any? { |t| t['ghost'] == true }
       title_nr_seen = seg_ticks.any? { |t| t['title_nr'] == true }
-      max_probe_latency_ms = seg_ticks.map { |t| (t['probe_latency_ms'] || 0.0).to_f }.max.round(1)
-      max_working_set_mib = seg_ticks.map { |t| (t['working_set_mib'] || 0.0).to_f }.max.round(1)
+      lat_vals = seg_ticks.map { |t| t['probe_latency_ms'] }.compact.map(&:to_f)
+      max_probe_latency_ms = lat_vals.empty? ? nil : lat_vals.max.round(1)
+      ws_vals = seg_ticks.map { |t| t['working_set_mib'] }.compact.map(&:to_f)
+      max_working_set_mib = ws_vals.empty? ? nil : ws_vals.max.round(1)
       children_union = seg_ticks.flat_map { |t| Array(t['children']) }.compact.map(&:to_s).uniq.sort
       model = seg_ticks.map { |t| t['model'] }.compact.last
 
@@ -271,8 +273,9 @@ module SibamboWatchdogSummarizer
           sigs << '(Not Responding)' if ep['title_nr_seen']
         end
         sig_str = sigs.empty? ? '-' : sigs.join(', ')
+        ws_str = seg['max_working_set_mib'].nil? ? '-' : seg['max_working_set_mib']
         ch = seg['children_union'].empty? ? '-' : seg['children_union'].join(', ')
-        lines << "| #{seg['id']} | #{seg['pid']} | #{seg['phase_group']} | #{seg['model'] || '-'} | #{seg['severity']} | #{seg['duration_ms']} | #{seg['start_utc']} | #{seg['end_utc']} | #{seg['max_working_set_mib']} | #{sig_str} | #{ch} |"
+        lines << "| #{seg['id']} | #{seg['pid']} | #{seg['phase_group']} | #{seg['model'] || '-'} | #{seg['severity']} | #{seg['duration_ms']} | #{seg['start_utc']} | #{seg['end_utc']} | #{ws_str} | #{sig_str} | #{ch} |"
       end
     end
     lines << ''
@@ -420,7 +423,9 @@ module SibamboWatchdogSummarizer
       end
     end
 
-    session_end_missing = !events.any? { |e| e['type'] == 'session_end' }
+    session_end_events = events.select { |e| e['type'] == 'session_end' }
+    session_end_missing = session_end_events.empty?
+    session_end_error = session_end_events.any? { |e| e['reason'] == 'error' }
     last_event = events.last
     last_line_mono_ms = last_event['mono_ms']
     last_line_utc = last_event['utc']
@@ -526,6 +531,7 @@ module SibamboWatchdogSummarizer
     processes_seen = process_order.map { |pid| processes[pid] }
 
     error_reasons = []
+    error_reasons << 'WATCHDOG_SESSION_ERROR' if session_end_error
     error_reasons << 'NO_TARGET_SEEN' if processes_seen.empty?
     error_reasons << 'NO_WORK_OBSERVED' if ticks_by_class['WORK'] == 0
 

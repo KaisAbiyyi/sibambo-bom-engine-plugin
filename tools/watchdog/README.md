@@ -65,5 +65,6 @@ All tests keep `TEMP`/`TMP` on `D:\projects\sibambo\scratch\watchdog\tmp`:
 $env:TEMP = $env:TMP = 'D:\projects\sibambo\scratch\watchdog\tmp'
 & 'C:\Ruby25-x64\bin\ruby.exe' 'tools\watchdog\tests\test_summarize_watchdog.rb'
 & 'C:\Ruby25-x64\bin\ruby.exe' 'tools\watchdog\tests\test_runbook_beacon.rb'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'tools\watchdog\tests\test_watchdog_unit.ps1'
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'tools\watchdog\tests\test_watchdog_live_win32.ps1'
 ```
