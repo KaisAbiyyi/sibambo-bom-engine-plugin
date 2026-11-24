@@ -24,6 +24,7 @@ module SibamboModelTruthV1
     PROGRESS_EVERY_S = 5.0
     MAX_DEPTH = 64
     HIST_MS = [20, 50, 100, 250].freeze
+    ATOMIC_RENAME_BACKOFF_S = [0.005, 0.010, 0.020, 0.040, 0.080, 0.100, 0.100, 0.100].freeze
     CPU_THREAD = Process.const_defined?(:CLOCK_THREAD_CPUTIME_ID) ? Process::CLOCK_THREAD_CPUTIME_ID : nil
     CPU_PROCESS = Process.const_defined?(:CLOCK_PROCESS_CPUTIME_ID) ? Process::CLOCK_PROCESS_CPUTIME_ID : nil
 
@@ -77,6 +78,7 @@ module SibamboModelTruthV1
         @finish_done = false
         @cancel = false
         @fiber = nil
+        @progress_write_errors = 0
       end
 
       # ------------------------------------------------------------ internals
@@ -122,9 +124,18 @@ module SibamboModelTruthV1
         File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::BINARY, 0o600)
       end
 
-      def write_atomic(path, text)
+      def write_atomic(path, text, retries: ATOMIC_RENAME_BACKOFF_S.length)
         File.open("#{path}.partial", File::WRONLY | File::CREAT | File::TRUNC | File::BINARY, 0o600) { |f| f.write(text) }
-        File.rename("#{path}.partial", path)
+        attempts = 0
+        begin
+          File.rename("#{path}.partial", path)
+        rescue Errno::EACCES, Errno::EPERM
+          raise if attempts >= retries
+
+          sleep(ATOMIC_RENAME_BACKOFF_S[attempts] || 0.100)
+          attempts += 1
+          retry
+        end
       end
 
       def start!(run_dir, expected)
@@ -229,8 +240,15 @@ module SibamboModelTruthV1
           finish(false, e)
         ensure
           account_slice
-          write_progress unless @finished
           @in_tick = false
+          unless @finished
+            begin
+              write_progress
+            rescue StandardError => prog_err
+              @progress_write_errors = (@progress_write_errors || 0) + 1
+              say("ModelTruth progress write warning: #{prog_err.class}: #{prog_err.message}")
+            end
+          end
         end
       end
 
@@ -425,8 +443,13 @@ module SibamboModelTruthV1
         return unless force || now - @last_progress >= PROGRESS_EVERY_S
 
         @last_progress = now
-        write_atomic(File.join(@skp_dir, 'progress.json'), JSON.generate(phase: @phase, counts: @counts, elapsed_s: (now - @started).round(1),
-                                                                         definitions: @digest.length, complete: @complete))
+        begin
+          write_atomic(File.join(@skp_dir, 'progress.json'), JSON.generate(phase: @phase, counts: @counts, elapsed_s: (now - @started).round(1),
+                                                                           definitions: @digest.length, complete: @complete))
+        rescue StandardError => prog_err
+          @progress_write_errors = (@progress_write_errors || 0) + 1
+          say("ModelTruth progress write warning: #{prog_err.class}: #{prog_err.message}")
+        end
       end
 
       def set_phase(name)
@@ -509,6 +532,11 @@ module SibamboModelTruthV1
         @complete = complete
         manifest[:complete] = complete
         write_atomic(File.join(@skp_dir, 'manifest.json'), JSON.pretty_generate(manifest))
+        begin
+          write_progress(force: true)
+        rescue StandardError
+          nil
+        end
         say("ModelTruth SKP side finished: complete=#{complete}#{error ? " error=#{error.class}: #{error.message}" : ''}")
       end
 
