@@ -50,6 +50,11 @@ class TestRunbookBeacon < Minitest::Test
       @active_path_override || @opened_path.to_s
     end
 
+    def defer_next_tick(&block)
+      @calls << :defer_next_tick
+      block.call
+    end
+
     def load_file(path)
       @calls << :load_file
       @loaded_paths << path
@@ -86,7 +91,7 @@ class TestRunbookBeacon < Minitest::Test
     FileUtils.rm_rf(@work_dir)
   end
 
-  # B1: success -> seq 1 open_file then seq 2 skp_capture with open_file_duration_s, no .tmp left
+  # B1: success -> seq 1 open_file then skp_capture with lifecycle + open_file_duration_s, no .tmp left
   def test_b1_success_sequence_and_no_tmp
     seen_during_open = nil
     host = FakeHost.new(
@@ -108,12 +113,14 @@ class TestRunbookBeacon < Minitest::Test
     assert_equal 1, seen_during_open['seq']
     assert_equal 'open_file', seen_during_open['phase_group']
     assert_equal 'sample', seen_during_open['model']
+    assert_equal 'started', seen_during_open['lifecycle'][0]['status']
 
     final_beacon = JSON.parse(File.binread(@beacon_path))
-    assert_equal 2, final_beacon['seq']
     assert_equal 'skp_capture', final_beacon['phase_group']
     assert final_beacon.key?('open_file_duration_s')
     assert_equal 1, final_beacon['open_file_status']
+    assert_equal 'completed', final_beacon['lifecycle'][0]['status']
+    assert_equal 'started', final_beacon['lifecycle'][1]['status']
     refute File.exist?("#{@beacon_path}.tmp")
     assert_equal @beacon_path, res[:beacon_path]
   end
@@ -135,6 +142,7 @@ class TestRunbookBeacon < Minitest::Test
 
     beacon = JSON.parse(File.binread(@beacon_path))
     assert_equal 'idle', beacon['phase_group']
+    assert_equal 'failed', beacon['lifecycle'][0]['status']
     assert beacon['error'] && !beacon['error'].empty?
     refute_includes host.calls, :capture
   end
@@ -196,7 +204,7 @@ class TestRunbookBeacon < Minitest::Test
     assert_equal [@skp_side_path], host.loaded_paths
   end
 
-  # B6: exact host call sequence, no save, beacon still skp_capture after return
+  # B6: exact host call sequence (including defer_next_tick, no save), beacon remains skp_capture
   def test_b6_exact_call_order_and_beacon_remains_skp_capture
     host = FakeHost.new
 
@@ -214,11 +222,80 @@ class TestRunbookBeacon < Minitest::Test
       open_file
       active_model_path
       active_model_modified?
+      defer_next_tick
       load_file
       capture
     ], host.calls
 
     final_beacon = JSON.parse(File.binread(@beacon_path))
     assert_equal 'skp_capture', final_beacon['phase_group']
+  end
+
+  # B7: stage_timings_ms and lifecycle duration_ms recorded
+  def test_b7_stage_timings_and_lifecycle_recorded
+    host = FakeHost.new
+    res = SibamboWatchdogBeacon.open_and_capture(
+      skp_path: @skp_path,
+      run_dir: @run_dir,
+      expected_source_sha256: @skp_sha,
+      beacon_path: @beacon_path,
+      skp_side_path: @skp_side_path,
+      host: host
+    )
+
+    final_beacon = JSON.parse(File.binread(@beacon_path))
+    timings = final_beacon['stage_timings_ms']
+    %w[pre_open_sha_ms open_file_ms post_open_settle_ms load_skp_side_ms capture_call_ms].each do |k|
+      assert timings.key?(k), "Missing stage timing #{k}"
+      assert_kind_of Numeric, timings[k]
+    end
+    assert_equal timings, res[:stage_timings_ms]
+    assert_kind_of Numeric, final_beacon['lifecycle'][0]['duration_ms']
+  end
+
+  # B8 (FI-1 transient): injected Errno::EACCES x3 succeeds on attempt 4
+  def test_b8_rename_retry_recovers_from_transient_eacces
+    attempts = 0
+    tmp = "#{@beacon_path}.tmp"
+    File.binwrite(tmp, '{"ok":true}')
+    sleeps = []
+
+    rename_stub = lambda do |src, dst|
+      attempts += 1
+      raise Errno::EACCES, 'simulated AV/watcher lock' if attempts <= 3
+
+      File.binwrite(dst, File.binread(src))
+      File.delete(src)
+    end
+
+    File.stub(:rename, rename_stub) do
+      SibamboWatchdogBeacon.rename_with_retry(tmp, @beacon_path, sleep_fn: ->(s) { sleeps << s })
+    end
+
+    assert_equal 4, attempts
+    assert_equal 3, sleeps.length
+    assert File.file?(@beacon_path)
+  end
+
+  # B9 (FI-1 exhausted): persistent Errno::EACCES raises BeaconError after bounded retries
+  def test_b9_rename_retry_exhaustion_raises_beacon_error
+    attempts = 0
+    tmp = "#{@beacon_path}.tmp"
+    File.binwrite(tmp, '{"ok":true}')
+    sleeps = []
+
+    rename_stub = lambda do |_src, _dst|
+      attempts += 1
+      raise Errno::EACCES, 'persistent lock'
+    end
+
+    File.stub(:rename, rename_stub) do
+      assert_raises(SibamboWatchdogBeacon::BeaconError) do
+        SibamboWatchdogBeacon.rename_with_retry(tmp, @beacon_path, sleep_fn: ->(s) { sleeps << s })
+      end
+    end
+
+    assert_equal SibamboWatchdogBeacon::RENAME_BACKOFF_S.length + 1, attempts
+    assert_equal SibamboWatchdogBeacon::RENAME_BACKOFF_S.length, sleeps.length
   end
 end

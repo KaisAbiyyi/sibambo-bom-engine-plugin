@@ -580,4 +580,135 @@ class TestSummarizeWatchdog < Minitest::Test
     assert_includes res[:md], '| - |'
     assert_no_d36_words(res)
   end
+
+  # T18: sub-poll beacon_lifecycle open_file + skp_capture ticks + capture_terminal(complete:true) + idle exit 0 -> PASS
+  def test_t18_beacon_lifecycle_and_capture_terminal_pass
+    dir = make_session_dir('t18')
+    lines = [
+      session_start_line,
+      process_started_line,
+      {
+        'type' => 'beacon_lifecycle', 'utc' => utc_for(50), 'mono_ms' => 50.0, 'pid' => 1001,
+        'seq' => 1, 'phase_group' => 'open_file', 'status' => 'started', 'model' => 'house2',
+        'started_utc' => utc_for(45), 'ended_utc' => nil, 'duration_ms' => nil
+      },
+      {
+        'type' => 'beacon_lifecycle', 'utc' => utc_for(120), 'mono_ms' => 120.0, 'pid' => 1001,
+        'seq' => 1, 'phase_group' => 'open_file', 'status' => 'completed', 'model' => 'house2',
+        'started_utc' => utc_for(45), 'ended_utc' => utc_for(109), 'duration_ms' => 64.0
+      },
+      tick_line(mono_ms: 250, phase_group: 'skp_capture', stall: false),
+      {
+        'type' => 'capture_terminal', 'utc' => utc_for(4000), 'mono_ms' => 4000.0, 'pid' => 1001,
+        'run_dir' => 'D:/tmp/run', 'complete' => true, 'manifest_path' => 'D:/tmp/run/skp/manifest.json', 'error' => nil
+      },
+      tick_line(mono_ms: 4250, phase_group: 'idle', stall: false),
+      process_exited_line(mono_ms: 4500, exit_code: 0),
+      session_end_line(mono_ms: 5000)
+    ]
+    write_ndjson(dir, lines)
+
+    res = run_summarizer(dir)
+    assert_equal 0, res[:exit_code]
+    assert_equal 'PASS', res[:summary]['verdict']
+    assert_equal 1, res[:summary]['lifecycle_phases_seen'].length
+    assert_equal 'completed', res[:summary]['lifecycle_phases_seen'][0]['status']
+    assert_equal 64.0, res[:summary]['lifecycle_phases_seen'][0]['duration_ms']
+    assert_empty res[:summary]['gates']['D']['work_exits']
+    assert_no_d36_words(res)
+  end
+
+  # T19: beacon_lifecycle open_file alone with zero WORK ticks -> exit 2 NO_WORK_OBSERVED
+  def test_t19_lifecycle_alone_does_not_bypass_no_work_observed
+    dir = make_session_dir('t19')
+    lines = [
+      session_start_line,
+      process_started_line,
+      {
+        'type' => 'beacon_lifecycle', 'utc' => utc_for(120), 'mono_ms' => 120.0, 'pid' => 1001,
+        'seq' => 1, 'phase_group' => 'open_file', 'status' => 'completed', 'model' => 'house2',
+        'started_utc' => utc_for(45), 'ended_utc' => utc_for(109), 'duration_ms' => 64.0
+      },
+      tick_line(mono_ms: 250, phase_group: 'idle', stall: false),
+      session_end_line(mono_ms: 500)
+    ]
+    write_ndjson(dir, lines)
+
+    res = run_summarizer(dir)
+    assert_equal 2, res[:exit_code]
+    assert_includes res[:summary]['reasons'], 'NO_WORK_OBSERVED'
+    assert_no_d36_words(res)
+  end
+
+  # T20 (FI-5 / OD-2 Option A): capture_terminal(complete:false) fails G-RT4'-D with CAPTURE_FAILED
+  def test_t20_capture_terminal_false_fails_gate_d
+    dir = make_session_dir('t20')
+    lines = [
+      session_start_line,
+      process_started_line,
+      tick_line(mono_ms: 250, phase_group: 'skp_capture', stall: false),
+      {
+        'type' => 'capture_terminal', 'utc' => utc_for(1000), 'mono_ms' => 1000.0, 'pid' => 1001,
+        'run_dir' => 'D:/tmp/run', 'complete' => false, 'manifest_path' => 'D:/tmp/run/skp/manifest.json',
+        'error' => 'ModelTruthError: failed'
+      },
+      tick_line(mono_ms: 1250, phase_group: 'idle', stall: false),
+      process_exited_line(mono_ms: 1500, exit_code: 0),
+      session_end_line(mono_ms: 1600)
+    ]
+    write_ndjson(dir, lines)
+
+    res = run_summarizer(dir)
+    assert_equal 1, res[:exit_code]
+    assert_includes res[:summary]['reasons'], "G-RT4'-D"
+    assert_includes res[:summary]['reasons'], 'CAPTURE_FAILED'
+    assert_equal 1, res[:summary]['gates']['D']['capture_failures'].length
+    assert_no_d36_words(res)
+  end
+
+  # T21: capture_progress_stalled disclosed in summary JSON and Markdown
+  def test_t21_capture_progress_stalled_disclosed
+    dir = make_session_dir('t21')
+    lines = [
+      session_start_line,
+      process_started_line,
+      tick_line(mono_ms: 250, phase_group: 'skp_capture', stall: false),
+      {
+        'type' => 'capture_progress_stalled', 'utc' => utc_for(125_000), 'mono_ms' => 125_000.0, 'pid' => 1001,
+        'run_dir' => 'D:/tmp/run', 'stale_seconds' => 120.5, 'last_progress_utc' => utc_for(4500)
+      },
+      session_end_line(mono_ms: 126_000)
+    ]
+    write_ndjson(dir, lines)
+
+    res = run_summarizer(dir)
+    assert_equal 0, res[:exit_code]
+    assert_equal 1, res[:summary]['capture_progress_stalls'].length
+    assert_includes res[:md], 'Capture Progress Stalls'
+    assert_no_d36_words(res)
+  end
+
+  # T22: observer_overhead calculated deterministically from session_end
+  def test_t22_observer_overhead_deterministic
+    dir = make_session_dir('t22')
+    lines = [
+      session_start_line,
+      process_started_line,
+      tick_line(mono_ms: 250, phase_group: 'skp_capture', stall: false),
+      {
+        'type' => 'session_end', 'utc' => utc_for(10_000), 'mono_ms' => 10_000.0,
+        'reason' => 'target_exited', 'ticks_total' => 40, 'ticks_written' => 1, 'watcher_cpu_ms' => 150
+      }
+    ]
+    write_ndjson(dir, lines)
+
+    res = run_summarizer(dir)
+    assert_equal 0, res[:exit_code]
+    ov = res[:summary]['observer_overhead']
+    assert_equal 10_000.0, ov['wall_ms']
+    assert_equal 150.0, ov['watcher_cpu_ms']
+    assert_equal 1.5, ov['cpu_pct_core']
+    assert_includes res[:md], 'Observer Overhead'
+    assert_no_d36_words(res)
+  end
 end

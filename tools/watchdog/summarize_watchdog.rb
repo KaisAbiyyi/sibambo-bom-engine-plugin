@@ -202,12 +202,17 @@ module SibamboWatchdogSummarizer
           'passed' => false, 'modal_limit_ms' => limits[:modal_limit_ms],
           'bugsplat_children' => [], 'work_exits' => [],
           'modal_breaches' => [], 'disclosed_modals' => [],
-          'nonzero_exit_outside_work' => []
+          'nonzero_exit_outside_work' => [],
+          'capture_failures' => []
         }
       },
       'processes_seen' => processes_seen,
       'ticks_by_class' => ticks_by_class,
       'no_window_samples' => no_window_samples,
+      'lifecycle_phases_seen' => [],
+      'capture_terminals' => [],
+      'capture_progress_stalls' => [],
+      'observer_overhead' => nil,
       'truncated_tail_line' => truncated_tail_line,
       'session_end_missing' => session_end_missing,
       'events_sha256' => events_sha256,
@@ -243,7 +248,8 @@ module SibamboWatchdogSummarizer
     u = gates['U']
     lines << "| `G-RT4'-U` | #{summary['verdict'] == 'ERROR' ? 'ERROR' : (u['passed'] ? 'PASS' : 'FAIL')} | UNKNOWN hung > #{u['limit_ms']} ms: #{u['breach_count']} |"
     d = gates['D']
-    d_detail = "bugsplat=#{d['bugsplat_children'].length}, work_exits=#{d['work_exits'].length}, modal_breaches=#{d['modal_breaches'].length}"
+    cap_fail_count = (d['capture_failures'] || []).length
+    d_detail = "bugsplat=#{d['bugsplat_children'].length}, work_exits=#{d['work_exits'].length}, modal_breaches=#{d['modal_breaches'].length}, capture_failures=#{cap_fail_count}"
     lines << "| `G-RT4'-D` | #{summary['verdict'] == 'ERROR' ? 'ERROR' : (d['passed'] ? 'PASS' : 'FAIL')} | #{d_detail} |"
     lines << ''
 
@@ -324,6 +330,48 @@ module SibamboWatchdogSummarizer
     lines << "- `truncated_tail_line`: #{summary['truncated_tail_line']}"
     lines << "- `session_end_missing`: #{summary['session_end_missing']}"
     lines << ''
+
+    lc_seen = summary['lifecycle_phases_seen'] || []
+    if !lc_seen.empty?
+      lines << '## Lifecycle Phases'
+      lines << ''
+      lines << '| PID | Seq | Phase | Status | Duration (ms) | Started UTC | Ended UTC |'
+      lines << '|---|---:|---|---|---:|---|---|'
+      lc_seen.each do |lc|
+        dur_str = lc['duration_ms'].nil? ? '-' : lc['duration_ms']
+        lines << "| #{lc['pid']} | #{lc['seq']} | #{lc['phase_group']} | #{lc['status']} | #{dur_str} | #{lc['started_utc'] || '-'} | #{lc['ended_utc'] || '-'} |"
+      end
+      lines << ''
+    end
+
+    cap_terms = summary['capture_terminals'] || []
+    if !cap_terms.empty?
+      lines << '## Capture Terminal'
+      lines << ''
+      cap_terms.each do |ct|
+        lines << "- PID #{ct['pid']}: complete=`#{ct['complete']}`, manifest=`#{ct['manifest_path']}`, error=`#{ct['error'] || 'none'}`"
+      end
+      lines << ''
+    end
+
+    cap_stalls = summary['capture_progress_stalls'] || []
+    if !cap_stalls.empty?
+      lines << '## Capture Progress Stalls'
+      lines << ''
+      cap_stalls.each do |cs|
+        lines << "- PID #{cs['pid']}: stale_seconds=#{cs['stale_seconds']}, last_progress_utc=#{cs['last_progress_utc']}, at=#{cs['utc']}"
+      end
+      lines << ''
+    end
+
+    ov = summary['observer_overhead']
+    if ov
+      lines << '## Observer Overhead'
+      lines << ''
+      lines << "- wall_ms: #{ov['wall_ms']}, watcher_cpu_ms: #{ov['watcher_cpu_ms']}, cpu_pct_core: #{ov['cpu_pct_core']}%"
+      lines << ''
+    end
+
     lines.join("\n")
   end
 
@@ -441,6 +489,10 @@ module SibamboWatchdogSummarizer
     bugsplat_children = []
     work_exits = []
     nonzero_exit_outside_work = []
+    lifecycle_by_key = {}
+    lifecycle_order = []
+    capture_terminals = []
+    capture_progress_stalls = []
 
     events.each do |ev|
       type = ev['type']
@@ -462,6 +514,41 @@ module SibamboWatchdogSummarizer
         end
       when 'phase_changed'
         last_phase_group[pid] = ev['to']
+      when 'beacon_lifecycle'
+        key = [pid.to_i, ev['seq'].to_i]
+        lifecycle_order << key unless lifecycle_by_key.key?(key)
+        lifecycle_by_key[key] = {
+          'pid' => pid,
+          'seq' => ev['seq'],
+          'phase_group' => ev['phase_group'],
+          'status' => ev['status'],
+          'model' => ev['model'],
+          'started_utc' => ev['started_utc'],
+          'ended_utc' => ev['ended_utc'],
+          'duration_ms' => ev['duration_ms'],
+          'stage_timings_ms' => ev['stage_timings_ms'],
+          'error' => ev['error']
+        }
+      when 'capture_terminal'
+        last_phase_group[pid] = 'idle' if ev['complete'] == true || ev['complete'] == false
+        capture_terminals << {
+          'pid' => pid,
+          'run_dir' => ev['run_dir'],
+          'complete' => ev['complete'],
+          'manifest_path' => ev['manifest_path'],
+          'error' => ev['error'],
+          'utc' => ev['utc'],
+          'mono_ms' => ev['mono_ms']
+        }
+      when 'capture_progress_stalled'
+        capture_progress_stalls << {
+          'pid' => pid,
+          'run_dir' => ev['run_dir'],
+          'stale_seconds' => ev['stale_seconds'],
+          'last_progress_utc' => ev['last_progress_utc'],
+          'utc' => ev['utc'],
+          'mono_ms' => ev['mono_ms']
+        }
       when 'children_changed'
         Array(ev['children']).each do |name|
           if name.to_s =~ BUGSPLAT_RE
@@ -594,14 +681,27 @@ module SibamboWatchdogSummarizer
       s['phase_class'] == 'WORK' || s['phase_class'] == 'UNKNOWN'
     end
 
+    lifecycle_phases_seen = lifecycle_order.map { |k| lifecycle_by_key[k] }
+    capture_failures = capture_terminals.select { |c| c['complete'] == false }
+
+    last_se = session_end_events.last
+    observer_overhead = nil
+    if last_se && last_se['mono_ms'].to_f > 0.0 && !last_se['watcher_cpu_ms'].nil?
+      wall_ms = last_se['mono_ms'].to_f.round(1)
+      cpu_ms = last_se['watcher_cpu_ms'].to_f.round(1)
+      pct = ((cpu_ms / wall_ms) * 100.0).round(2)
+      observer_overhead = { 'wall_ms' => wall_ms, 'watcher_cpu_ms' => cpu_ms, 'cpu_pct_core' => pct }
+    end
+
     a_pass = a_breaches.empty?
     u_pass = u_breaches.empty?
-    d_pass = bugsplat_children.empty? && work_exits.empty? && modal_breaches.empty?
+    d_pass = bugsplat_children.empty? && work_exits.empty? && modal_breaches.empty? && capture_failures.empty?
 
     reasons = []
     reasons << "G-RT4'-A" unless a_pass
     reasons << "G-RT4'-U" unless u_pass
     reasons << "G-RT4'-D" unless d_pass
+    reasons << 'CAPTURE_FAILED' unless capture_failures.empty?
 
     verdict = reasons.empty? ? 'PASS' : 'FAIL'
     exit_code = reasons.empty? ? 0 : 1
@@ -640,12 +740,17 @@ module SibamboWatchdogSummarizer
           'work_exits' => work_exits,
           'modal_breaches' => modal_breaches,
           'disclosed_modals' => disclosed_modals,
-          'nonzero_exit_outside_work' => nonzero_exit_outside_work
+          'nonzero_exit_outside_work' => nonzero_exit_outside_work,
+          'capture_failures' => capture_failures
         }
       },
       'processes_seen' => processes_seen,
       'ticks_by_class' => ticks_by_class,
       'no_window_samples' => no_window_samples,
+      'lifecycle_phases_seen' => lifecycle_phases_seen,
+      'capture_terminals' => capture_terminals,
+      'capture_progress_stalls' => capture_progress_stalls,
+      'observer_overhead' => observer_overhead,
       'truncated_tail_line' => truncated_tail_line,
       'session_end_missing' => session_end_missing,
       'events_sha256' => events_sha256,
