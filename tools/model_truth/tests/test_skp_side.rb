@@ -288,4 +288,53 @@ class TestSkpSide < Test::Unit::TestCase
   ensure
     SS.instance_variable_set(:@cpu_source, nil)
   end
+
+  def test_write_atomic_retries_on_transient_eacces
+    h = SkpHarness.setup
+    target = File.join(h.run_dir, 'retry_test.json')
+    calls = 0
+    orig_rename = File.method(:rename)
+    SS.define_singleton_method(:sleep) { |_s| nil }
+    File.define_singleton_method(:rename) do |src, dst|
+      calls += 1
+      raise Errno::EACCES, 'simulated lock' if calls <= 3
+
+      orig_rename.call(src, dst)
+    end
+
+    SS.send(:write_atomic, target, '{"ok":true}')
+    assert_equal 4, calls
+    assert_equal '{"ok":true}', File.read(target)
+  ensure
+    File.define_singleton_method(:rename, orig_rename) if orig_rename
+    SS.singleton_class.send(:remove_method, :sleep) if SS.singleton_class.method_defined?(:sleep)
+  end
+
+  def test_persistent_progress_eacces_does_not_lock_in_tick_or_abort_capture
+    h = SkpHarness.setup
+    orig_write_atomic = SS.method(:write_atomic)
+    SS.define_singleton_method(:write_atomic) do |path, text, retries: 0|
+      raise Errno::EACCES, 'locked progress.json' if path.end_with?('progress.json')
+
+      orig_write_atomic.call(path, text)
+    end
+
+    SS.capture(run_dir: h.run_dir, expected_source_sha256: h.sha, budget_records: 2)
+    UI.run_until
+    assert UI.stopped
+    assert_equal false, SS.instance_variable_get(:@in_tick)
+    assert_operator SS.instance_variable_get(:@progress_write_errors).to_i, :>=, 1
+    assert_equal true, manifest(h)['complete']
+  ensure
+    SS.define_singleton_method(:write_atomic, orig_write_atomic) if orig_write_atomic
+  end
+
+  def test_finish_body_updates_progress_json_with_complete_boolean
+    h = SkpHarness.setup
+    SS.capture(run_dir: h.run_dir, expected_source_sha256: h.sha, budget_records: 2)
+    UI.run_until
+    prog = JSON.parse(File.read(File.join(h.run_dir, 'skp', 'progress.json')))
+    assert_equal true, prog['complete']
+    assert_equal 'finish', prog['phase']
+  end
 end
